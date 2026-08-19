@@ -3,7 +3,7 @@
 > **Cómo usar esto:** copiá TODO este documento como prompt inicial en una sesión
 > del asistente parada en la OTRA repo (que ya aplicó completa la guía
 > `REPLICA-SESION-2026-08-19-CONSOLIDADA.md`, o sea que está al día hasta la
-> entrada #193 del WORKLOG del original). Cubre las entradas **#194-#198**:
+> entrada #193 del WORKLOG del original). Cubre las entradas **#194-#200**:
 > 3 features de código + contexto nuevo de la Partner API que conviene conocer.
 
 ---
@@ -23,20 +23,40 @@
 
 ---
 
-## FEATURE 1 — Botón CASINO: reintento automático del link SSO + timeout
+## FEATURE 1 — Botón CASINO: fix de la CAUSA RAÍZ del "carga y falla" + reintento automático del link SSO + timeout
 
 **Síntoma reportado:** el jugador toca el botón del casino ("PÁGINA CASINO
-AQUÍ" / equivalente), "no ingresa y queda en el mismo lugar", y recién al
-segundo toque abre. **Dos causas, ambas en `public/js/ui.js`:**
+AQUÍ" / equivalente), empieza a cargar, "algo falla y vuelve al chat", y a la
+segunda quizás entra. **Tres causas, todas en `public/js/ui.js`:**
 
-1. El pedido del link SSO (`POST /api/platform/session`) NO reintentaba: ante
-   una falla transitoria (saturación momentánea del carril de la plataforma,
-   parpadeo de red móvil) mostraba el error y el "reintento" era el jugador.
-2. El fetch NO tenía timeout: colgado en 4G, el flag anti doble-click
-   (`_casinoOpening` o equivalente) quedaba en `true` por minutos → en ese
-   lapso tocar el botón no hacía NADA (el síntoma exacto).
+**1-A. LA CAUSA RAÍZ (verificada en vivo — implementar PRIMERO):** el reset y
+el cierre del recuadro del casino "limpiaban" el iframe con **`frame.src =
+''`** — y un src VACÍO no deja el iframe vacío: **lo navega a la URL BASE, o
+sea a la propia PWA**. Como la PWA se sirve con `X-Frame-Options: DENY` +
+`frame-ancestors 'none'`, el navegador bloquea ese contenido PERO el evento
+`load` dispara igual; el guard del listener (`if (!frame.src) return`) no lo
+filtraba (la PROPIEDAD `.src` con atributo `''` devuelve la URL resuelta,
+truthy) → se escondía el "🎰 Entrando al casino…" y quedaba un recuadro
+vacío/bloqueado ANTES de que llegara el link SSO. Es una CARRERA: la emisión
+del link tarda 2-4 s y esa carga espuria <1 s; si el link pierde, pantalla
+rota; a la 2ª el link llega antes (conexión caliente) y entra. **Fix:**
 
-**Fix (estado final):**
+- En el RESET al abrir (`_showCasinoFrame`) y en el CIERRE
+  (`closeCasinoFrame`): `frame.src = 'about:blank'` — NUNCA `''` (about:blank
+  no navega a la app y no genera request). Dejar comentario advirtiéndolo.
+- En el listener de `load` del iframe: el guard pasa a leer el ATRIBUTO:
+  `const src = frame.getAttribute('src'); if (!src || src === 'about:blank')
+  return;` — solo cuenta el load del casino real.
+
+**1-B.** El pedido del link SSO (`POST /api/platform/session`) NO reintentaba:
+ante una falla transitoria (saturación momentánea del carril de la plataforma,
+parpadeo de red móvil) mostraba el error y el "reintento" era el jugador.
+
+**1-C.** El fetch NO tenía timeout: colgado en 4G, el flag anti doble-click
+(`_casinoOpening` o equivalente) quedaba en `true` por minutos → en ese lapso
+tocar el botón no hacía NADA.
+
+**Fix de 1-B y 1-C (estado final):**
 
 - Helper nuevo `VIP.ui._fetchCasinoSession(timeoutMs)`:
   - hace el `POST /api/platform/session` con `AbortController` y timeout
@@ -71,9 +91,11 @@ segundo toque abre. **Dos causas, ambas en `public/js/ui.js`:**
   esperar 1500 ms. El resto del flujo (popup bloqueado → navegar en la misma
   pestaña, cerrar el placeholder ante error) queda igual.
 
-Bump del SW de la PWA. **PROBAR:** botón CASINO con red mala/lenta → se ve
-"Reintentando…" y entra solo, sin segundo toque; con el back caído → error con
-botón Reintentar (el botón nunca queda muerto).
+Bump del SW de la PWA. **PROBAR:** tocar el botón CASINO repetidas veces,
+incluso con red mala/lenta → el "Entrando al casino…" queda visible hasta que
+el casino REAL carga (nunca más recuadro vacío ni "vuelta al chat"); ante
+fallas reales se ve "Reintentando…" y entra solo; con el back caído → error
+con botón Reintentar (el botón nunca queda muerto).
 
 ---
 
