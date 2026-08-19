@@ -4,9 +4,29 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-08-16**
+> **Última actualización: 2026-08-19**
 
 ## Sesión 2026-08-19
+
+### 194. Doc de RÉPLICA consolidado para la repo gemela (sesiones 15→19/8) + WORKLOG al día
+- **Pedido del owner:** retomar la práctica de los docs `REPLICA-SESION-*` (la
+  última era la del 2026-08-14) con UN doc consolidado de todo lo pendiente.
+- **Nuevo:** `docs/REPLICA-SESION-2026-08-19-CONSOLIDADA.md` — especificación
+  del ESTADO FINAL (no las iteraciones) de las entradas 175-193, en 6 bloques:
+  (A) giroxService: limitador por key, pool de consultas `:rpm`, techos de
+  publicista, pool por publicista, cache+coalescing de jugador y de stats,
+  logs a stdout; (B) pool de keys en panel/endpoints; (C) landing signup
+  completa; (D) front casino final (widget flotante v106); (E) SSM_SKIP_KEYS;
+  (F) 2º pixel CAPI. + tabla de env nuevas, acciones del owner y NO-replicar.
+- **Registro tardío (commit `dc08a53`, 2026-08-17, sin entrada en su
+  momento):** el chat del casino de #189 (bottom-sheet 50%) se rediseñó como
+  **WIDGET flotante en la esquina** (380×600 máx, no parte la pantalla, estilo
+  chat de soporte, header "Soporte 1GIROX · EN LÍNEA", botones "💰 Quiero
+  Depositar" con montos desplegables y "💸 Solicitar Retiro", chips CBU/Ya
+  transferí/Hablar, escapes "↗ Casino aparte"/"🚪 Salir") — **SW v106**, que
+  es el estado vigente en producción. También sin entrada: `db9b3d3` (landing:
+  override `?api=` para probar contra otro backend) y `20bf51e`
+  (`landing/demo.html`, demo simulada para el partner).
 
 ### 193. Meta CAPI: soporte de 2º PIXEL (partner de tracking) — solo cargar 2 env y deployar
 - **Pedido:** el partner de la pauta pidió recibir los MISMOS eventos
