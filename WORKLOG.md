@@ -27,6 +27,9 @@
   es el estado vigente en producción. También sin entrada: `db9b3d3` (landing:
   override `?api=` para probar contra otro backend) y `20bf51e`
   (`landing/demo.html`, demo simulada para el partner).
+- **✅ APLICADO EN LA GEMELA (owner, 2026-08-19):** la repo gemela implementó
+  la guía consolidada completa → está al día hasta la entrada #193 inclusive.
+  La PRÓXIMA guía de réplica arranca desde acá (#194 en adelante).
 
 ### 193. Meta CAPI: soporte de 2º PIXEL (partner de tracking) — solo cargar 2 env y deployar
 - **Pedido:** el partner de la pauta pidió recibir los MISMOS eventos
