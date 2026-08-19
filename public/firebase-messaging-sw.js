@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v106'; // v106: el soporte del casino ahora es un WIDGET flotante en la esquina (no parte la pantalla), estilo chat de soporte, con Quiero Depositar / Solicitar Retiro
+const CACHE_VERSION = 'v107'; // v107: botón CASINO con reintento automático del link SSO + timeout (antes un fetch colgado dejaba el botón muerto hasta el 2º toque)
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;

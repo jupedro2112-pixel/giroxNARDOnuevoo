@@ -8,6 +8,25 @@
 
 ## Sesión 2026-08-19
 
+### 196. Botón "🎰 PÁGINA CASINO AQUÍ": reintento automático del link SSO + timeout — SW v107
+- **Reporte del owner:** a veces el jugador toca el botón, "no ingresa y queda
+  en el mismo lugar", y recién al segundo toque abre bien.
+- **Causas (las dos en ui.js):** (1) el pedido del link SSO
+  (`POST /api/platform/session`) NO reintentaba: una falla transitoria
+  (saturación momentánea del carril girox, red móvil) mostraba el error y el
+  "reintento" era el jugador tocando de nuevo; (2) el fetch NO tenía timeout:
+  colgado en 4G, el flag anti doble-click `_casinoOpening` quedaba en true por
+  minutos → en ese lapso tocar el botón no hacía NADA (el síntoma exacto).
+- **Fix (solo front):** helper `VIP.ui._fetchCasinoSession(timeoutMs)` con
+  AbortController (20s) + clasificación retryable (5xx/red sí; 4xx no).
+  `enterCasino`: hasta 3 intentos automáticos con "🔄 Reintentando… (n/3)" en
+  el status (esperas 1.5s/3s), corta si el jugador salió del overlay, y NO
+  setea el iframe si el overlay ya se cerró (evita casino sonando oculto).
+  `openCasinoInTab`: 1 reintento con aviso en la pestaña placeholder.
+- **Validado:** `node --check` OK (ui.js, SW). **SW v107** — solo deploy de
+  estáticos. PROBAR: botón CASINO en red mala → se ve "Reintentando…" y entra
+  solo; con el back caído del todo → error con botón Reintentar (no se cuelga).
+
 ### 195. Partner API v1.11 PROBADA en vivo: `agent_id` es "crear y ENTREGAR" — NO reemplaza las keys de publicista
 - **Contexto:** llegó el manual v1.11 (guardado en `docs/PARTNER-APIv1.11.pdf`;
   estábamos integrados hasta v1.9). Novedades: (v1.11) `agent_id` opcional en

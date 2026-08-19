@@ -902,6 +902,35 @@ VIP.ui._casinoOpening = false;
  */
 VIP.ui._casinoOpen = false;
 
+/** Pide el link SSO del casino, CON TIMEOUT. Sin el timeout, un fetch colgado
+ *  (red móvil que parpadea) dejaba `_casinoOpening` trabado en true por minutos
+ *  → el botón CASINO no hacía NADA al volver a tocarlo ("no ingresa y queda en
+ *  el mismo lugar", reclamo del owner 2026-08-19).
+ *  @returns {ok:true, url} | {ok:false, error, retryable} */
+VIP.ui._fetchCasinoSession = async function(timeoutMs) {
+  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(function() { ctrl.abort(); }, timeoutMs || 20000) : null;
+  try {
+    const response = await fetch(`${VIP.config.API_URL}/api/platform/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${VIP.state.currentToken}`
+      },
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    const data = await response.json().catch(function() { return {}; });
+    if (response.ok && data.success && data.redirectUrl) return { ok: true, url: data.redirectUrl };
+    // 5xx = plataforma demorada/saturada → vale reintentar. 4xx (bloqueado,
+    // límite de intentos) no: reintentar no lo va a cambiar.
+    return { ok: false, error: data.error || null, retryable: response.status >= 500 };
+  } catch (e) {
+    return { ok: false, error: null, retryable: true }; // timeout o red caída → reintentable
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
 VIP.ui.enterCasino = async function() {
   if (VIP.ui._casinoOpening) return; // anti doble-click
   VIP.ui._casinoOpening = true;
@@ -910,18 +939,29 @@ VIP.ui.enterCasino = async function() {
   VIP.ui._showCasinoFrame();   // recuadro visible YA, con "cargando"
 
   try {
-    const response = await fetch(`${VIP.config.API_URL}/api/platform/session`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${VIP.state.currentToken}`
+    // REINTENTO AUTOMÁTICO (owner 2026-08-19): a veces el primer pedido del link
+    // SSO falla (saturación momentánea, red móvil) y el jugador tenía que tocar
+    // el botón de nuevo. Ahora se reintenta solo antes de mostrar el error.
+    const MAX_TRIES = 3;
+    let last = null;
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      if (!VIP.ui._casinoOpen) return; // salió del casino mientras cargaba
+      if (attempt > 1) {
+        const status = document.getElementById('casinoFrameStatus');
+        if (status) status.textContent = '🔄 Reintentando… (' + attempt + '/' + MAX_TRIES + ')';
+        await new Promise(function(r) { setTimeout(r, attempt === 2 ? 1500 : 3000); });
+        if (!VIP.ui._casinoOpen) return;
       }
-    });
-    const data = await response.json();
+      last = await VIP.ui._fetchCasinoSession(20000);
+      if (last.ok || !last.retryable) break;
+    }
 
-    if (response.ok && data.success && data.redirectUrl) {
+    if (last && last.ok) {
+      // Si cerró el overlay durante el pedido, NO arrancar el casino oculto
+      // (quedaría corriendo con sonido de fondo).
+      if (!VIP.ui._casinoOpen) return;
       const frame = document.getElementById('casinoFrame');
-      if (frame) frame.src = data.redirectUrl;
+      if (frame) frame.src = last.url;
 
       // VIGILANTE: el `load` del iframe dispara aunque la app de adentro se quede
       // colgada. El caso típico es el BLOQUEO DE COOKIES DE TERCEROS: el casino
@@ -937,9 +977,8 @@ VIP.ui.enterCasino = async function() {
       return;
     }
 
-    VIP.ui._casinoFrameError(data.error || 'No pudimos abrirte el casino en este momento.');
-  } catch (error) {
-    VIP.ui._casinoFrameError('Sin conexión. Revisá tu internet e intentá de nuevo.');
+    VIP.ui._casinoFrameError((last && last.error) ||
+      'No pudimos abrirte el casino. Revisá tu internet y tocá Reintentar.');
   } finally {
     VIP.ui._casinoOpening = false;
   }
@@ -972,28 +1011,28 @@ VIP.ui.openCasinoInTab = async function() {
   } catch (e) { win = null; }
 
   try {
-    const response = await fetch(`${VIP.config.API_URL}/api/platform/session`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${VIP.state.currentToken}`
-      }
-    });
-    const data = await response.json();
+    // Mismo reintento automático que enterCasino (la pestaña placeholder ya
+    // está abierta, así que reintentar el fetch no molesta al pop-up blocker).
+    let r = await VIP.ui._fetchCasinoSession(20000);
+    if (!r.ok && r.retryable) {
+      try { if (win && !win.closed && win.document && win.document.body) win.document.body.textContent = '🔄 Reintentando…'; } catch (e2) {}
+      await new Promise(function(res) { setTimeout(res, 1500); });
+      r = await VIP.ui._fetchCasinoSession(20000);
+    }
 
-    if (response.ok && data.success && data.redirectUrl) {
+    if (r.ok) {
       if (win && !win.closed) {
-        win.location.href = data.redirectUrl;
+        win.location.href = r.url;
       } else {
         // Pop-up bloqueado → se navega en la pestaña actual.
-        window.location.href = data.redirectUrl;
+        window.location.href = r.url;
         return;
       }
       VIP.ui.closeCasinoFrame();
       return;
     }
     if (win && !win.closed) win.close();
-    VIP.ui.showToast(data.error || 'No pudimos abrirte el casino.', 'error');
+    VIP.ui.showToast(r.error || 'No pudimos abrirte el casino. Intentá de nuevo.', 'error');
   } catch (e) {
     if (win && !win.closed) win.close();
     VIP.ui.showToast('Sin conexión. Intentá de nuevo.', 'error');
