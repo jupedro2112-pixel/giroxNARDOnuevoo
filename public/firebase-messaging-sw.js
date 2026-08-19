@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v107'; // v107: botón CASINO con reintento automático del link SSO + timeout (antes un fetch colgado dejaba el botón muerto hasta el 2º toque)
+const CACHE_VERSION = 'v108'; // v108: fondo de <html> oscuro — mata la franja BLANCA de abajo (home indicator) en iPhone con la app instalada (+ v107: reintento automático del SSO del casino)
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;

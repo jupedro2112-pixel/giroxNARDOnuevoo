@@ -8,6 +8,21 @@
 
 ## Sesión 2026-08-19
 
+### 197. FIX iPhone PWA: la "línea blanca" de abajo era el fondo del <html> — SW v108
+- **Reporte del owner (probado en un iPhone real):** con la app instalada
+  sigue apareciendo una franja blanca "vacía" abajo (zona del home indicator),
+  incluso después del fix de safe-area del #172.
+- **Causa:** el degradé oscuro está en `body`; el `<html>` quedó SIN fondo →
+  blanco por defecto. En standalone (`viewport-fit=cover`) iOS pinta la franja
+  del home indicator y el rebote del scroll con el fondo del documento RAÍZ
+  (html), no con el del body → franja blanca. El #172 arregló el overlay del
+  casino (padding de safe-area), pero el fondo raíz seguía blanco.
+- **Fix (base.css):** `html { background: #0a0015; }` (el mismo oscuro del
+  degradé). Cubre app entera + casino + rebote del scroll.
+- **Validado:** `node --check` del SW. **SW v108** — solo deploy de estáticos.
+  PROBAR (iPhone, app instalada, cerrar/abrir 2 veces): abajo ya no hay franja
+  blanca — la zona del home indicator queda del color del fondo.
+
 ### 196. Botón "🎰 PÁGINA CASINO AQUÍ": reintento automático del link SSO + timeout — SW v107
 - **Reporte del owner:** a veces el jugador toca el botón, "no ingresa y queda
   en el mismo lugar", y recién al segundo toque abre bien.

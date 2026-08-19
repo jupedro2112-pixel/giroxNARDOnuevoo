@@ -4,6 +4,14 @@
     box-sizing: border-box;
 }
 
+/* iPhone con la PWA INSTALADA (viewport-fit=cover): la franja del home
+   indicator (abajo) y el rebote del scroll los pinta iOS con el fondo del
+   documento raíz (<html>), no con el del <body>. Sin esto, <html> queda
+   blanco por defecto → "línea blanca" abajo con la app instalada. */
+html {
+    background: #0a0015;
+}
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     /* Evita el "auto-boost" de texto del navegador. No bloquea el ajuste de
