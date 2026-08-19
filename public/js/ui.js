@@ -1225,7 +1225,14 @@ VIP.ui._showCasinoFrame = function() {
     // Cuando el casino termina de cargar, se esconde el "cargando" y se muestra el juego.
     const frame = overlay.querySelector('#casinoFrame');
     frame.addEventListener('load', function() {
-      if (!frame.src) return; // el load inicial del iframe vacío no cuenta
+      // Solo cuenta el load del CASINO REAL. ⚠️ Antes el guard era `!frame.src`
+      // y el reset hacía `frame.src=''` — un src vacío NAVEGA el iframe a la
+      // URL de la PROPIA app (bloqueada por X-Frame-Options) y ese load espurio
+      // pasaba el guard → se escondía el "Entrando al casino…" y quedaba un
+      // recuadro vacío. Era LA causa del "toco el botón, carga y falla; a la
+      // segunda entra" (carrera entre ese load y la llegada del link SSO).
+      const src = frame.getAttribute('src');
+      if (!src || src === 'about:blank') return;
       const status = document.getElementById('casinoFrameStatus');
       if (status) status.style.display = 'none';
       frame.style.display = 'block';
@@ -1240,7 +1247,9 @@ VIP.ui._showCasinoFrame = function() {
   // Reset al abrir (por si venía de un intento anterior que falló).
   const frame = overlay.querySelector('#casinoFrame');
   const status = overlay.querySelector('#casinoFrameStatus');
-  if (frame) { frame.src = ''; frame.style.display = 'none'; }
+  // ⚠️ 'about:blank', NUNCA '': el string vacío navega el iframe a la URL base
+  // (la propia PWA) — request inútil + load espurio que rompía la carga.
+  if (frame) { frame.src = 'about:blank'; frame.style.display = 'none'; }
   if (status) { status.style.display = 'flex'; status.textContent = '🎰 Entrando al casino…'; }
 
   overlay.style.display = 'flex';
@@ -1345,10 +1354,11 @@ VIP.ui.closeCasinoFrame = function() {
   VIP.ui._casinoChatUnmount();
   const overlay = document.getElementById('casinoOverlay');
   if (!overlay) return;
-  // Se vacía el src para que el casino deje de correr en segundo plano (si no, sigue
-  // sonando y consumiendo datos aunque el recuadro esté oculto).
+  // Se blanquea el src para que el casino deje de correr en segundo plano (si no,
+  // sigue sonando y consumiendo datos aunque el recuadro esté oculto).
+  // ⚠️ 'about:blank', NUNCA '': el vacío navega el iframe a la URL de la PWA.
   const frame = overlay.querySelector('#casinoFrame');
-  if (frame) frame.src = '';
+  if (frame) frame.src = 'about:blank';
   overlay.style.display = 'none';
   document.body.style.overflow = '';
   VIP.ui._casinoOpen = false;

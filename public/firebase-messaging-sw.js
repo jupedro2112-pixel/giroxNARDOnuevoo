@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v108'; // v108: fondo de <html> oscuro — mata la franja BLANCA de abajo (home indicator) en iPhone con la app instalada (+ v107: reintento automático del SSO del casino)
+const CACHE_VERSION = 'v109'; // v109: CAUSA RAÍZ del botón CASINO que "carga y falla": frame.src='' navegaba el iframe a la propia PWA (bloqueada por XFO) y su load espurio escondía el "Entrando…" → about:blank + guard por src real
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;

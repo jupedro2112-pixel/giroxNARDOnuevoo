@@ -8,6 +8,31 @@
 
 ## Sesión 2026-08-19
 
+### 200. CAUSA RAÍZ (real) del botón CASINO que "carga y falla": `frame.src=''` navegaba el iframe a la PROPIA PWA — SW v109
+- **Reporte del owner:** con el v107/108 YA activos en su iPhone (verificado
+  por la línea blanca corregida), el botón seguía fallando: "abre, empieza a
+  cargar, algo falla y vuelve al chat; a la segunda quizás entra".
+- **Diagnóstico:** (a) probé la plataforma en vivo con curl: 6/6 links SSO
+  emitidos y cargados OK (2-4s vía Tor) → no era la plataforma; (b) el reset y
+  el cierre del recuadro hacían **`frame.src = ''`** — y un src VACÍO navega el
+  iframe a la URL BASE, o sea a chat1girox.com. La PWA se sirve con
+  `X-Frame-Options: DENY` + `frame-ancestors 'none'` → el navegador bloquea
+  ese contenido PERO el evento `load` dispara igual, y el guard del listener
+  (`if (!frame.src) return`) no lo filtraba (la PROPIEDAD .src con atributo ''
+  devuelve la URL resuelta, truthy) → se escondía el "🎰 Entrando al casino…"
+  y quedaba un recuadro vacío/bloqueado ANTES de que llegara el link SSO.
+  CARRERA: si la emisión del link (2-4s) perdía contra ese load espurio
+  (~0.5s), el jugador veía la pantalla "rota" y salía; a la 2ª el link llegaba
+  antes (conexión caliente) y ganaba. Por eso intermitente. El bug existía
+  desde siempre; se notó más con la plataforma más lenta en picos.
+- **Fix (ui.js):** reset y cierre usan **`about:blank`** (no navega a la app,
+  cero request extra), y el listener de load ignora todo lo que no sea el
+  casino real (`getAttribute('src')` vacío o about:blank → return).
+- **Validado:** `node --check` OK. **SW v109** — solo deploy de estáticos.
+  PROBAR (con el SW tomado, 2 aperturas): tocar el botón CASINO repetidas
+  veces, incluso con red lenta → el "Entrando al casino…" queda visible hasta
+  que el casino REAL carga; nunca más recuadro vacío ni "vuelta al chat".
+
 ### 199. Deploy confirmado (#196-198) + guía de réplica tanda B para la gemela
 - **El owner deployó a AWS** lo de esta sesión: SW v107 (reintento SSO casino),
   v108 (fondo html iPhone) y admin-sw v44 (internos en verde).
