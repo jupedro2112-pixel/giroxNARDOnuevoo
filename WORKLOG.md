@@ -8,6 +8,36 @@
 
 ## Sesión 2026-08-19
 
+### 195. Partner API v1.11 PROBADA en vivo: `agent_id` es "crear y ENTREGAR" — NO reemplaza las keys de publicista
+- **Contexto:** llegó el manual v1.11 (guardado en `docs/PARTNER-APIv1.11.pdf`;
+  estábamos integrados hasta v1.9). Novedades: (v1.11) `agent_id` opcional en
+  `POST /players` + `GET /agents` + error `agent_not_allowed`; (v1.10, nos la
+  habíamos perdido) bono con multiplicador **0** = regalo directo, disponible
+  al instante, sin reclamo y **ya no pisa el bono en curso**.
+- **Prueba en vivo (curl, key de prueba de la cuenta raíz, base
+  `https://api-1gx.com/api/v1`):**
+  1. `GET /agents` → 200 con los 4 sub-agentes: chat1=16893, onekey=16896,
+     digital=16897, martin=16898. (Sirve además para verificar si una key es
+     de la cuenta raíz: una key de publicista devolvería lista vacía.)
+  2. Alta `zz_agtest7226` con `agent_id:16896` (onekey) → **201 OK**, pero la
+     MISMA key que lo creó recibe **404 player_not_found** al leerlo (probado
+     2 veces): el jugador queda ENTREGADO al sub-agente; solo las keys de
+     onekey lo ven/operan.
+  3. Control: alta `zz_agtest1833` SIN agent_id → la key lo lee perfecto
+     (el `active:false` que devuelve el 201 es cosmético; en la lectura ya
+     viene `active:true`).
+- **CONCLUSIÓN:** muere la hipótesis de reemplazar el ruteo por keys de
+  publicista con "master + agent_id": la master NO puede operar (ni leer) al
+  jugador después del alta → seguimos necesitando la key del publicista para
+  TODO lo posterior (saldo, cargas, retiros, SSO). `agent_id` solo serviría
+  para el ALTA sin tener la key del publicista — y las keys ya las tenemos.
+  El pool de keys por publicista (#192) sigue siendo la solución vigente.
+- **Pendiente de decisión (v1.10):** aflojar los guards bono-sobre-bono para
+  regalos con multiplicador 0 (ya no pisan el bono en curso) — no tocado.
+- **Restos de la prueba:** `zz_agtest7226` quedó colgado del panel de onekey y
+  `zz_agtest1833` bajo la cuenta raíz (saldo 0, inofensivos; no hay endpoint
+  de borrado). La key de prueba pegada en el chat debe ELIMINARSE del panel.
+
 ### 194. Doc de RÉPLICA consolidado para la repo gemela (sesiones 15→19/8) + WORKLOG al día
 - **Pedido del owner:** retomar la práctica de los docs `REPLICA-SESION-*` (la
   última era la del 2026-08-14) con UN doc consolidado de todo lo pendiente.
