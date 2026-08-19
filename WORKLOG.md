@@ -8,6 +8,14 @@
 
 ## Sesión 2026-08-19
 
+### 199. Deploy confirmado (#196-198) + guía de réplica tanda B para la gemela
+- **El owner deployó a AWS** lo de esta sesión: SW v107 (reintento SSO casino),
+  v108 (fondo html iPhone) y admin-sw v44 (internos en verde).
+- **Nuevo doc:** `docs/REPLICA-SESION-2026-08-19B.md` — réplica de #194-198
+  para la gemela (3 features de front + contexto Partner API v1.10/v1.11 con
+  el veredicto del agent_id). Asume la gemela al día hasta #193 (guía
+  consolidada anterior aplicada). La PRÓXIMA réplica arranca en #199.
+
 ### 198. Panel: mensajes de sistema INTERNOS en VERDE con etiqueta "🔒 INTERNO" — admin-sw v44
 - **Pedido del owner (con captura):** en el chat del panel, TODOS los mensajes
   de sistema se veían naranjas iguales — imposible distinguir a simple vista
