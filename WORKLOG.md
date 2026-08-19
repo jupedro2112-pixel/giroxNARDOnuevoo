@@ -8,6 +8,24 @@
 
 ## Sesión 2026-08-19
 
+### 198. Panel: mensajes de sistema INTERNOS en VERDE con etiqueta "🔒 INTERNO" — admin-sw v44
+- **Pedido del owner (con captura):** en el chat del panel, TODOS los mensajes
+  de sistema se veían naranjas iguales — imposible distinguir a simple vista
+  cuáles le LLEGARON al cliente (automáticos) y cuáles son solo internos.
+- **Cómo se distinguen:** los internos ya viajan con `adminOnly:true` (el
+  cliente nunca los recibe: cierre de chat, alerta de bonus, sync de clave
+  fallido, etc.); el flag ya venía en el historial y en los sockets — era solo
+  cuestión de pintarlo.
+- **Cambio (solo panel):** `createMessageElement` (admin.js): `type:'system'` +
+  `adminOnly` → clase `.internal` + etiqueta "🔒 INTERNO — el cliente NO lo
+  ve"; los automáticos (sí enviados al cliente) siguen naranja pero ahora con
+  🤖 en vez del 🔒 (el candado era engañoso ahí). CSS: fondo verde
+  rgba(37,211,102,0.14), borde #25d366, texto #9ff5c0 (legible en oscuro).
+- **Validado:** `node --check` OK (admin.js, admin-sw). **admin-sw v44** —
+  solo deploy de estáticos. PROBAR: abrir un chat con historial → "Chat
+  cerrado por..." y las alertas internas en VERDE con la etiqueta; los
+  "¡Felicitaciones... bono acreditado!" que recibió el cliente, en naranja 🤖.
+
 ### 197. FIX iPhone PWA: la "línea blanca" de abajo era el fondo del <html> — SW v108
 - **Reporte del owner (probado en un iPhone real):** con la app instalada
   sigue apareciendo una franja blanca "vacía" abajo (zona del home indicator),
