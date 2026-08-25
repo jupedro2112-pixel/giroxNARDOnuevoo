@@ -1169,12 +1169,18 @@ VIP.ui._showCasinoFrame = function() {
       '<iframe id="casinoFrame" title="Casino" style="flex:1;width:100%;border:0;display:none;" ' +
         'allow="autoplay; fullscreen; payment"></iframe>' +
       // BURBUJA de soporte flotante (abajo a la derecha) — abre el chat de acciones.
+      // PASTILLA con logo 1G + texto (owner 2026-08-25): el circulito 🎧 parecía
+      // el soporte propio de la página del casino. Con el logo de la app y
+      // "CARGA RÁPIDA" a la vista queda claro que es NUESTRO chat de cargas.
       '<button type="button" id="casinoSupportBubble" onclick="VIP.ui.toggleCasinoChat()" ' +
-        'title="Soporte y cargas" style="position:absolute;z-index:6;right:16px;' +
-        'bottom:calc(18px + env(safe-area-inset-bottom,0px));width:60px;height:60px;border-radius:50%;' +
+        'title="Carga rápida 1GIROX — arrastrame si te tapa el juego" style="position:absolute;z-index:6;right:16px;' +
+        'bottom:calc(18px + env(safe-area-inset-bottom,0px));border-radius:28px;' +
         'background:linear-gradient(135deg,#128c4a,#25d366);color:#fff;border:none;' +
-        'box-shadow:0 6px 20px rgba(0,0,0,0.55);font-size:26px;cursor:pointer;' +
-        'display:flex;align-items:center;justify-content:center;">🎧' +
+        'box-shadow:0 6px 20px rgba(0,0,0,0.55);cursor:pointer;' +
+        'display:flex;align-items:center;gap:8px;padding:8px 14px 8px 8px;">' +
+        '<img src="/icons/icon-96x96.png" alt="1G" style="width:32px;height:32px;border-radius:50%;' +
+        'background:#0d0d1a;padding:3px;object-fit:contain;flex:0 0 auto;">' +
+        '<span style="font-weight:800;font-size:12px;letter-spacing:0.4px;white-space:nowrap;">CARGA RÁPIDA</span>' +
         '<span id="casinoChatBadge" style="display:none;position:absolute;top:-2px;right:-2px;' +
         'background:#e53935;color:#fff;border-radius:11px;min-width:20px;height:20px;line-height:20px;' +
         'font-size:12px;font-weight:800;padding:0 5px;text-align:center;">0</span></button>' +
@@ -1191,7 +1197,8 @@ VIP.ui._showCasinoFrame = function() {
         '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;flex:0 0 auto;' +
         'background:linear-gradient(135deg,#128c4a,#0f7a3d);">' +
           '<div style="width:34px;height:34px;border-radius:50%;background:#0d0d1a;flex:0 0 auto;' +
-          'display:flex;align-items:center;justify-content:center;font-size:16px;">🎧</div>' +
+          'display:flex;align-items:center;justify-content:center;overflow:hidden;">' +
+          '<img src="/icons/icon-96x96.png" alt="1G" style="width:26px;height:26px;object-fit:contain;"></div>' +
           '<div style="flex:1;min-width:0;">' +
             // "Carga rápida", NO "Soporte" (owner 2026-08-25): con "Soporte 1GIROX"
             // los clientes lo confundían con el soporte propio de la página del casino.
@@ -1350,6 +1357,15 @@ VIP.ui._showCasinoFrame = function() {
     }
   }
   VIP.ui._casinoChatUnread = 0;
+
+  // El panel arranca ABIERTO en cada entrada al casino (owner 2026-08-25): así
+  // el jugador VE que es la carga rápida NUESTRA y no un soporte de la página.
+  // Lo cierra con la ✕ y queda cerrado hasta la próxima entrada al casino.
+  const drawer0 = document.getElementById('casinoChatDrawer');
+  if (drawer0 && (drawer0.style.display === 'none' || !drawer0.style.display)) {
+    if (VIP.ui._bubbleSide === 'left') { drawer0.style.left = '16px'; drawer0.style.right = 'auto'; }
+    VIP.ui._casinoChatMount();
+  }
 };
 
 /** Abre/cierra el chat de cargas SOBRE el casino (el juego no se corta). */
@@ -1417,6 +1433,27 @@ VIP.ui._casinoChatUnmount = function() {
   VIP.ui._casinoChatPh = null;
   const drawer = document.getElementById('casinoChatDrawer');
   if (drawer) drawer.style.display = 'none';
+
+  // PISTA de arrastre (una vez por sesión): recién cuando cierra el panel por
+  // primera vez, un cartelito le enseña que la pastilla se puede mover — es el
+  // momento justo: acaba de quedar la pastilla sola sobre el juego.
+  if (!VIP.ui._bubbleHintShown && document.getElementById('casinoSupportBubble')) {
+    VIP.ui._bubbleHintShown = true;
+    const overlay = document.getElementById('casinoOverlay');
+    if (overlay) {
+      const hint = document.createElement('div');
+      const side = (VIP.ui._bubbleSide === 'left') ? 'left:16px;' : 'right:16px;';
+      hint.style.cssText = 'position:absolute;z-index:6;' + side +
+        'bottom:calc(78px + env(safe-area-inset-bottom,0px));max-width:230px;' +
+        'background:rgba(13,13,26,0.94);border:1px solid rgba(212,175,55,0.5);color:#e3bd48;' +
+        'font-size:11.5px;font-weight:700;padding:7px 11px;border-radius:10px;' +
+        'pointer-events:none;transition:opacity 0.5s;';
+      hint.textContent = '✥ ¿Te tapa el juego? Arrastrame a donde quieras';
+      overlay.appendChild(hint);
+      setTimeout(function() { hint.style.opacity = '0'; }, 4200);
+      setTimeout(function() { hint.remove(); }, 4800);
+    }
+  }
 };
 
 /** Cierra el recuadro y vuelve a VIPCARGAS. */

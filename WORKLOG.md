@@ -8,6 +8,28 @@
 
 ## Sesión 2026-08-25
 
+### 203. La burbuja del casino ahora es PASTILLA "CARGA RÁPIDA" con logo 1G + panel abierto al entrar + pista de arrastre — SW v112
+- **Pedido del owner (sobre #202):** que se diferencie CLARO de un soporte de
+  la página del casino: que diga que es la carga rápida, que lleve el logo de
+  1girox en vez del auricular 🎧, que el panel aparezca ABIERTO al entrar (así
+  ven qué es), y que se note que se puede arrastrar.
+- **Cambios (ui.js):**
+  1. La burbuja pasa de circulito 🎧 a **PASTILLA**: logo `icon-96x96.png`
+     (el "1G" de la PWA, fondo oscuro redondo) + texto "CARGA RÁPIDA" en
+     negrita, mismo gradiente verde. El drag de #202 funciona igual (usa el
+     rect real del elemento).
+  2. El avatar del header del panel también pasa del 🎧 al logo 1G.
+  3. **El panel arranca ABIERTO en cada entrada al casino** (se auto-monta en
+     `_showCasinoFrame` si estaba cerrado, respetando el lado de la burbuja).
+     Se cierra con la ✕ y queda cerrado hasta la próxima entrada.
+  4. **Pista de arrastre** (una vez por sesión): al cerrar el panel por
+     primera vez aparece 4s un cartelito sobre la pastilla: "✥ ¿Te tapa el
+     juego? Arrastrame a donde quieras".
+- **Validado:** `node --check` OK. **SW v112** — solo deploy de estáticos.
+  PROBAR: entrar al casino → el panel "Carga rápida 1GIROX" está ABIERTO con
+  el logo 1G; cerrarlo → pastilla verde "CARGA RÁPIDA" con el logo + el
+  cartelito de arrastre; arrastrarla → funciona igual que #202.
+
 ### 202. Burbuja 🎧 del casino ARRASTRABLE — tapaba controles de los juegos — SW v111
 - **Reporte (captura de un cliente):** la burbuja fija abajo a la derecha
   tapaba controles de algunos juegos (la botonera de la ruleta) y "no hay cómo

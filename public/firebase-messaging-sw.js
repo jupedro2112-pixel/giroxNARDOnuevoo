@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v111'; // v111: burbuja 🎧 del casino ARRASTRABLE (tapaba controles de juegos, ej. la ruleta) — imán al borde al soltar, toque sin arrastre sigue abriendo el chat
+const CACHE_VERSION = 'v112'; // v112: la burbuja del casino ahora es una PASTILLA con logo 1G + "CARGA RÁPIDA" (no más 🎧 que parecía soporte de la página), el panel arranca ABIERTO al entrar, y pista de que se puede arrastrar
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;
