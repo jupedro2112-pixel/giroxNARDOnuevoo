@@ -1260,6 +1260,56 @@ VIP.ui._showCasinoFrame = function() {
       // bloqueadas, el escape "↗ Abrir aparte" sigue SIEMPRE en la barra.
       clearTimeout(VIP.ui._casinoWatchdog);
     });
+
+    // BURBUJA ARRASTRABLE (owner 2026-08-25): la burbuja fija tapaba controles
+    // de algunos juegos (ej. la botonera de la ruleta, abajo a la derecha) y el
+    // jugador no tenía forma de tocar lo que quedaba debajo. Ahora se arrastra
+    // con el dedo (o mouse); al soltarla se pega al borde izquierdo o derecho
+    // (imán, estilo burbuja de Messenger) y queda ahí mientras el casino siga
+    // abierto. Un toque SIN arrastre sigue abriendo el chat como siempre.
+    (function _makeBubbleDraggable() {
+      const b = overlay.querySelector('#casinoSupportBubble');
+      if (!b || !window.PointerEvent) return; // sin pointer events → burbuja fija como antes
+      b.style.touchAction = 'none'; // sin esto, el navegador scrollea en vez de arrastrar
+      let startX = 0, startY = 0, startRect = null, dragging = false;
+      b.addEventListener('pointerdown', function(e) {
+        startX = e.clientX; startY = e.clientY;
+        startRect = b.getBoundingClientRect();
+        dragging = false;
+        try { b.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+      b.addEventListener('pointermove', function(e) {
+        if (!startRect) return;
+        const dx = e.clientX - startX, dy = e.clientY - startY;
+        // Umbral tap/arrastre: menos de 8px de movimiento sigue siendo un toque.
+        if (!dragging && (Math.abs(dx) + Math.abs(dy)) < 8) return;
+        dragging = true;
+        const x = Math.min(Math.max(4, startRect.left + dx), window.innerWidth - startRect.width - 4);
+        const y = Math.min(Math.max(10, startRect.top + dy), window.innerHeight - startRect.height - 10);
+        b.style.left = x + 'px';
+        b.style.top = y + 'px';
+        b.style.right = 'auto';
+        b.style.bottom = 'auto';
+      });
+      const end = function() {
+        if (startRect && dragging) {
+          // Imán al borde horizontal más cercano; la altura queda donde la dejó.
+          const r = b.getBoundingClientRect();
+          const toLeft = (r.left + r.width / 2) < window.innerWidth / 2;
+          if (toLeft) { b.style.left = '16px'; b.style.right = 'auto'; }
+          else { b.style.left = 'auto'; b.style.right = '16px'; }
+          VIP.ui._bubbleSide = toLeft ? 'left' : 'right';
+          // El click que dispara el navegador justo después del arrastre NO
+          // debe abrir el chat: se marca y se limpia solo a los 400ms (por si
+          // el click nunca llega, no queda un toque "muerto").
+          VIP.ui._bubbleWasDragged = true;
+          setTimeout(function() { VIP.ui._bubbleWasDragged = false; }, 400);
+        }
+        startRect = null; dragging = false;
+      };
+      b.addEventListener('pointerup', end);
+      b.addEventListener('pointercancel', end);
+    })();
   }
 
   // Reset al abrir (por si venía de un intento anterior que falló).
@@ -1304,8 +1354,13 @@ VIP.ui._showCasinoFrame = function() {
 
 /** Abre/cierra el chat de cargas SOBRE el casino (el juego no se corta). */
 VIP.ui.toggleCasinoChat = function() {
+  // Si lo que hubo fue un ARRASTRE de la burbuja, el click posterior no abre.
+  if (VIP.ui._bubbleWasDragged) return;
   const drawer = document.getElementById('casinoChatDrawer');
   if (!drawer) return;
+  // El panel se abre del mismo lado en que quedó la burbuja arrastrable.
+  if (VIP.ui._bubbleSide === 'left') { drawer.style.left = '16px'; drawer.style.right = 'auto'; }
+  else if (VIP.ui._bubbleSide === 'right') { drawer.style.left = 'auto'; drawer.style.right = '16px'; }
   if (drawer.style.display === 'none' || !drawer.style.display) VIP.ui._casinoChatMount();
   else VIP.ui._casinoChatUnmount();
 };

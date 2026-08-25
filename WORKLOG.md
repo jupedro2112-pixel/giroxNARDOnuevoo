@@ -8,6 +8,26 @@
 
 ## Sesión 2026-08-25
 
+### 202. Burbuja 🎧 del casino ARRASTRABLE — tapaba controles de los juegos — SW v111
+- **Reporte (captura de un cliente):** la burbuja fija abajo a la derecha
+  tapaba controles de algunos juegos (la botonera de la ruleta) y "no hay cómo
+  eliminarla" — lo que quedaba debajo era imposible de tocar.
+- **Opciones ofrecidas al owner:** arrastrable / colapsable a pestañita /
+  auto-achicar con transparencia / combinación. **Eligió: arrastrable.**
+- **Cambio (ui.js, dentro de la creación del overlay):** pointer events sobre
+  `#casinoSupportBubble` (guard `window.PointerEvent`; sin soporte → fija como
+  antes). `touch-action:none` para que el drag no scrollee. Umbral de 8px
+  distingue toque (abre el chat, como siempre) de arrastre (solo mueve). Al
+  soltar: IMÁN al borde izquierdo o derecho (el más cercano), altura donde la
+  dejó, clamped a la pantalla. `_bubbleWasDragged` evita que el click
+  posterior al arrastre abra el chat (se autolimpia a los 400ms).
+  `toggleCasinoChat` abre el panel del MISMO lado en que quedó la burbuja
+  (`_bubbleSide`). La posición dura mientras el overlay viva (se crea una vez).
+- **Validado:** `node --check` OK. **SW v111** — solo deploy de estáticos.
+  PROBAR (celu): en el casino, arrastrar la burbuja a la izquierda → se pega a
+  ese borde y el juego queda destapado; un toque la abre igual que siempre;
+  abrir el chat con la burbuja a la izquierda → el panel sale de ese lado.
+
 ### 201. 3 correcciones del owner (capturas): "${amount}" literal en el bono de la app + "Solicitar Retiro" del casino abre el FORM real (→ Pagos) + header "Carga rápida" — SW v110
 - **(1) "${amount}" literal (server.js):** el comando `/sys_install_bonus`
   guardado en la base era de la era en que el bono acreditaba monto fijo ("Te

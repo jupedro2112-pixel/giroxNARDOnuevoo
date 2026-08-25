@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v110'; // v110: "Solicitar Retiro" del casino abre el FORMULARIO real de retiro (→ sector Pagos) + header del widget "Carga rápida 1GIROX" (antes "Soporte", confundía)
+const CACHE_VERSION = 'v111'; // v111: burbuja 🎧 del casino ARRASTRABLE (tapaba controles de juegos, ej. la ruleta) — imán al borde al soltar, toque sin arrastre sigue abriendo el chat
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;
