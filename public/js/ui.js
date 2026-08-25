@@ -1117,9 +1117,25 @@ VIP.ui.casinoQuickAction = function(action, arg) {
       try { if (VIP.ui.syncBalance) VIP.ui.syncBalance(); } catch (e) {}
       VIP.ui._casinoSendQuick('👛 ¿Me confirmás mi saldo?');
       break;
-    case 'retirar':
+    case 'retirar': {
+      // FORMULARIO REAL de retiro (pedido owner 2026-08-25): antes solo mandaba
+      // "quiero retirar" al chat de CARGAS — el pedido nunca llegaba al sector
+      // PAGOS y alentecía todo. Ahora abre el MISMO modal autogestionado del
+      // chat normal (datos bancarios + SMS → /api/withdrawal/request → bandeja
+      // de Pagos), igual que el botón "💸 RETIRAR MI PREMIO" de la página.
+      try {
+        if (VIP.withdraw && VIP.withdraw.openWithdrawModal) {
+          // El overlay del casino vive en z-index 99999 y los modales en 10000:
+          // se eleva el modal para que se vea ENCIMA del casino.
+          const m = document.getElementById('withdrawModal');
+          if (m) m.style.zIndex = '100001';
+          VIP.withdraw.openWithdrawModal();
+          break;
+        }
+      } catch (e) { /* si el módulo no está, cae al mensaje de siempre */ }
       VIP.ui._casinoSendQuick('💸 Quiero retirar mi premio');
       break;
+    }
     case 'escribir': {
       const e2 = document.getElementById('messageInput');
       if (e2) e2.focus();
@@ -1177,7 +1193,9 @@ VIP.ui._showCasinoFrame = function() {
           '<div style="width:34px;height:34px;border-radius:50%;background:#0d0d1a;flex:0 0 auto;' +
           'display:flex;align-items:center;justify-content:center;font-size:16px;">🎧</div>' +
           '<div style="flex:1;min-width:0;">' +
-            '<div style="color:#fff;font-weight:800;font-size:14px;">Soporte 1GIROX</div>' +
+            // "Carga rápida", NO "Soporte" (owner 2026-08-25): con "Soporte 1GIROX"
+            // los clientes lo confundían con el soporte propio de la página del casino.
+            '<div style="color:#fff;font-weight:800;font-size:14px;">Carga rápida 1GIROX</div>' +
             '<div style="color:#c9f5d8;font-size:11px;display:flex;align-items:center;gap:5px;">' +
               '<span style="width:7px;height:7px;border-radius:50%;background:#7dffa8;box-shadow:0 0 6px #7dffa8;"></span>EN LÍNEA</div>' +
           '</div>' +

@@ -4,7 +4,33 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-08-19**
+> **Última actualización: 2026-08-25**
+
+## Sesión 2026-08-25
+
+### 201. 3 correcciones del owner (capturas): "${amount}" literal en el bono de la app + "Solicitar Retiro" del casino abre el FORM real (→ Pagos) + header "Carga rápida" — SW v110
+- **(1) "${amount}" literal (server.js):** el comando `/sys_install_bonus`
+  guardado en la base era de la era en que el bono acreditaba monto fijo ("Te
+  acreditamos tu BONO DE ${amount}"), pero el flujo actual (100% en la PRÓXIMA
+  carga) solo pasa {username} → el cliente veía "${amount}" tal cual. Fix:
+  seed actualizado al texto vigente + migración one-shot al boot (si la
+  response guardada todavía usa {amount}, se pisa con el texto nuevo; un texto
+  editado a mano sin {amount} no se toca — mismo patrón que /sys_reminder).
+- **(2) "💸 Solicitar Retiro" del casino (ui.js):** solo mandaba "quiero
+  retirar" al chat de CARGAS — nunca llegaba al sector PAGOS y no cargaba los
+  datos bancarios. Ahora abre el MISMO modal autogestionado del chat normal
+  (`VIP.withdraw.openWithdrawModal`: datos bancarios + SMS →
+  `/api/withdrawal/request` → bandeja de Pagos), con el modal elevado a
+  z-index 100001 (el overlay del casino está en 99999 y los modales en 10000).
+  Fallback: si el módulo no está, manda el mensaje de siempre.
+- **(3) Header del widget (ui.js):** "Soporte 1GIROX" → **"Carga rápida
+  1GIROX"** — los clientes lo confundían con el soporte propio del casino.
+- **Validado:** `node --check` OK (server.js, ui.js, SW). **SW v110** + back
+  necesita redeploy (por la migración y el seed). PROBAR: (1) reclamar el bono
+  de la app → mensaje sin "${amount}" (y el boot loguea la migración la 1ª
+  vez); (2) en el casino → "Solicitar Retiro" → se abre el formulario ENCIMA
+  del juego, se completa y aparece en la bandeja de PAGOS del panel; (3) el
+  widget dice "Carga rápida 1GIROX".
 
 ## Sesión 2026-08-19
 

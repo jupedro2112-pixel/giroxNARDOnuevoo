@@ -9786,9 +9786,9 @@ async function initializeData() {
     },
     {
       name: '/sys_install_bonus',
-      description: 'Mensaje de felicitación cuando el usuario reclama el bono por instalar la app. Variables: {username}, ${amount}',
+      description: 'Mensaje cuando el usuario reclama el bono por instalar la app (100% en su PRÓXIMA carga — no se acredita monto, lo aplica el agente). Variables: {username}',
       type: 'message',
-      response: '🎁 ¡Felicitaciones {username}! Te acreditamos tu BONO DE ${amount} por instalar la app. ¡Gracias por sumarte! 🥳'
+      response: '🎁 ¡Listo {username}! Tenés un *100% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del 100% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.'
     },
     {
       name: '/sys_payout_paid',
@@ -9870,6 +9870,22 @@ async function initializeData() {
     if (stale.length) console.warn(`⚠️ Comandos que todavía mencionan "vipcargas" (editar desde COMANDOS): ${stale.map(c => c.name).join(', ')}`);
   } catch (e) {
     console.warn(`⚠️ Migración /sys_reminder: ${e.message}`);
+  }
+
+  // MIGRACIÓN (2026-08-25, captura del owner): el /sys_install_bonus sembrado en
+  // la era en que el bono acreditaba un monto fijo decía "Te acreditamos tu BONO
+  // DE ${amount}" — pero el flujo actual (100% en la PRÓXIMA carga) no pasa
+  // {amount} → el cliente veía "${amount}" LITERAL en el chat. Si el texto
+  // guardado todavía usa {amount}, se pisa con el texto vigente. Idempotente:
+  // deja de matchear tras pisarlo; un texto editado a mano sin {amount} no se toca.
+  try {
+    const r = await Command.updateOne(
+      { name: '/sys_install_bonus', response: /\{amount\}/ },
+      { $set: { response: '🎁 ¡Listo {username}! Tenés un *100% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del 100% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.' } }
+    );
+    if (r.modifiedCount) console.log('✅ /sys_install_bonus con "${amount}" viejo → texto vigente (100% próxima carga)');
+  } catch (e) {
+    console.warn(`⚠️ Migración /sys_install_bonus: ${e.message}`);
   }
 
   console.log('✅ Datos inicializados correctamente');

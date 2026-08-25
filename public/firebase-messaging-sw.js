@@ -34,7 +34,7 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v109'; // v109: CAUSA RAÍZ del botón CASINO que "carga y falla": frame.src='' navegaba el iframe a la propia PWA (bloqueada por XFO) y su load espurio escondía el "Entrando…" → about:blank + guard por src real
+const CACHE_VERSION = 'v110'; // v110: "Solicitar Retiro" del casino abre el FORMULARIO real de retiro (→ sector Pagos) + header del widget "Carga rápida 1GIROX" (antes "Soporte", confundía)
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;
