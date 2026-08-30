@@ -745,7 +745,7 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
 | Motor | Frecuencia | Estado | Idempotencia |
 |---|---|---|---|
 | `_runNotifRulesEvaluator` (reglas push) | 5 min | activo (reglas refund/tier inertes: PlayerStats no portado) | lastFiredAt + ventana |
-| `_runEncuestaTick` | 5 min | pushes sí, **bonos apagados** (`bDays=[]`) | EncuestaFire.slotKey único |
+| `_runEncuestaTick` | 5 min | pushes sí, **bonos apagados** (`bDays=[]`); sin mensajes de ruleta (2026-08-30) | EncuestaFire.slotKey único |
 | `_runInactividadTick` | 6 h | **APAGADO** (`INACTIVIDAD_DISABLED=true`) | InactividadFire.fireKey único |
 | `_runBonusStrategy` | 10 min | **APAGADO** (`BONUS_STRATEGY_DISABLED=true`) | step en StrategyEnrollment |
 | `_runDueSchedules` (ScheduledNotif) | 60 s | activo | lastRunAt |
@@ -824,6 +824,12 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   `PUBLISHER_ADMIN_ALLOWED_PATHS`.
 - **`adminMiddleware` deja pasar 4 roles** — todo endpoint sensible re-chequea
   `role==='admin'` explícito (patrón #80; los CRÍTICOS ya están cerrados).
+- **NADA de RULETA por push** (owner 2026-08-30): la ruleta diaria no está activa.
+  `notificationService.isRouletteText()` bloquea en las 5 funciones de envío FCM
+  cualquier push cuyo título/cuerpo mencione ruleta/roulette/giro gratis/girá (o
+  `data.source` roulette) — venga de un motor, de una regla/plantilla/lote editado
+  en el panel o de un envío manual. Al boot, reglas y plantillas guardadas con
+  ese texto se corrigen/desactivan. Si se reactiva la ruleta, quitar ese guard.
 - **Tope 30% en bonos automáticos** (owner 2026-07-08): cap de lectura en
   `_getActivePromoBonus`, validaciones ≤30 en configs, plantillas bono_50/100
   eliminadas + guard en `_runStrategyLaunch`. Los botones manuales +50/+100 del modal

@@ -644,7 +644,8 @@ async function seedDefaultRulesIfMissing(NotificationRule) {
       audienceType: 'notification-plan',
       audienceConfig: { plan: 'activo' },
       title: '🎰 Tu suerte te espera',
-      body: 'Entrá y aprovechá los bonos de hoy. ¡Girá la ruleta y jugá!',
+      // (2026-08-30) sin mención a la ruleta: la ruleta diaria no está activa.
+      body: 'Entrá y aprovechá los bonos de hoy. ¡Jugá y divertite!',
       bonus: { type: 'none' },
       requiresAdminApproval: false,
       cooldownMinutes: 20 * 60
@@ -712,6 +713,30 @@ async function seedDefaultRulesIfMissing(NotificationRule) {
     }
   } catch (e) {
     console.warn(`[notif-rules] no se pudieron borrar las reglas del reembolso diario: ${e.message}`);
+  }
+
+  // MIGRACIÓN (idempotente, owner 2026-08-30): la ruleta diaria NO está
+  // activa y los clientes recibían pushes que la mencionaban. Cualquier regla
+  // GUARDADA cuyo título/cuerpo hable de la ruleta se corrige: la seed
+  // PLAN-ACTIVO-DIARIO recibe el copy nuevo; el resto se DESACTIVA y se
+  // loguea para que el owner la edite desde el panel. (Además
+  // notificationService bloquea toda push con ese texto — doble cinturón.)
+  try {
+    const RUL_RE = /ruleta|roulette|giro\s+(gratis|del\s+d[ií]a)|\bgir[aá]\b/i;
+    const hits = await NotificationRule.find({ $or: [{ title: RUL_RE }, { body: RUL_RE }] })
+      .select('code name title body enabled').lean();
+    for (const r of hits) {
+      const seed = defaults.find(d => d.code === r.code);
+      if (seed && !RUL_RE.test(seed.title + ' ' + seed.body)) {
+        await NotificationRule.updateOne({ _id: r._id }, { $set: { title: seed.title, body: seed.body } });
+        console.log(`[notif-rules] migración ruleta: regla ${r.code} → copy actualizado sin ruleta`);
+      } else {
+        await NotificationRule.updateOne({ _id: r._id }, { $set: { enabled: false } });
+        console.warn(`[notif-rules] migración ruleta: regla ${r.code} ("${r.name}") DESACTIVADA — su texto menciona la ruleta; editala desde el panel`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[notif-rules] migración ruleta falló: ${e.message}`);
   }
 
   for (const def of defaults) {

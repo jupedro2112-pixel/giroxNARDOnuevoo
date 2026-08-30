@@ -16343,23 +16343,11 @@ app.post('/api/admin/roulette/reset-daily', authMiddleware, adminMiddleware, asy
     const deleted = (r && r.deletedCount) || 0;
     logger.warn(`[roulette] RESET diario por ${(req.user && req.user.username) || '?'} — dateKey=${dateKey} giros borrados=${deleted}`);
 
-    // Aviso opcional por push a todos: "ruleta actualizada, volvé a girar".
-    let notified = null;
-    if (req.body && req.body.notify) {
-      try {
-        const bc = await sendNotificationToAllUsers(
-          User,
-          '🎰 Ruleta diaria actualizada',
-          'Podés volver a probar tu suerte. ¡Girá de nuevo!',
-          { source: 'roulette' },
-          {}
-        );
-        notified = (bc && bc.successCount) || 0;
-        logger.info(`[roulette] RESET notif enviada → success=${notified}`);
-      } catch (notifErr) {
-        logger.warn(`[roulette] RESET notif falló: ${notifErr.message}`);
-      }
-    }
+    // 🪦 (owner 2026-08-30) La push opcional "🎰 Ruleta diaria actualizada ·
+    // ¡Girá de nuevo!" se ELIMINÓ: la ruleta diaria no está activa y no debe
+    // salir NINGUNA notificación relacionada (notificationService además la
+    // bloquearía). `notified` queda en null por compat con paneles cacheados.
+    const notified = null;
 
     res.json({ success: true, deleted, dateKey, notified });
   } catch (err) {
@@ -16866,6 +16854,21 @@ setTimeout(async () => {
   try {
     await notificationRulesService.seedDefaultRulesIfMissing(NotificationRule);
     logger.info('[notif-rules] seed inicial completado');
+    // MIGRACIÓN (idempotente, owner 2026-08-30): plantillas de push editadas
+    // desde el panel que mencionen la RULETA (no está activa) → se vacían
+    // (vacío = vuelve al texto default, sin ruleta). Doble cinturón con el
+    // guard de notificationService que bloquea toda push con ese texto.
+    try {
+      const NotifTemplateModel = require('./src/models/NotifTemplate');
+      const RUL_RE = /ruleta|roulette|giro\s+(gratis|del\s+d[ií]a)|\bgir[aá]\b/i;
+      const r = await NotifTemplateModel.updateMany(
+        { $or: [{ title: RUL_RE }, { body: RUL_RE }] },
+        { $set: { title: '', body: '' } }
+      );
+      if (r && r.modifiedCount) logger.warn(`[notif-templates] migración ruleta: ${r.modifiedCount} plantilla(s) con texto de ruleta reseteadas al default`);
+    } catch (e) {
+      logger.warn('[notif-templates] migración ruleta falló: ' + e.message);
+    }
   } catch (err) {
     logger.error('[notif-rules] seed error: ' + err.message);
   }

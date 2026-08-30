@@ -4,7 +4,54 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-08-25**
+> **Última actualización: 2026-08-30**
+
+## Sesión 2026-08-30
+
+### 204. CHAU pushes de RULETA DIARIA (no está activa): candado global en FCM + limpieza de motores, seeds y plantillas — admin-sw v45
+- **Reporte del owner (captura, 29/8 23:20):** a los clientes les llegaba la
+  push "🔥 La ruleta diaria te espera · Tenés tu giro gratis del día sin usar"
+  (dos veces, una por token de dispositivo) y venían a quejarse porque NO hay
+  ruleta diaria activa. Pidió que NADA relacionado a la ruleta pueda salir por
+  push, venga de donde venga.
+- **Origen:** mensaje #2 de la biblioteca `INCENTIVO_MSGS` del **motor de
+  encuesta** (`encuestaService.js`, push a todos los usuarios de un plan).
+  Otros caminos que también mencionaban la ruleta: la seed
+  `PLAN-ACTIVO-DIARIO` ("¡Girá la ruleta y jugá!") de notificationRules, y la
+  push opcional "🎰 Ruleta diaria actualizada · ¡Girá de nuevo!" del botón
+  "Reiniciar ruleta" del panel.
+- **Fix en 4 capas:**
+  1. **Candado GLOBAL (`notificationService.js`):** `isRouletteText(title,
+     body, data)` (regex `ruleta|roulette|giro gratis|giro del día|girá` +
+     `data.source/kind` roulette) se chequea al inicio de las 5 funciones de
+     envío FCM (`sendNotificationToUser/Multiple/Topic/AllUsers/Usernames`).
+     Si matchea → NO se envía, `console.warn` `[FCM] 🚫 push BLOQUEADA` y
+     devuelve `{success:false, blocked:'roulette'}`. Cubre motores
+     automáticos, reglas/plantillas/lotes editados desde el panel y envíos
+     manuales. Probado en frío: bloquea los 3 textos reales; deja pasar
+     "giro bancario", reembolsos, saldo acreditado.
+  2. **Encuesta:** el mensaje de ruleta ELIMINADO de `INCENTIVO_MSGS` (lápida).
+  3. **Reglas y plantillas guardadas en la BASE** (migraciones idempotentes al
+     boot): en `seedDefaultRulesIfMissing`, toda `NotificationRule` cuyo
+     título/cuerpo mencione la ruleta → si es una seed con copy nuevo limpio
+     (PLAN-ACTIVO-DIARIO, ahora "¡Jugá y divertite!") se le pisa el texto; si
+     no, se DESACTIVA y se loguea para editarla desde el panel. Y en server.js
+     tras el seed, las `NotifTemplate` con texto de ruleta se vacían (vacío =
+     vuelve al default sin ruleta).
+  4. **Panel "Reiniciar ruleta":** checkbox "📲 Avisar a todos por
+     notificación" ELIMINADO (index.html) y el back ya no manda esa push
+     (`notified` queda null por compat). admin-sw **v45**.
+- **Validado:** `node --check` OK (server.js, notificationService,
+  encuestaService, notificationRulesService, admin.js, admin-sw). **Back
+  necesita redeploy** (activa el guard y corre las migraciones; el boot
+  loguea qué reglas/plantillas tocó). PROBAR: buscar en logs
+  `[notif-rules] migración ruleta` / `[FCM] 🚫 push BLOQUEADA`; en el panel →
+  Ruleta → el bloque "Reiniciar" ya no tiene el checkbox.
+- **⚠️ Para el owner:** revisar en el panel la sección **Encuesta** — si está
+  ACTIVA sigue mandando los otros incentivos ("Te estamos esperando", "Revisá
+  tus reembolsos", etc.) según el plan de cada usuario. Si tampoco se quiere
+  eso, apagarla desde ahí (isActive). Y la sección Ruleta del panel + la card
+  de la PWA siguen existiendo (fuera del alcance de este pedido).
 
 ## Sesión 2026-08-25
 

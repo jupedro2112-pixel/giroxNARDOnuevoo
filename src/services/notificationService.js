@@ -89,6 +89,30 @@ function _sanitizeAndCapPayload(title, body, data) {
 }
 
 // ============================================
+// CANDADO GLOBAL — NADA de RULETA por push (owner 2026-08-30).
+// La ruleta diaria NO está activa y los clientes se quejaban de recibir
+// "🔥 La ruleta diaria te espera" (salía del motor de encuesta). Este
+// filtro vive en el punto más bajo del envío FCM, así que bloquea la push
+// venga de donde venga: motores automáticos, reglas/plantillas/lotes
+// editados desde el panel, envíos manuales, etc. Si algún día se reactiva
+// la ruleta, quitar el guard (o la regex) acá y listo.
+// ============================================
+const ROULETTE_TEXT_RE = /ruleta|roulette|giro\s+(gratis|del\s+d[ií]a)|\bgir[aá]\b/i;
+function isRouletteText(title, body, data) {
+  const t = String(title || '') + ' ' + String(body || '');
+  if (ROULETTE_TEXT_RE.test(t)) return true;
+  if (data && typeof data === 'object') {
+    const src = String(data.source || data.kind || data.type || '');
+    if (/roulette|ruleta/i.test(src)) return true;
+  }
+  return false;
+}
+function _blockedRoulette(where, title) {
+  console.warn(`[FCM] 🚫 push BLOQUEADA (${where}): texto de RULETA — "${String(title || '').slice(0, 60)}". La ruleta diaria no está activa; no se manda nada relacionado.`);
+  return { success: false, blocked: 'roulette', successCount: 0, failureCount: 0, error: 'Push bloqueada: la ruleta diaria no está activa (texto relacionado a la ruleta).' };
+}
+
+// ============================================
 // HELPER: DETECTAR TOKEN INVÁLIDO/NO REGISTRADO
 // Cubre todos los códigos de error que FCM devuelve para
 // tokens que ya no son válidos y deben borrarse de la BD.
@@ -363,6 +387,7 @@ function initializeFirebase() {
 // ENVIAR NOTIFICACIÓN A UN USUARIO
 // ============================================
 async function sendNotificationToUser(fcmToken, title, body, data = {}) {
+  if (isRouletteText(title, body, data)) return _blockedRoulette('user', title);
   if (!isInitialized) {
     const initialized = initializeFirebase();
     if (!initialized) {
@@ -482,6 +507,7 @@ async function sendNotificationToUser(fcmToken, title, body, data = {}) {
 // ENVIAR NOTIFICACIÓN A MÚLTIPLES USUARIOS
 // ============================================
 async function sendNotificationToMultiple(fcmTokens, title, body, data = {}) {
+  if (isRouletteText(title, body, data)) return _blockedRoulette('multiple', title);
   if (!isInitialized) {
     const initialized = initializeFirebase();
     if (!initialized) {
@@ -585,6 +611,7 @@ async function sendNotificationToMultiple(fcmTokens, title, body, data = {}) {
 // ENVIAR NOTIFICACIÓN A TÓPICO
 // ============================================
 async function sendNotificationToTopic(topic, title, body, data = {}) {
+  if (isRouletteText(title, body, data)) return _blockedRoulette('topic', title);
   if (!isInitialized) {
     const initialized = initializeFirebase();
     if (!initialized) {
@@ -677,6 +704,7 @@ async function unsubscribeFromTopic(fcmToken, topic) {
 // ENVIAR NOTIFICACIÓN MASIVA A TODOS LOS USUARIOS
 // ============================================
 async function sendNotificationToAllUsers(UserModel, title, body, data = {}, filter = {}) {
+  if (isRouletteText(title, body, data)) return _blockedRoulette('all', title);
   if (!isInitialized) {
     const initialized = initializeFirebase();
     if (!initialized) {
@@ -869,6 +897,7 @@ async function sendNotificationToAllUsers(UserModel, title, body, data = {}, fil
 // ENVIAR NOTIFICACIÓN A USUARIOS ESPECÍFICOS POR USERNAME
 // ============================================
 async function sendNotificationToUsernames(UserModel, usernames, title, body, data = {}) {
+  if (isRouletteText(title, body, data)) return _blockedRoulette('usernames', title);
   if (!isInitialized) {
     const initialized = initializeFirebase();
     if (!initialized) {
@@ -1060,6 +1089,8 @@ async function pruneInvalidFcmTokens(UserModel) {
 initializeFirebase();
 
 module.exports = {
+  isRouletteText,
+  ROULETTE_TEXT_RE,
   sendNotificationToUser,
   sendNotificationToMultiple,
   sendNotificationToAllUsers,

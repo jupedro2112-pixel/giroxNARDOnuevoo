@@ -117,6 +117,9 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   y `BONUS_STRATEGY_DISABLED` (server.js) + `CHARGE_BONUSES_DISABLED`
   (notificationRulesService) + bonos de encuesta con `bDays=[]`. Tope 30% en TODO lo
   automático (cap de lectura en `_getActivePromoBonus` incluido).
+- **Ruleta diaria NO activa → ninguna push la menciona** (owner 2026-08-30): guard
+  `isRouletteText` en `notificationService.js` bloquea toda push con texto de ruleta.
+  No agregar mensajes automáticos que la nombren; si se reactiva, quitar el guard.
 - **Multi-instancia (AWS EB):** los crons son `setInterval` en CADA instancia; su
   idempotencia depende de índices únicos (EncuestaFire.slotKey, InactividadFire.fireKey,
   HgcashCharge.chargeKey, DailyRouletteSpin userId+dateKey). No quitar esos índices.
