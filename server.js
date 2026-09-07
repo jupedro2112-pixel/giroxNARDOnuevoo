@@ -5846,7 +5846,12 @@ app.get('/api/admin/girox/health', authMiddleware, adminMiddleware, async (req, 
         bonoSueltoHabilitado: !!(c.bonus && c.bonus.standalone_enabled),
         bonoDebeReclamarse: !!(c.bonus && c.bonus.claim_required),
         multiplicadoresRollover: (c.rollover && c.rollover.multipliers) || null,
-        limitesBonoFijo: c.bonus ? { min: c.bonus.fixed_min, max: c.bonus.fixed_max } : null
+        limitesBonoFijo: c.bonus ? { min: c.bonus.fixed_min, max: c.bonus.fixed_max } : null,
+        // Cómo se acreditan reembolsos/ruleta/rakeback/VIP/referidos (2026-09-07):
+        // bono 0 = figuran como BONO en el panel de 1girox; requiere bono suelto
+        // habilitado + 0 en multiplicadores; montos fuera de min/max caen a depósito.
+        regalosComoBono: girox.getGiftModeSummary(),
+        multiplicadoresBono: (c.bonus && c.bonus.multipliers) || null
       };
     } else {
       out.pruebas.configuracion = 'FALLÓ: ' + cfg.error;
@@ -11066,6 +11071,60 @@ async function getFireRolloverMultiplier() {
   return FIRE_ROLLOVER_DEFAULT;
 }
 
+// Premio del fueguito como BONO (2026-09-07, pedido del owner: "todo lo que no
+// sea depósito común se carga como BONUS"). Devuelve la misma forma que
+// creditUserBalance/depositToUser + `creditedAs` ('bonus'|'deposit') y
+// `claimRequired` (true cuando salió como bono con rollover y hay que liberarlo
+// desde el casino al completar el objetivo).
+//   mult = 0  → creditUserBalance sin multiplier = bono 0 "regalo directo".
+//   mult > 0  → /bonus con ese multiplier SI: bono suelto habilitado, mult ∈
+//               bonus.multipliers, monto dentro de fixed_min/max y el jugador
+//               NO tiene bono activo (bonus_locked + claimable = 0 — otorgar otro
+//               lo PISA y le debita el resto, regla "bono sobre bono").
+//               Si algo no se cumple → depósito CON multiplier (candado igual,
+//               figura como Carga), que es lo que hacía hasta hoy. Un error
+//               transitorio del /bonus se devuelve tal cual (el caller restaura
+//               el premio y el cliente reintenta con la MISMA reference).
+async function _creditFireReward(username, amount, desc, ref, mult) {
+  if (!(mult > 0)) {
+    return girox.creditUserBalance(username, amount, ref, { description: desc });
+  }
+  let why = null;
+  try {
+    const cfg = await girox.getPlatformConfig();
+    const b = cfg.success && cfg.config && cfg.config.bonus;
+    if (!b || b.enabled === false || b.standalone_enabled === false) why = 'bono suelto deshabilitado en la plataforma';
+    else if (Array.isArray(b.multipliers) && b.multipliers.length && !b.multipliers.map(Number).includes(mult)) {
+      why = `x${mult} no está entre los multiplicadores de bono (${b.multipliers.join(', ')})`;
+    } else {
+      const min = Number(b.fixed_min) || 0;
+      const max = Number(b.fixed_max) || 0;
+      if ((min > 0 && amount < min) || (max > 0 && amount > max)) why = `monto $${amount} fuera de los límites del bono fijo (${min}-${max || '∞'})`;
+    }
+  } catch (e) { why = `config no disponible (${e.message})`; }
+  if (!why) {
+    // fresh:true — decisión de plata: no leer el cache corto.
+    const info = await girox.getUserInfoByName(username, { fresh: true });
+    if (!info) why = 'no se pudo leer el estado del jugador';
+    else if ((Number(info.bonusLocked) || 0) + (Number(info.claimableTotal) || 0) > 0) {
+      why = `el jugador ya tiene un bono activo (bloqueado $${info.bonusLocked || 0}, a reclamar $${info.claimableTotal || 0}) — otorgar otro lo pisaría`;
+    }
+  }
+  if (!why) {
+    const r = await girox.creditUserBalance(username, amount, ref, { multiplier: mult, description: desc });
+    if (r && r.success) { r.claimRequired = true; return r; }
+    if (r && (r.httpStatus === 422 || r.code === 'feature_disabled' || r.code === 'bonus_out_of_range' || r.code === 'player_not_found')) {
+      why = `la plataforma rechazó el bono (${r.code})`;
+    } else {
+      return r; // transitorio: no cambiar de vía (un timeout puede haber acreditado)
+    }
+  }
+  logger.warn(`[FIRE_REWARD] ${username} $${amount} va por DEPÓSITO con rollover x${mult} (figura como Carga) — ${why}`);
+  const r = await girox.depositToUser(username, amount, desc, ref, { multiplier: mult });
+  if (r && r.success) r.creditedAs = 'deposit';
+  return r;
+}
+
 app.get('/api/fire/status', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -11312,19 +11371,15 @@ app.post('/api/fire/claim-reward', authMiddleware, async (req, res) => {
     // UTC ya cambió, así que un reclamo que falla falsamente a las 20:59 y se reintenta
     // a las 21:01 tendría otra reference → se pagaría dos veces.
     const _fireRef = `vip-fire-${userId}-d${reserved.pendingCashRewardDay}-${periodRanges.getTodayRangeArgentinaEpoch().dateStr}`;
-    // Acreditación CON ROLLOVER (owner 2026-08-05): depósito con `multiplier` → la
-    // plata entra al saldo YA (jugable), pero la plataforma exige apostar
-    // (multiplier × premio) antes de poder retirarla (el retiro valida contra
-    // wagering.available). Con multiplier 0 vuelve al depósito libre de antes.
-    // ⚠️ Se usa depositToUser (deposito con multiplier), NO creditUserBalance con
-    // multiplier: esa rama va por /bonus, que desde la v1.7 queda "a reclamar" en
-    // el casino y encima pisa un bono activo previo. La reference es la MISMA de
-    // siempre (se pasa explícita y _buildReference no la toca) → idempotencia intacta.
+    // Acreditación (2026-09-07): como BONO en 1girox — ver _creditFireReward.
+    // Con rollover >0 va por /bonus con ese multiplier (bloqueado hasta apostar
+    // multiplier × premio; con claim_required el jugador lo libera tocando el
+    // regalito del casino al completar el objetivo). Con rollover 0 es regalo
+    // directo (bono 0). Si el jugador YA tiene un bono activo, el bono suelto lo
+    // PISARÍA → cae al depósito con multiplier de antes (mismo candado, figura
+    // como Carga). La reference es la MISMA en todas las ramas → idempotencia.
     const _fireMult = await getFireRolloverMultiplier();
-    const bonusResult = await girox.depositToUser(
-      username, rewardAmount, rewardDesc, _fireRef,
-      _fireMult > 0 ? { multiplier: _fireMult } : null
-    );
+    const bonusResult = await _creditFireReward(username, rewardAmount, rewardDesc, _fireRef, _fireMult);
 
     if (!bonusResult.success) {
       // La acreditación falló → DEVOLVER el premio a pendiente para que el cliente
@@ -11364,6 +11419,8 @@ app.post('/api/fire/claim-reward', authMiddleware, async (req, res) => {
         username,
         amount: rewardAmount,
         description: `Fueguito - ${rewardDesc}`,
+        transactionId: bonusResult.data?.transfer_id || bonusResult.data?.transferId || null,
+        metadata: { source: 'fire_reward', creditedAs: bonusResult.creditedAs || null, rollover: _fireMult },
         timestamp: new Date()
       });
     } catch (txErr) {
@@ -11373,7 +11430,8 @@ app.post('/api/fire/claim-reward', authMiddleware, async (req, res) => {
     logger.info(`[FIRE_REWARD] claim-reward OK userId=${userId} username=${username} amount=${rewardAmount}`);
 
     const _rolloverMsg = _fireMult > 0
-      ? ` Para poder RETIRARLOS tenés que apostar $${Math.round(rewardAmount * _fireMult).toLocaleString('es-AR')} (rollover x${_fireMult}). ¡Ya podés jugarlos!`
+      ? ` Para poder RETIRARLOS tenés que apostar $${Math.round(rewardAmount * _fireMult).toLocaleString('es-AR')} (rollover x${_fireMult}). ¡Ya podés jugarlos!` +
+        (bonusResult.claimRequired ? ' Cuando completes el objetivo, tocá el regalito 🎁 en el casino para liberarlos.' : '')
       : '';
     res.json({
       success: true,
@@ -11511,6 +11569,20 @@ app.post('/api/admin/fire-milestones', authMiddleware, adminMiddleware, async (r
         return res.status(400).json({ error: 'El rollover tiene que ser un número entre 0 y 50 (0 = sin rollover).' });
       }
       rolloverMultiplier = Math.round(rm * 10) / 10;
+      // Para que el premio figure como BONO en 1girox el rollover tiene que ser un
+      // multiplicador de BONO permitido (2026-09-07). Otro valor no rompe (caería a
+      // depósito con rollover = "Carga"), pero se rechaza para que el owner lo sepa.
+      if (rolloverMultiplier > 0) {
+        try {
+          const cfg = await girox.getPlatformConfig();
+          const allowed = cfg.success && cfg.config && cfg.config.bonus && cfg.config.bonus.multipliers;
+          if (Array.isArray(allowed) && allowed.length && !allowed.map(Number).includes(rolloverMultiplier)) {
+            return res.status(400).json({
+              error: `Para que el premio del fueguito figure como BONO en 1girox, el rollover tiene que ser uno de: ${allowed.join(', ')} (0 = sin rollover).`
+            });
+          }
+        } catch (_) { /* config no disponible: se guarda igual (rango 0-50 ya validado) */ }
+      }
       await Config.set('fireRolloverMultiplier', rolloverMultiplier, req.user.username);
     } else {
       rolloverMultiplier = await getFireRolloverMultiplier();
@@ -13320,7 +13392,8 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
       { $match: baseQuery },
       { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]);
-    let deposits = 0, withdrawals = 0, bonuses = 0, refunds = 0, fireRewards = 0, referrals = 0, totalAll = 0;
+    let deposits = 0, withdrawals = 0, bonuses = 0, refunds = 0, fireRewards = 0, referrals = 0,
+      rakebacks = 0, vipLevelups = 0, roulette = 0, totalAll = 0;
     for (const g of sumAgg) {
       totalAll += g.count;
       switch (g._id) {
@@ -13330,10 +13403,15 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
         case 'refund': refunds = g.total; break;
         case 'fire_reward': fireRewards = g.total; break;
         case 'referral_commission': referrals = g.total; break;
+        case 'rakeback': rakebacks = g.total; break;
+        case 'vip_levelup': vipLevelups = g.total; break;
+        case 'roulette': roulette = g.total; break;
       }
     }
 
-    // Saldo neto = depósitos - retiros (bonos y reembolsos no afectan)
+    // Saldo neto = depósitos - retiros (bonos y reembolsos no afectan).
+    // `gifts` = TODO lo que no es carga ni retiro (lo que en 1girox va como Bono).
+    const gifts = bonuses + refunds + fireRewards + referrals + rakebacks + vipLevelups + roulette;
     const summary = {
       deposits,
       withdrawals,
@@ -13341,6 +13419,10 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
       refunds,
       fireRewards,
       referrals,
+      rakebacks,
+      vipLevelups,
+      roulette,
+      gifts,
       netBalance: deposits - withdrawals,
       totalTransactions: totalAll
     };
@@ -16285,6 +16367,28 @@ async function _rouletteIsActiveClient(userId, username) {
   }
 }
 
+// Transaction 'roulette' por premio acreditado (idempotente por spinId: el
+// reintento desde el panel no duplica la fila). Nunca hace fallar el flujo.
+async function _recordRouletteTransaction(spinId, userId, username, prizeARS, label, txId, credit) {
+  try {
+    const exists = await Transaction.findOne({ type: 'roulette', 'metadata.spinId': spinId }).select('_id').lean();
+    if (exists) return;
+    await Transaction.create({
+      id: uuidv4(),
+      type: 'roulette',
+      userId: userId || null,
+      username,
+      amount: Number(prizeARS) || 0,
+      description: `Premio de la ruleta diaria${label ? ` — ${label}` : ''}`,
+      transactionId: txId || null,
+      metadata: { source: 'roulette', spinId, creditedAs: (credit && credit.creditedAs) || null },
+      timestamp: new Date()
+    });
+  } catch (e) {
+    logger.warn(`[ROULETTE] no se pudo registrar la Transaction del spin ${spinId} (${username}): ${e.message}`);
+  }
+}
+
 // GET /api/roulette/status — estado del giro de HOY del user actual.
 app.get('/api/roulette/status', authMiddleware, async (req, res) => {
   try {
@@ -16742,6 +16846,10 @@ app.post('/api/roulette/spin', authMiddleware, async (req, res) => {
         $inc: { creditAttempts: 1 }
       }
     ).catch(() => {});
+    // Registro en Transacciones del panel (2026-09-07): antes el premio sólo
+    // vivía en DailyRouletteSpin y era invisible en "Transacciones". Tipo propio
+    // 'roulette' (NO 'deposit': no es carga real). Fire-and-forget.
+    await _recordRouletteTransaction(spinDoc.id, userId, username, prizeARS, pick.label, txId, credit);
     logger.info(`[ROULETTE] ${username} → $${prizeARS} acreditado tx=${txId}`);
     return res.json({
       success: true,
@@ -16862,6 +16970,7 @@ app.post('/api/admin/roulette/:id/retry-credit', authMiddleware, adminMiddleware
       { id: spin.id },
       { $set: { status: 'credited', creditTxId: txId, creditedAt: new Date() }, $inc: { creditAttempts: 1 } }
     );
+    await _recordRouletteTransaction(spin.id, spin.userId, spin.username, spin.prizeARS, spin.prizeLabel || null, txId, credit);
     res.json({ success: true, transactionId: txId });
   } catch (err) {
     logger.error(`/api/admin/roulette/:id/retry-credit: ${err.message}`);
@@ -19546,7 +19655,8 @@ if (process.env.VERCEL) {
       `GIROX_MAX_RPM=${process.env.GIROX_MAX_RPM || '55 (default)'} · ` +
       `publicistas=${process.env.GIROX_PUBLISHER_MAX_RPM || '30 (default)'}/min` +
       `${girox.getPublisherKeyOverridesCount() ? ` (+${girox.getPublisherKeyOverridesCount()} overrides)` : ''} · ` +
-      `cache jugador=${process.env.GIROX_PLAYER_CACHE_MS || '8000 (default)'}ms`
+      `cache jugador=${process.env.GIROX_PLAYER_CACHE_MS || '8000 (default)'}ms · ` +
+      `regalos=${girox.getGiftModeSummary()}`
     );
     // Pixels del Meta CAPI configurados (propio + partner opcional).
     console.log(

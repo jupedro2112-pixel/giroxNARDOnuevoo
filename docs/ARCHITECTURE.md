@@ -89,7 +89,10 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `installBonusClaimed`, `notificationPlan`, `notifMonthlyCounts`,
   `loginWithoutPassword`, `withdrawalAccount`, `pendingAccessCode`.
 - **Transaction** — registro PERMANENTE (sin TTL). `type`: deposit|withdrawal|bonus|
-  refund|transfer|referral_commission|fire_reward|rakeback|vip_levelup.
+  refund|transfer|referral_commission|fire_reward|rakeback|vip_levelup|roulette
+  ('roulette' desde 2026-09-07: antes el premio de la ruleta no escribía
+  Transaction). `metadata.creditedAs` ('bonus'|'deposit') guarda cómo salió el
+  regalo de verdad en 1girox.
   `metadata.source` distingue regalos ('install_bonus','welcome_gift') y devoluciones
   ('payout_refund') que se EXCLUYEN de los reportes de carga real. **Fuente de toda la
   analítica.**
@@ -388,25 +391,39 @@ reintento manda la misma reference y la plataforma responde `duplicate:true`.
   pendiente). `getUserBalance` devuelve `balance`, `available`, `locked`, `bonusLocked`.
   Validar contra `balance` ⇒ la plataforma rechaza con `rollover_locked` y queda un
   retiro colgado en el panel. El confirm de payouts (~L12898) ya usa `available`.
-- **Bonos "a reclamar" (Partner API v1.7).** Un bono otorgado por
-  `POST /players/{username}/bonus` **ya no se libera solo** — ni con `multiplier: 0`.
-  Queda BLOQUEADO hasta que el jugador entre al casino y lo RECLAME (aparece en
-  `wagering.claimable`, es el "regalito" del header).
-  ➜ Por eso **reembolsos, ruleta, bono de instalación y comisiones de
-  referidos se acreditan con DEPÓSITO LIBRE** (`creditUserBalance` sin `multiplier`
-  cae en `depositToUser`), no con `/bonus`: si no, el usuario vería el mensaje
-  "¡reembolso acreditado!" y nada en su saldo.
-  **Excepción — FUEGUITO (2026-08-05):** sus premios van con **DEPÓSITO CON
-  `multiplier`** (`girox.depositToUser(..., {multiplier: x})`, x editable en el
-  panel — Config['fireRolloverMultiplier'], default 5): la plata entra al saldo ya
-  (jugable) pero la plataforma exige apostar multiplier × premio para retirarla.
-  Sigue SIN usar `/bonus` (eso requeriría reclamo manual y pisa bonos activos). El
-  viejo requisito de cargas (milestone.requireDeposits) ya NO se chequea al
-  reclamar — quedó reemplazado por el rollover (los campos siguen en la config,
-  ignorados).
-  Sólo se usa `/bonus` si explícitamente se pasa `opts.multiplier`. ⚠️ Y ahí ojo con
-  "bono sobre bono": otorgar un bono a quien ya tiene uno activo PISA el anterior y le
-  debita lo que le quedaba.
+- **REGALOS = BONO 0 "regalo directo" (2026-09-07, Partner API v1.10+ — manual
+  v1.15 §2.9/§2.12 en `docs/PARTNER-APIv1.15.pdf`).** `creditUserBalance` SIN
+  `opts.multiplier` (reembolsos, ruleta, rakeback, bono de nivel VIP, comisiones
+  de referidos, bono de instalación, parte "bonus" de una devolución) va por
+  `POST /players/{u}/bonus` con `multiplier: 0`: disponible/RETIRABLE al
+  instante, sin reclamo, NO pisa el bono en curso, y en el panel de 1girox
+  figura como **Bono** (antes iba por `/deposit` y todo aparecía como "Carga").
+  **Precheck** contra GET /config (bonos/standalone habilitados, 0 ∈
+  bonus.multipliers, monto dentro de fixed_min/fixed_max) + **fallback
+  automático a depósito libre con la MISMA reference** en rechazos de negocio
+  (422 / feature_disabled / bonus_out_of_range / player_not_found — la
+  plataforma no movió plata); errores transitorios se devuelven al caller
+  (reintenta con la misma reference). Cinturón `_claimOwnGiftIfLocked`: si el
+  regalo quedara "a reclamar", se reclama SOLO ese requirement_id (nunca
+  claim-all). El resultado trae `creditedAs: 'bonus'|'deposit'`. **Kill switch:**
+  `GIROX_GIFT_AS_BONUS=0` → todo vuelve a depósito libre.
+  🪦 La regla vieja "NO usar /bonus, queda a reclamar" valió solo entre la v1.7
+  y la v1.10 (2026-07-31 → 2026-08-03).
+  **FUEGUITO:** rollover 0 → regalo directo; rollover >0 → **`/bonus` con ese
+  multiplier** (`_creditFireReward`, server.js): bloqueado hasta apostar
+  multiplier × premio y, con claim_required, el jugador lo libera tocando el
+  regalito del casino al completar el objetivo. Condiciones: mult ∈
+  bonus.multipliers (el POST de fire-milestones lo valida), monto en
+  fixed_min/max y jugador SIN bono activo (leído `fresh`; otorgar otro lo
+  PISARÍA) — si algo falla, cae al DEPÓSITO CON multiplier de antes (mismo
+  candado, figura como Carga, warn `[FIRE_REWARD]`). El viejo requisito de
+  cargas (milestone.requireDeposits) sigue sin chequearse.
+  **La devolución de retiro rechazado (vip-payoutref-*) SIGUE por depósito**:
+  no es un regalo, es plata real que vuelve.
+  Con `opts.multiplier` explícito (Bonificación del panel, welcome code cash,
+  lotes): `/bonus` ESTRICTO sin fallback (un rechazo se ve como error). ⚠️ Ojo
+  con "bono sobre bono": un bono con rollover a quien ya tiene uno activo PISA
+  el anterior y le debita lo que le quedaba.
 - `depositToUser` acepta `wagering` opcional (`multiplier`, `bonus_percent`,
   `bonus_amount`, `bonus_multiplier`). Caso raro documentado: la carga se acredita pero
   el bono falla (`wagering.bonus.status === 'failed'`) → se marca `bonusFailed` y se
@@ -482,6 +499,7 @@ tenían los 4 clientes viejos.
 | `GIROX_NETWIN_SCOPE` | `casino` | `casino` \| `total` (incluiría sports) en reembolsos/comisiones |
 | `GIROX_MAX_RPM` | `55` | Techo local de requests/min **por instancia** |
 | `GIROX_REFERRAL_COMMISSION_PCT` | `8` | % de netwin que es owner-revenue (el proveedor ya no la informa) |
+| `GIROX_GIFT_AS_BONUS` | `1` | `0/false/off` = kill switch: los regalos vuelven a acreditarse por depósito libre (como antes del 2026-09-07) |
 | `VIP_USD_ARS_RATE` | `1500` | Tasa USD→ARS de los umbrales VIP (los umbrales de Stake están en USD) |
 | `VIP_WAGER_SCOPE` | `casino` | Qué apostado suma para el nivel (`casino` \| `total`) |
 | `VIP_WAGER_EPOCH` | `2026-07` | Primer mes que se acumula (cuando arrancó 1girox) |
@@ -621,8 +639,9 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   Config['refundPercents'] quedaron `enUso:false` y su card del panel fue
   reemplazada por el editor de rangos. **El RefundClaim se CREA antes de acreditar** (el índice único
   `userId+type+periodKey` es el candado atómico contra doble cobro; si el crédito
-  falla se borra la reserva). El crédito va por `creditUserBalance` = **depósito
-  libre** (no `/bonus`: quedaría a reclamar) con la reference derivada del período.
+  falla se borra la reserva). El crédito va por `creditUserBalance` = **bono 0
+  regalo directo** (figura como Bono en 1girox; fallback a depósito si el monto
+  queda fuera de los límites del bono — ver §4.5) con la reference derivada del período.
   Ver #96 y §4.4. ⚠️ En la UI los reembolsos muestran SOLO el % — los nombres
   Bronce/Plata/Oro son del nivel VIP (abajo).
 - **Niveles VIP** (2026-08-03, réplica de Stake): se sube por APOSTADO acumulado de
@@ -630,7 +649,7 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   `src/services/vipLevelService.js`). Escalera en `src/utils/vipLevels.js`: umbrales
   de Stake en USD × `VIP_USD_ARS_RATE` (1500) — Bronce $15M ARS … Diamante V $750.000M.
   Cada nivel destraba: (a) **bono one-time** al alcanzarlo (lo acredita el motor con
-  depósito libre, reference `vip-lvl-<userId>-<idx>`, aviso por chat+push vía
+  bono 0 regalo directo (§4.5), reference `vip-lvl-<userId>-<idx>`, aviso por chat+push vía
   `/sys_vip_levelup`; `duplicate:true` = otra instancia ya pagó → no re-notificar) y
   (b) **rakeback semanal**: `POST /api/vip/rakeback/claim` paga `rakebackPct` del
   APOSTADO de casino de la semana pasada (gane o pierda) — mismo patrón de reserva
@@ -648,14 +667,17 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   referidor (7%). Ver §4.6.
 - **Ruleta diaria**: requiere PWA instalada (token FCM standalone) + cliente activo
   (>10 cargas reales/30d). Pick ponderado + **budget pacing** (distribuye el
-  presupuesto diario por hora ART; si excede → fuerza SIN PREMIO). Auto-crédito con
-  depósito libre (`vip-roulette-<spinId>`); `credit_failed` → retry desde el panel con
-  la MISMA reference.
+  presupuesto diario por hora ART; si excede → fuerza SIN PREMIO). Auto-crédito como
+  bono 0 (`vip-roulette-<spinId>`, ver §4.5); `credit_failed` → retry desde el panel con
+  la MISMA reference. Cada premio acreditado escribe una **Transaction type
+  'roulette'** (idempotente por metadata.spinId — 2026-09-07; antes era invisible
+  en Transacciones).
 - **Fueguito**: reclamo diario sin requisitos; premios de hitos (editables en panel,
   Config['fireMilestones']) exigen actividad de cargas y expiran el mismo día. Crédito
-  con depósito libre (`vip-fire-<userId>-d<día>-<fecha>`).
+  como bono (rollover >0 → /bonus con multiplier; 0 → bono 0; fallback depósito —
+  ver §4.5) (`vip-fire-<userId>-d<día>-<fecha>`).
 - **Bono instalación $5.000**: exige standalone real (token FCM), teléfono verificado,
-  anti-multicuenta por token FCM compartido, reserva atómica. Crédito con depósito libre
+  anti-multicuenta por token FCM compartido, reserva atómica. Crédito como bono 0 (§4.5)
   (`vip-install-<userId>` — una sola vez en la vida del usuario).
 - **Link de acceso de un solo uso** (2026-08-03): el admin general o un DEPOSITOR
   generan `?acceso=<token>` para un cliente (`POST /api/admin/users/:userId/access-link`,
@@ -811,9 +833,12 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   saliera del id, el reintento tras un fallo falso pagaría doble).
 - **Retiros: validar contra `available`, no `balance`** — el rollover está activo en
   1girox y parte del saldo puede estar bloqueado (§4.5).
-- **No acreditar regalos con `/bonus`**: desde la v1.7 el bono queda "a reclamar" hasta
-  que el jugador lo agarre en el casino. Reembolsos, ruleta, fueguito, bono de
-  instalación y comisiones van con **depósito libre** (§4.5).
+- **Regalos = BONO 0, NO depósito** (2026-09-07): para acreditar un regalo usar
+  `creditUserBalance` (bono 0 con precheck y fallback — §4.5), NUNCA `depositToUser`
+  directo (figuraría como Carga en 1girox). El kill switch es
+  `GIROX_GIFT_AS_BONUS=0`. La devolución de retiro rechazado es la excepción
+  (plata real que vuelve → depósito). Tipo nuevo de Transaction en el panel ⇒
+  etiqueta en getTransactionTypeLabel + botón de filtro + case del resumen (§6).
 - **Rate limit 60/min es POR INSTANCIA** (`GIROX_MAX_RPM`, default 55): con N instancias
   el techo real es N×55. Si aparecen 429, BAJAR el valor (§4.3).
 - **Los reportes NO son la Partner API**: `giroxReportsService` scrapea el panel

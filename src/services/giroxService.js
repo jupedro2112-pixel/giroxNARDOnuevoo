@@ -952,33 +952,48 @@ async function withdrawFromUser(username, amount, description = '', reference = 
 }
 
 /**
- * Acredita un bono / premio / reembolso.
+ * Acredita un bono / premio / reembolso (regalo: reembolsos, ruleta, rakeback, bono
+ * de nivel VIP, comisiones de referidos, regalos de lote, código de bienvenida).
  *
- * Por defecto usa el endpoint de DEPÓSITO sin multiplier (carga libre) — es el
- * equivalente exacto del `individual_bonus` de JUGAYGANA que se usaba para reembolsos,
- * premios de ruleta, fueguito y bono de instalación. La plata queda jugable Y retirable
- * al instante, que es como funcionaba hasta ahora.
+ * DEFAULT (sin `opts.multiplier`) = REGALO DIRECTO por `POST /players/{u}/bonus` con
+ * `multiplier: 0` (Partner API v1.10+, confirmado en el manual v1.15 §2.9/§2.12):
+ *   - queda disponible/RETIRABLE al instante, SIN pasar por el reclamo (el bono 0
+ *     "nunca pasa por el claim: se acredita directo");
+ *   - NO pisa el bono en curso del jugador (a diferencia de un bono con rollover);
+ *   - en el panel de 1girox figura como BONO (ledger `type: "bonus"`), no como Carga.
+ * Antes (hasta 2026-09-07) esta rama iba por `/deposit` libre y TODOS los regalos
+ * aparecían como "Carga" en el panel del agente, indistinguibles de las cargas reales
+ * (reclamo del owner con captura: vip-rf-* y vip-roulette-* como "↑ Carga").
  *
- * ⚠️ NO USAR `/bonus` PARA ESTOS FLUJOS (Partner API v1.7, 2026-07-31): desde esa
- * versión, un bono otorgado por `POST /players/{username}/bonus` NO se libera solo — ni
- * siquiera con `multiplier: 0`. Queda BLOQUEADO hasta que el jugador entre al casino y
- * lo RECLAME (aparece en `wagering.claimable`, es el "regalito" del header). Para un
- * reembolso o un premio de ruleta eso sería un cambio de comportamiento fuerte: el
- * usuario vería el mensaje "¡reembolso acreditado!" pero no la plata en su saldo.
- * Por eso el default es depósito libre.
+ * 🪦 El comentario viejo decía "NO USAR /bonus: con multiplier 0 queda a reclamar
+ * (v1.7)". Eso fue cierto sólo entre la 1.7 y la 1.10 (2026-07-31 → 2026-08-03).
  *
- * Si algún día se quiere el bono con objetivo de apuestas (para que el regalo pida al
- * menos una vuelta de juego antes de poder retirarse), se pasa `opts.multiplier` y ahí
- * sí usa `/bonus`. ⚠️ Ojo además con "bono sobre bono": otorgarle un bono a alguien que
- * ya tiene uno activo PISA el anterior y le debita lo que le quede del viejo.
+ * FALLBACK AUTOMÁTICO A DEPÓSITO LIBRE (misma reference — en un 422 la plataforma
+ * NO mueve plata, así que reusar la reference es seguro): cuando el bono suelto no
+ * está habilitado, el 0 no está entre `bonus.multipliers`, el monto queda fuera de
+ * `fixed_min/fixed_max` (ej. un reembolso de $1 con fixed_min=2), o la plataforma
+ * responde `feature_disabled` / `bonus_out_of_range` / validación 422. La plata
+ * SIEMPRE llega; sólo cambia cómo figura en el panel. Errores transitorios (red,
+ * 429, 5xx) NO caen al depósito: se devuelven para que el caller reintente con la
+ * misma reference (un timeout puede haber acreditado del otro lado).
  *
- * @returns misma forma que depositToUser
+ * Kill switch sin deploy: `GIROX_GIFT_AS_BONUS=0` → vuelve al depósito libre de antes.
+ *
+ * Con `opts.multiplier` explícito usa `/bonus` ESTRICTO (sin fallback): con >0 el
+ * bono queda bloqueado hasta apostar amount × multiplier, con `claim_required` puede
+ * quedar "a reclamar" (los callers hacen claimPendingBonus) y ⚠️ PISA un bono activo
+ * previo; con 0 explícito es el mismo regalo directo pero un rechazo se devuelve
+ * como error (botón Bonificación del panel, welcome code, lotes).
+ *
+ * @returns misma forma que depositToUser (+ `creditedAs: 'bonus'|'deposit'`)
  */
 async function creditUserBalance(username, amount, reference = null, opts = {}) {
   const amt = _normalizeAmount(amount);
   if (amt === null) return { success: false, error: 'Monto inválido', code: 'invalid_amount' };
 
-  // Bono con rollover propio (feat opcional)
+  // Multiplier EXPLÍCITO (incluido 0): /bonus estricto, SIN fallback a depósito —
+  // lo usan el botón Bonificación del panel, el welcome code cash y los lotes, donde
+  // un bonus_out_of_range tiene que verse como error (no convertirse en carga).
   if (opts && opts.multiplier != null) {
     const body = {
       amount: amt,
@@ -987,7 +1002,6 @@ async function creditUserBalance(username, amount, reference = null, opts = {}) 
     };
     // El endpoint /bonus no documenta `description`, pero se manda igual para que el
     // historial de la plataforma no quede sin contexto (un campo extra se ignora).
-    // Sin esto, la descripción se perdía sólo en esta rama y no en la de depósito.
     if (opts.description) body.description = String(opts.description).slice(0, 500);
     const r = await _request({
       method: 'post',
@@ -997,12 +1011,121 @@ async function creditUserBalance(username, amount, reference = null, opts = {}) 
       username
     });
     if (!r.ok) return { success: false, error: r.error, code: r.code, httpStatus: r.httpStatus };
-    _invalidatePlayer(username); // el saldo/bono cambió → próxima lectura fresca
-    return _moneyResult(r.data);
+    // El estado del jugador cambió (bono nuevo): invalidar la lectura cacheada.
+    _invalidatePlayer(username);
+    const out = _moneyResult(r.data);
+    out.creditedAs = 'bonus';
+    return out;
   }
 
-  // Bono libre = depósito sin rollover (comportamiento por defecto)
-  return depositToUser(username, amt, opts.description || '', _buildReference('bonus', reference));
+  // Regalo directo = bono 0 (default). La reference es la MISMA en las dos ramas.
+  const ref = _buildReference('bonus', reference);
+  const description = (opts && opts.description) || '';
+
+  if (_giftAsBonusEnabled()) {
+    const pre = await _giftPrecheck(amt);
+    if (pre.ok) {
+      const body = { amount: amt, multiplier: 0, reference: ref };
+      if (description) body.description = String(description).slice(0, 500);
+      const r = await _request({
+        method: 'post',
+        path: `/players/${encodeURIComponent(String(username))}/bonus`,
+        body,
+        label: `gift(${username}, $${amt}, ref=${ref})`,
+        username
+      });
+      if (r.ok) {
+        _invalidatePlayer(username);
+        const out = _moneyResult(r.data);
+        out.creditedAs = 'bonus';
+        // Cinturón: si (contra lo documentado) el regalo quedara "a reclamar", se
+        // reclama SÓLO ese requirement — nunca claim-all, para respetar la decisión
+        // del owner de no auto-reclamar el regalito que el cliente ya tuviera.
+        if (!out.duplicate) await _claimOwnGiftIfLocked(username, r.data);
+        return out;
+      }
+      if (!_giftFallbackToDeposit(r)) {
+        return { success: false, error: r.error, code: r.code, httpStatus: r.httpStatus };
+      }
+      logger.warn(`[girox] gift(${username}, $${amt}) rechazado por la plataforma (${r.code}) — cae a depósito libre con la misma reference ${ref}`);
+    } else {
+      logger.info(`[girox] gift(${username}, $${amt}) va por depósito libre: ${pre.reason}`);
+    }
+  }
+
+  // Depósito libre (fallback / kill switch)
+  const out = await depositToUser(username, amt, description, ref);
+  if (out && out.success) out.creditedAs = 'deposit';
+  return out;
+}
+
+/** Kill switch: GIROX_GIFT_AS_BONUS=0|false|off → regalos por depósito libre (como antes). */
+function _giftAsBonusEnabled() {
+  const raw = String(process.env.GIROX_GIFT_AS_BONUS || '').trim().toLowerCase();
+  return !(raw === '0' || raw === 'false' || raw === 'off' || raw === 'no');
+}
+
+/**
+ * Chequeo previo contra GET /config (cacheado 10 min) para no gastar un request en un
+ * /bonus que va a rebotar. Sin config disponible → se intenta igual (el 422 cae al
+ * fallback). Devuelve { ok, reason }.
+ */
+async function _giftPrecheck(amt) {
+  let cfg = null;
+  try {
+    const r = await getPlatformConfig();
+    if (r.success) cfg = r.config || null;
+  } catch (_) { /* sin config: se intenta */ }
+  if (!cfg || !cfg.bonus) return { ok: true, reason: 'config no disponible' };
+  const b = cfg.bonus;
+  if (b.enabled === false) return { ok: false, reason: 'bonos deshabilitados en la plataforma' };
+  if (b.standalone_enabled === false) return { ok: false, reason: 'bono suelto deshabilitado en la plataforma' };
+  if (Array.isArray(b.multipliers) && b.multipliers.length && !b.multipliers.map(Number).includes(0)) {
+    return { ok: false, reason: 'la plataforma no permite multiplier 0 en bonos' };
+  }
+  const min = Number(b.fixed_min) || 0;
+  const max = Number(b.fixed_max) || 0;
+  if (min > 0 && amt < min) return { ok: false, reason: `monto $${amt} menor al mínimo de bono fijo ($${min})` };
+  if (max > 0 && amt > max) return { ok: false, reason: `monto $${amt} mayor al máximo de bono fijo ($${max})` };
+  return { ok: true, reason: 'ok' };
+}
+
+/**
+ * ¿Un fallo del /bonus 0 debe caer a depósito libre? Sólo los rechazos de NEGOCIO en
+ * los que la plataforma NO movió plata (422 de feat/rango/validación) y el jugador
+ * inexistente (404: depositToUser lo crea al vuelo). Nunca en errores transitorios.
+ */
+function _giftFallbackToDeposit(r) {
+  if (!r) return false;
+  if (r.code === 'feature_disabled' || r.code === 'bonus_out_of_range' || r.code === 'player_not_found') return true;
+  return r.httpStatus === 422;
+}
+
+/**
+ * Cinturón anti "regalo a reclamar": si la respuesta del bono 0 trae un
+ * requirement_id que además aparece en `claimable`, se reclama ESE puntual.
+ * Con la v1.10+ no debería pasar (bono 0 = directo); se deja por si la config del
+ * sitio lo cambia. Fire-and-forget: nunca hace fallar el crédito (la plata ya entró).
+ */
+async function _claimOwnGiftIfLocked(username, data) {
+  try {
+    const w = data && data.wagering;
+    const reqId = w && w.bonus && w.bonus.requirement_id;
+    if (reqId == null) return;
+    const bd = w.breakdown || {};
+    const claimable = Array.isArray(bd.claimable) ? bd.claimable : (Array.isArray(w.claimable) ? w.claimable : []);
+    if (!claimable.some((c) => c && Number(c.id) === Number(reqId))) return;
+    logger.warn(`[girox] gift(${username}) quedó "a reclamar" (req=${reqId}) — se reclama ese requirement`);
+    const c = await claimPendingBonus(username, reqId);
+    if (!c.success) logger.warn(`[girox] gift(${username}) claim del req=${reqId} falló: ${c.error}`);
+  } catch (e) {
+    logger.warn(`[girox] gift(${username}) claim excepción: ${e.message}`);
+  }
+}
+
+/** Resumen para la radiografía de boot: cómo se acreditan los regalos. */
+function getGiftModeSummary() {
+  return _giftAsBonusEnabled() ? 'bono 0 (regalo directo, fallback depósito)' : 'depósito libre (GIROX_GIFT_AS_BONUS=0)';
 }
 
 // ============================================================
@@ -1360,6 +1483,7 @@ module.exports = {
   getPlatformConfig,
   // bonos pendientes de reclamar
   claimPendingBonus,
+  getGiftModeSummary,
   // no soportado
   getUserMovements
 };

@@ -5337,6 +5337,28 @@ function renderTransactionStats(summary) {
                 <span class="stat-number" style="color:#f97316">${formatMoney(summary.fireRewards || 0)}</span>
                 <span class="stat-label">Fueguito</span>
             </div>` : ''}
+            <div class="stat-card roulette">
+                <span style="font-size:1.2rem">🎡</span>
+                <span class="stat-number">${formatMoney(summary.roulette || 0)}</span>
+                <span class="stat-label">Ruleta</span>
+            </div>
+            ${summary.rakebacks > 0 ? `
+            <div class="stat-card rakeback">
+                <span style="font-size:1.2rem">💎</span>
+                <span class="stat-number">${formatMoney(summary.rakebacks || 0)}</span>
+                <span class="stat-label">Rakeback VIP</span>
+            </div>` : ''}
+            ${summary.vipLevelups > 0 ? `
+            <div class="stat-card vip_levelup">
+                <span style="font-size:1.2rem">👑</span>
+                <span class="stat-number">${formatMoney(summary.vipLevelups || 0)}</span>
+                <span class="stat-label">Bonos de nivel VIP</span>
+            </div>` : ''}
+            <div class="stat-card gifts" title="Todo lo que NO es carga ni retiro: bonificaciones + reembolsos + fueguito + referidos + rakeback + nivel VIP + ruleta. En 1girox va como BONO.">
+                <span style="font-size:1.2rem">🎁</span>
+                <span class="stat-number">${formatMoney(summary.gifts || 0)}</span>
+                <span class="stat-label">Total regalos (no cargas)</span>
+            </div>
             <div class="stat-card net-balance ${netBalanceClass}">
                 <span class="icon icon-balance"></span>
                 <span class="stat-number">${formatMoney(netBalance)}</span>
@@ -5484,7 +5506,11 @@ function getTransactionTypeLabel(type) {
         bonus: 'Bonificación',
         fire_reward: '🔥 Fueguito',
         refund: 'Reembolso',
-        referral_commission: '🤝 Referido'
+        referral_commission: '🤝 Referido',
+        rakeback: '💎 Rakeback VIP',
+        vip_levelup: '👑 Nivel VIP',
+        roulette: '🎡 Ruleta',
+        transfer: 'Transferencia'
     };
     return labels[type] || type;
 }

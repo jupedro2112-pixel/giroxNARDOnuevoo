@@ -91,12 +91,15 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   comisiones de referidos sin comerse el límite de 60 req/min.
 - **Reembolsos por RANGO** (Bronce 3% / Plata 6% / Oro 10%), según lo perdido EN EL
   PERÍODO que se reclama — no un acumulado. Ver `src/utils/refundTiers.js`.
-- **Bonos "a reclamar":** desde la v1.7 un bono no se libera solo. Por eso reembolsos,
-  ruleta y bono de instalación se acreditan con **depósito libre**, no con `/bonus`.
-  El **fueguito** (2026-08-05) va con **depósito CON `multiplier`** (rollover x5
-  configurable en el panel): jugable al instante, retirable recién tras apostar
-  multiplier × premio — el candado lo aplica la plataforma, NO usar `/bonus` para esto.
-  Si alguna vez hiciera falta, está `girox.claimPendingBonus()`.
+- **Regalos = BONO 0 "regalo directo" (2026-09-07, v1.10+):** reembolsos, ruleta,
+  rakeback, nivel VIP, referidos e instalación se acreditan con `creditUserBalance`
+  → `/bonus` con `multiplier: 0` (figura como Bono en 1girox, retirable al instante,
+  no pisa el bono en curso), con precheck contra GET /config y fallback automático a
+  depósito libre (misma reference) si el bono rebota por negocio. Kill switch:
+  `GIROX_GIFT_AS_BONUS=0`. El **fueguito** con rollover >0 va por `/bonus` con ese
+  multiplier (si el jugador ya tiene bono activo cae a depósito con multiplier — no
+  pisarle el bono). La **devolución de retiro rechazado** sigue como depósito (no es
+  regalo). La ruleta ahora escribe Transaction type 'roulette'. Detalle: ARCHITECTURE §4.5.
 - **Roles:** `user`, `admin` (todo), `depositor` (solo cargas), `withdrawer` (solo
   retiros), `publisher_admin` (solo crea usuarios de su publicista — lockdown via
   `PUBLISHER_ADMIN_ALLOWED_PATHS`).

@@ -8,6 +8,66 @@
 
 ## Sesión 2026-09-07
 
+### 207. Auditoría "todo lo que no es depósito = BONUS": fueguito por /bonus, ruleta en Transacciones, resumen/filtros del panel (réplica de la gemela)
+- **Pedido del owner:** que TODO lo que no sea depósito común (reembolso,
+  bonificación, ruleta, rakeback, nivel VIP, referidos, fueguito) figure como
+  BONO en 1girox y se anote bien, separado, en Transacciones del panel.
+- **Fueguito (`_creditFireReward`, server.js):** rollover 0 → regalo directo
+  (bono 0); rollover >0 → **/bonus con ese multiplier** (figura como Bono;
+  con claim_required el cliente lo libera tocando el regalito al completar el
+  objetivo — el mensaje de éxito lo explica) SI se cumplen: bono suelto
+  habilitado, mult ∈ bonus.multipliers, monto en fixed_min/max y el jugador
+  SIN bono activo (bonus_locked+claimable=0, leído `fresh` — otorgar otro lo
+  pisaría). Si algo no se cumple → depósito CON multiplier como hasta hoy
+  (warn `[FIRE_REWARD] ... va por DEPÓSITO`). Error transitorio → se devuelve
+  tal cual (el premio se restaura y se reintenta con la MISMA reference). El
+  POST de fire-milestones valida el rollover contra bonus.multipliers (hoy
+  0,2,5,10,20,40) y rechaza otros valores con la lista. La Transaction del
+  fueguito ahora guarda transactionId + metadata {creditedAs, rollover}.
+- **Ruleta → Transacciones:** tipo nuevo **`roulette`** en el enum de
+  Transaction (antes el premio sólo vivía en DailyRouletteSpin, invisible en
+  el panel). `_recordRouletteTransaction` (idempotente por metadata.spinId —
+  el retry del panel no duplica) se llama en el spin y en el retry-credit.
+- **Panel Transacciones:** resumen con rakebacks/vipLevelups/roulette +
+  **`gifts`** (= todo lo que no es carga ni retiro); tarjetas 🎡 Ruleta,
+  💎 Rakeback, 👑 Nivel VIP (condicionales) y 🎁 "Total regalos (no cargas)";
+  filtros nuevos 🎡/💎/👑; etiquetas y colores de badge para
+  roulette/rakeback/vip_levelup/fire_reward/transfer. **admin-sw v46.**
+- **Validado:** `node --check` OK (server.js, Transaction.js, admin.js,
+  admin-sw). **Back necesita redeploy**; panel, recargar.
+
+### 206. Regalos como BONO en 1girox (bono 0 = regalo directo, v1.10+) con precheck, fallback y kill switch (réplica de la gemela)
+- **Problema (captura del owner):** premios de ruleta (vip-roulette-*) y
+  reembolsos (vip-rf-*) figuraban como "↑ Carga" en el panel de 1girox,
+  indistinguibles de las cargas reales. Causa: `creditUserBalance` sin
+  multiplier iba por `/deposit` (decisión de la era v1.7, cuando el bono 0
+  quedaba "a reclamar"). **Desde la v1.10 el bono 0 es regalo directo**:
+  disponible y retirable al instante, sin reclamo, no pisa el bono en curso,
+  y en el ledger es type "bonus" (manual v1.15 §2.9/§2.12 →
+  `docs/PARTNER-APIv1.15.pdf`).
+- **`creditUserBalance` reescrita (giroxService):** default = `/bonus` con
+  `multiplier: 0`. **Precheck** contra GET /config (cacheado): bonos/standalone
+  habilitados, 0 ∈ bonus.multipliers, monto dentro de fixed_min/max (un
+  reembolso de $1 con fixed_min=2 va directo a depósito, sin gastar request).
+  **Fallback automático a depósito libre con la MISMA reference** sólo en
+  rechazos de negocio donde la plataforma NO movió plata (422 /
+  feature_disabled / bonus_out_of_range / player_not_found); transitorios
+  (red/429/5xx) se devuelven al caller (reintenta con la misma reference).
+  Cinturón `_claimOwnGiftIfLocked`: si el regalo quedara "a reclamar", se
+  reclama SÓLO ese requirement_id (nunca claim-all). Devuelve
+  `creditedAs: 'bonus'|'deposit'`. **Kill switch sin deploy:**
+  `GIROX_GIFT_AS_BONUS=0` → todo vuelve a depósito como antes.
+- **Multiplier explícito (Bonificación del panel, welcome code cash, lotes):**
+  `/bonus` ESTRICTO sin fallback — un bonus_out_of_range se ve como error, no
+  como carga silenciosa. La **devolución de retiro rechazado** (vip-payoutref-*
+  por depositToUser) SE DEJA como depósito: no es regalo, es plata que vuelve
+  (la parte vip-payoutref-bonus-* pasa sola a bono 0).
+- **Visibilidad:** health (`configuracionPlataforma.regalosComoBono` +
+  `multiplicadoresBono`) y radiografía de boot (`... · regalos=bono 0 (regalo
+  directo, fallback depósito)`).
+- **Validado:** `node --check` OK (giroxService.js). **Back necesita
+  redeploy.** Rollback sin deploy: `GIROX_GIFT_AS_BONUS=0`.
+
 ### 205. Username ya tomado en 1girox por OTRA estructura → el alta FALLA (no más cuentas locales "vinculadas" inoperables)
 - **Caso real (gxdaiana323, capturas del owner):** el username existía en 1girox
   desde el 28/8 bajo `superadmin→admin→autogiroxnardo→chat2→influencers→leyla` —

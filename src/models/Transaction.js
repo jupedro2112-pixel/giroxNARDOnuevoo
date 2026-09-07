@@ -15,9 +15,13 @@ const transactionSchema = new mongoose.Schema({
   type: { 
     type: String, 
     // 'rakeback' = rakeback semanal VIP (% del apostado); 'vip_levelup' = bono
-    // one-time por alcanzar un nivel VIP. Ninguno de los dos es 'deposit' a
-    // propósito: la analítica de publicistas/clientes cuenta cargas reales.
-    enum: ['deposit', 'withdrawal', 'bonus', 'refund', 'transfer', 'referral_commission', 'fire_reward', 'rakeback', 'vip_levelup'],
+    // one-time por alcanzar un nivel VIP; 'roulette' = premio de la ruleta diaria
+    // (2026-09-07 — antes la ruleta NO escribía Transaction y era invisible en
+    // el panel). Ninguno es 'deposit' a propósito: la analítica de
+    // publicistas/clientes cuenta cargas reales. En 1girox todos estos regalos
+    // van como BONO (ver ARCHITECTURE §4.5); `metadata.creditedAs` guarda cómo
+    // salió de verdad ('bonus' | 'deposit' si hubo fallback).
+    enum: ['deposit', 'withdrawal', 'bonus', 'refund', 'transfer', 'referral_commission', 'fire_reward', 'rakeback', 'vip_levelup', 'roulette'],
     required: true,
     index: true
   },
