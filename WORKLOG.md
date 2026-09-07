@@ -4,7 +4,54 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-08-30**
+> **Última actualización: 2026-09-07**
+
+## Sesión 2026-09-07
+
+### 205. Username ya tomado en 1girox por OTRA estructura → el alta FALLA (no más cuentas locales "vinculadas" inoperables)
+- **Caso real (gxdaiana323, capturas del owner):** el username existía en 1girox
+  desde el 28/8 bajo `superadmin→admin→autogiroxnardo→chat2→influencers→leyla` —
+  una rama AJENA que nuestras keys no ven. Los usernames de 1girox son únicos
+  para TODA la plataforma, pero la visibilidad/operación es por estructura.
+  El cliente se auto-registró en la PWA: `syncUserToPlatform` interpretaba
+  "username tomado" como "es nuestro, lo vinculo" (`alreadyExists→'linked'`) y
+  creó la cuenta local igual → después NINGUNA operación andaba ("el usuario no
+  existe en ese acceso" al cargar: la key hace lookup → player_not_found → la
+  red de seguridad intenta crearlo → "ya existe" → error). El alta del
+  publicista sí había rebotado bien ("El usuario ya existe" era el chequeo
+  LOCAL — la cuenta local ya la había creado el registro del cliente).
+- **Fix en la fuente (`giroxService.syncUserToPlatform`):** el caso "el nombre
+  está tomado pero nuestra key NO puede leer al jugador" (getUserInfoByName
+  null + create devuelve taken) ahora devuelve `success:false` con código
+  **`username_taken_foreign`** en vez de `alreadyExists:true`. El caso legítimo
+  (jugador nuestro visible por la key) sigue vinculando como siempre.
+- **Flujos que ahora FALLAN SIN dejar cuenta local:**
+  1. **Registro PWA** (`/api/auth/register`): 400 "Ese nombre de usuario ya
+     está en uso. Elegí otro." (register-quick y landing heredan el rechazo;
+     la landing reintenta sola con otro sufijo).
+  2. **Alta del panel** (`POST /api/admin/users` y el viejo `POST /api/users`):
+     si el sync devuelve `username_taken_foreign` se BORRA la cuenta local
+     recién creada y responde 400 con mensaje claro (antes quedaba creada con
+     `platformWarning`).
+  3. **Alta del publicista** (`create-user`): el sync con la key dejó de ser
+     fire-and-forget — ahora es **con await** para poder abortar: si la
+     plataforma dice "ya existe" (con key de publicista o en los fallbacks a
+     master) → se borra la cuenta local y 400. Error transitorio (girox caído)
+     → NO aborta: la cuenta queda y se repara como siempre (red de seguridad
+     de la 1ª carga). Costo: el alta espera 1 llamada a girox (~1-2s), igual
+     que el alta del admin.
+  4. **SSO auto-reparación** y **sync manual del panel**: para una cuenta
+     local YA rota de este tipo, el error se persiste (`giroxSyncStatus:
+     'error'`) para que el panel lo muestre, y el sync manual devuelve el
+     mensaje claro.
+- **Operativo para el caso Daiana:** el username `gxdaiana323` es
+  irrecuperable desde nuestra sala (recrearlo no lo mueve de rama). Crearle un
+  username NUEVO y bloquear/anotar la cuenta local vieja.
+- **Validado:** `node --check` OK (server.js, giroxService.js). **Back
+  necesita redeploy.** PROBAR: intentar crear (registro PWA y alta del panel)
+  un username que exista en OTRA estructura de 1girox → rechaza con mensaje
+  claro y NO aparece en Usuarios; alta normal de un nombre libre → igual que
+  siempre.
 
 ## Sesión 2026-08-30
 

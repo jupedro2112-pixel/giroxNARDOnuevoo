@@ -728,7 +728,18 @@ async function syncUserToPlatform({ username, password }) {
     return { success: true, alreadyExists: false, platformUsername: username, player: created.player };
   }
   if (created.alreadyExists) {
-    return { success: true, alreadyExists: true, platformUsername: username, player: null };
+    // (owner 2026-09-07, caso gxdaiana323) El nombre está TOMADO en la plataforma
+    // pero NUESTRA key no puede leer al jugador (el getUserInfoByName de arriba
+    // devolvió null) → es un jugador de OTRA estructura/agente de 1girox (los
+    // usernames son únicos para TODA la plataforma, la visibilidad es por rama).
+    // "Vincularlo" crearía una cuenta local imposible de operar para siempre
+    // (cargas/retiros/SSO → player_not_found). Se RECHAZA: que elija otro nombre.
+    return {
+      success: false,
+      foreignUsername: true,
+      code: 'username_taken_foreign',
+      error: 'Ese nombre de usuario ya está en uso en la plataforma (pertenece a otra estructura). Elegí otro nombre.'
+    };
   }
   return { success: false, error: created.error, code: created.code };
 }

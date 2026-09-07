@@ -788,6 +788,12 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
 
 ## 9. Trampas / "no rompas esto"
 
+- **Usernames de 1girox: únicos GLOBALES, visibilidad POR RAMA** (caso gxdaiana323,
+  2026-09-07): un nombre puede estar tomado por un jugador de OTRA estructura que
+  nuestras keys no ven ni operan. `syncUserToPlatform` devuelve
+  `username_taken_foreign` en ese caso y TODOS los altas (registro, panel,
+  publicista) FALLAN sin dejar cuenta local — jamás crear una cuenta 'linked' a un
+  jugador que la key no puede leer.
 - **DOS `connectDB`**: el real es `config/database.js`; el de `src/models/index.js` NO
   se usa. No definir schemas en config/database.js.
 - **Secrets por SSM**: no leer `process.env.X` al require; lazy getters. Los módulos
