@@ -1,11 +1,11 @@
-# RÉPLICA sesiones 2026-08-25/30 y 09-07 (#203–#205 del original) — guía para la repo gemela
+# RÉPLICA sesiones 2026-08-30 y 09-07 (#204–#205 del original) — guía para la repo gemela
 
 > **Cómo usar esto:** copiá TODO este documento como prompt inicial en una
 > sesión del asistente parada en la OTRA repo, que ya aplicó todo hasta el
-> **#202** del original (burbuja del casino arrastrable). Cubre TRES entradas:
-> **#203** (front: la burbuja pasa a pastilla "CARGA RÁPIDA"), **#204**
-> (backend+panel: NINGUNA push puede mencionar la ruleta diaria) y **#205**
-> (backend: username tomado en 1girox por OTRA estructura → el alta falla).
+> **#203** del original (el #203 —pastilla "CARGA RÁPIDA"— lo pasó el owner a
+> mano). Cubre DOS entradas: **#204** (backend+panel: NINGUNA push puede
+> mencionar la ruleta diaria) y **#205** (backend: username tomado en 1girox
+> por OTRA estructura → el alta falla sin dejar cuenta local).
 
 ---
 
@@ -16,41 +16,14 @@
    textos, nombres de campañas).
 2. Un commit por feature, `node --check` en cada JS tocado (no hay
    node_modules local: solo syntax check).
-3. Convenciones del proyecto (CLAUDE.md local): bump del SW de la PWA para el
-   feature 1 (front) y del admin-sw para el feature 2 (panel); WORKLOG.md;
-   commit + push a main.
-4. Deploy: features 2 y 3 son de BACKEND → **redeploy del back**; el 1 es
-   solo estáticos.
+3. Convenciones del proyecto (CLAUDE.md local): bump del admin-sw (el feature
+   RULETA toca el panel); WORKLOG.md; commit + push a main.
+4. Deploy: los DOS features son de BACKEND → **redeploy del back** (el bloque
+   del panel va en el mismo deploy).
 
 ---
 
-## FEATURE 1 (#203) — La burbuja del casino pasa a PASTILLA "CARGA RÁPIDA" con logo + panel abierto al entrar + pista de arrastre
-
-**Por qué:** la burbuja 🎧 parecía el soporte del propio casino. Todo en
-`public/js/ui.js` (donde se crea el overlay del casino / la burbuja del #202):
-
-1. **Pastilla en vez de circulito:** el elemento arrastrable pasa a ser una
-   pastilla con el LOGO de la app (`/icons/icon-96x96.png`, redondo sobre
-   fondo oscuro) + el texto **"CARGA RÁPIDA"** en negrita, mismo gradiente
-   verde que tenía. El drag del #202 sigue igual (usa el rect real del
-   elemento, no hardcodear tamaños).
-2. **Avatar del header del panel:** el 🎧 del header del widget también se
-   reemplaza por el logo (misma imagen).
-3. **El panel arranca ABIERTO en cada entrada al casino:** en
-   `_showCasinoFrame`, si el panel estaba cerrado se auto-monta abierto
-   (respetando el lado donde quedó la burbuja). Se cierra con la ✕ y queda
-   cerrado hasta la PRÓXIMA entrada al casino.
-4. **Pista de arrastre (una vez por sesión):** al cerrar el panel por primera
-   vez, mostrar 4 segundos un cartelito sobre la pastilla: "✥ ¿Te tapa el
-   juego? Arrastrame a donde quieras".
-
-Bump del SW de la PWA. **PROBAR:** entrar al casino → panel "Carga rápida
-<MARCA>" abierto con el logo; cerrarlo → pastilla verde "CARGA RÁPIDA" con
-el cartelito de arrastre; arrastrarla → imán al borde igual que antes.
-
----
-
-## FEATURE 2 (#204) — NINGUNA push puede mencionar la RULETA DIARIA
+## FEATURE 1 (#204) — NINGUNA push puede mencionar la RULETA DIARIA
 
 **Por qué:** la ruleta diaria NO está activa y a los clientes les llegaba la
 push "🔥 La ruleta diaria te espera · Tenés tu giro gratis del día sin usar"
@@ -58,7 +31,7 @@ push "🔥 La ruleta diaria te espera · Tenés tu giro gratis del día sin usar
 ⚠️ Antes de implementar, confirmá con el owner de la gemela que ahí TAMPOCO
 hay ruleta activa (si la usan, este feature NO va).
 
-**2-A. Candado GLOBAL en `src/services/notificationService.js` (la clave):**
+**1-A. Candado GLOBAL en `src/services/notificationService.js` (la clave):**
 
 - Helper nuevo (cerca del tope del archivo):
   ```js
@@ -83,25 +56,25 @@ hay ruleta activa (si la usan, este feature NO va).
 - Con esto queda bloqueado TODO: motores automáticos, reglas/plantillas/lotes
   editados desde el panel, envíos manuales.
 
-**2-B. Sacar el mensaje de la biblioteca de la encuesta**
+**1-B. Sacar el mensaje de la biblioteca de la encuesta**
 (`src/services/encuestaService.js`, array `INCENTIVO_MSGS`): eliminar (con
 lápida) la entrada `{ title: '🔥 La ruleta diaria te espera', body: 'Tenés tu
 giro gratis del día sin usar. ¡Aprovechalo!' }`.
 
-**2-C. Seed + migraciones de lo GUARDADO en la base:**
+**1-C. Seed + migraciones de lo GUARDADO en la base:**
 - En `src/services/notificationRulesService.js`, la seed `PLAN-ACTIVO-DIARIO`
   decía `'Entrá y aprovechá los bonos de hoy. ¡Girá la ruleta y jugá!'` →
   cambiar a `'Entrá y aprovechá los bonos de hoy. ¡Jugá y divertite!'`.
 - En `seedDefaultRulesIfMissing` (antes del loop que crea las que faltan),
   migración idempotente: buscar `NotificationRule` cuyo title/body matchee la
-  MISMA regex de 2-A; si es una seed cuyo copy nuevo ya está limpio → pisarle
+  MISMA regex de 1-A; si es una seed cuyo copy nuevo ya está limpio → pisarle
   title/body con el de la seed; si no → `enabled:false` + warn en el log para
   que el owner la edite desde el panel.
 - En server.js, después del seed de reglas: `NotifTemplate.updateMany({$or:
   [{title: RE},{body: RE}]}, {$set:{title:'', body:''}})` — vacío = vuelve al
   texto default (que no menciona la ruleta).
 
-**2-D. Botón "Reiniciar ruleta" del panel:** eliminar el checkbox "📲 Avisar a
+**1-D. Botón "Reiniciar ruleta" del panel:** eliminar el checkbox "📲 Avisar a
 todos por notificación (🎰 Ruleta diaria actualizada…)" del bloque REINICIAR
 RULETA DIARIA (`public/adminprivado2026/index.html`), su lectura en
 `resetRouletteDaily()` (admin.js manda `{}` en el body) y la rama del back en
@@ -119,7 +92,7 @@ quiere, se apaga desde el panel (isActive).
 
 ---
 
-## FEATURE 3 (#205) — Username ya tomado en 1girox por OTRA estructura → el alta FALLA (sin cuenta local)
+## FEATURE 2 (#205) — Username ya tomado en 1girox por OTRA estructura → el alta FALLA (sin cuenta local)
 
 **El bug (caso real `gxdaiana323`):** los usernames de 1girox son únicos para
 TODA la plataforma, pero la visibilidad/operación es POR RAMA. Si alguien
@@ -130,7 +103,7 @@ Resultado: cuenta local IMPOSIBLE de operar para siempre — cargas, retiros y
 SSO dan `player_not_found` (y la red de seguridad del depósito intenta
 crearlo → "ya existe" → error "el usuario no existe en ese acceso").
 
-**3-A. Fix en la fuente (`src/services/giroxService.js`,
+**2-A. Fix en la fuente (`src/services/giroxService.js`,
 `syncUserToPlatform`):** la función primero hace `getUserInfoByName(username)`
 (si lo VE, es nuestro → vincular como siempre, NO tocar esa rama). El caso a
 cambiar es el de abajo: cuando `createPlatformUser` devuelve
@@ -145,7 +118,7 @@ return {
 };
 ```
 
-**3-B. Call sites (todos los altas fallan SIN dejar cuenta local):**
+**2-B. Call sites (todos los altas fallan SIN dejar cuenta local):**
 1. **Registro PWA** (`/api/auth/register`): en el `if (!jgResult.success &&
    !jgResult.alreadyExists)` agregar rama: código `username_taken_foreign` →
    400 `'Ese nombre de usuario ya está en uso. Elegí otro.'` (los demás
@@ -162,7 +135,7 @@ return {
    pasarlo a **await inline** (necesario para poder abortar). Lógica:
    - `createUserAsPublisher` OK → como siempre (synced + giroxOwnerCampaign).
    - `result.alreadyExists` → borrar la cuenta local + 400 (mismo mensaje del
-     punto 2). Ojo: si fuera un jugador nuestro con cuenta local, el alta ya
+     punto 2 de esta lista). Ojo: si fuera un jugador nuestro con cuenta local, el alta ya
      rebotaba antes en el chequeo local — acá solo llegan ajenos.
    - Fallbacks a master (NO_CREDS / campaña sin key): si el sync master
      devuelve `username_taken_foreign` → borrar + 400; otros fallos, igual
@@ -198,6 +171,6 @@ cliente un username NUEVO y bloquear/anotar la cuenta local vieja.
 
 ## CIERRE
 
-WORKLOG.md con una entrada por feature (qué/por qué/cómo probar), bump del SW
-de la PWA (feature 1) + admin-sw (feature 2), `node --check` de todo, commit
-por feature, push, y redeploy del BACK (features 2 y 3) + estáticos (1).
+WORKLOG.md con una entrada por feature (qué/por qué/cómo probar), bump del
+admin-sw (feature RULETA), `node --check` de todo, commit por feature, push, y
+**redeploy del BACK**.
