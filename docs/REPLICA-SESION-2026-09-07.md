@@ -50,7 +50,7 @@ hay ruleta activa (si la usan, este feature NO va).
   `sendNotificationToMultiple`, `sendNotificationToTopic`,
   `sendNotificationToAllUsers`, `sendNotificationToUsernames`): si
   `isRouletteText(title, body, data)` → NO enviar, `console.warn`
-  `[FCM] 🚫 push BLOQUEADA (<где>): texto de RULETA — "<title>"` y devolver
+  `[FCM] 🚫 push BLOQUEADA (<dónde>): texto de RULETA — "<title>"` y devolver
   `{ success:false, blocked:'roulette', successCount:0, failureCount:0, error:… }`.
 - Exportar `isRouletteText` y `ROULETTE_TEXT_RE` en el module.exports.
 - Con esto queda bloqueado TODO: motores automáticos, reglas/plantillas/lotes
