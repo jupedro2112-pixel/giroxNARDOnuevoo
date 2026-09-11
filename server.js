@@ -501,6 +501,9 @@ const refundTiers = require('./src/utils/refundTiers');
 const vipLevels = require('./src/utils/vipLevels');
 const vipLevelService = require('./src/services/vipLevelService');
 const VipWagerMonth = require('./src/models/VipWagerMonth');
+// Reembolso ACUMULATIVO de por vida (ESPEC-REEMBOLSO-1GIROX §3/§4, 2026-09-11).
+const CashbackClaim = require('./src/models/CashbackClaim');
+const cashbackFormula = require('./src/utils/cashbackFormula');
 
 // NOTA: acá vivían los requires de los 4 clientes de JUGAYGANA (jugaygana.js,
 // jugaygana-movements.js, jugayganaService.js, jugayganaPublisherSessions.js) y de
@@ -6878,11 +6881,14 @@ app.get('/api/refunds/status', authMiddleware, async (req, res) => {
     // ⚠️ `netwin` POSITIVO = el jugador perdió (lo que se reembolsa). Negativo = ganó
     // en el período → no hay nada que devolver, se corta en 0.
     // Se usa SÓLO el netwin de CASINO (decisión del owner; sports queda afuera).
-    const _loss = (r) => (r.success ? Math.max(0, Number(r.casinoNetwin) || 0) : 0);
+    // ESPEC-REEMBOLSO §5: la base del período es la pérdida sobre plata REAL =
+    // netwin − bonus.granted del mismo rango (bono otorgado por la plataforma:
+    // cargas con %, /bonus, campañas, bonos dados a mano en el panel de 1girox).
+    const _loss = (r) => (r.success ? Math.max(0, (Number(r.casinoNetwin) || 0) - (Number(r.bonusGranted) || 0)) : 0);
     const weeklyNetLoss = _loss(wN);
     const monthlyNetLoss = _loss(mN);
 
-    logger.info(`[REFUND] status — ${username} NETWIN(casino) weekly:${wN.casinoNetwin}→${weeklyNetLoss} monthly:${mN.casinoNetwin}→${monthlyNetLoss}`);
+    logger.info(`[REFUND] status — ${username} NETWIN(casino) weekly:${wN.casinoNetwin}−bono ${wN.bonusGranted || 0}→${weeklyNetLoss} monthly:${mN.casinoNetwin}−bono ${mN.bonusGranted || 0}→${monthlyNetLoss}`);
 
     // RANGOS: el porcentaje sale de cuánto perdió EN ESE PERÍODO, no de una config
     // fija ni de un acumulado histórico. Ver src/utils/refundTiers.js. Cada período
@@ -6891,6 +6897,14 @@ app.get('/api/refunds/status', authMiddleware, async (req, res) => {
     const [tiersByPeriod, refundMins] = await Promise.all([getRefundTiersByPeriod(), getRefundMinimums()]);
     const weeklyCalc = refundTiers.calcRefund(weeklyNetLoss, tiersByPeriod.weekly);
     const monthlyCalc = refundTiers.calcRefund(monthlyNetLoss, tiersByPeriod.monthly);
+    // §5: lo ya cobrado como reembolso ACUMULATIVO dentro del período se descuenta
+    // — se muestra el neto para que el número que ve el cliente sea el que cobra.
+    try {
+      const _wPaid = await _cashbackPaidBetween(userId, weeklyFrom, weeklyTo);
+      const _mPaid = await _cashbackPaidBetween(userId, monthlyFrom, monthlyTo);
+      if (_wPaid > 0) weeklyCalc.amount = Math.max(0, weeklyCalc.amount - _wPaid);
+      if (_mPaid > 0) monthlyCalc.amount = Math.max(0, monthlyCalc.amount - _mPaid);
+    } catch (_) { /* sin descuento si falla la lectura: el claim lo recalcula */ }
 
     // `tier` se manda entero (nombre, emoji, color, cuánto falta para subir y cuál es
     // el siguiente) para que el front lo muestre sin tener que duplicar la tabla.
@@ -7016,9 +7030,10 @@ app.post('/api/refunds/claim/weekly', authMiddleware, async (req, res) => {
         return res.json({ success: false, message: 'No pudimos calcular tu pérdida en este momento (la plataforma está demorada). Probá en unos minutos.', canClaim: true });
       }
       // netwin POSITIVO = el jugador perdió. Sólo casino (decisión del owner).
-      const netLoss = Math.max(0, Number(netRes.casinoNetwin) || 0);
+      // ESPEC-REEMBOLSO §5: pérdida sobre plata REAL = netwin − bonus.granted del período.
+      const netLoss = Math.max(0, (Number(netRes.casinoNetwin) || 0) - (Number(netRes.bonusGranted) || 0));
       logger.info('[REFUND] weekly — usuario:', username, 'apostado:', netRes.wagered,
-        'pagado:', netRes.payout, 'netwin(casino):', netRes.casinoNetwin, 'netLoss:', netLoss);
+        'pagado:', netRes.payout, 'netwin(casino):', netRes.casinoNetwin, 'bono otorgado:', netRes.bonusGranted || 0, 'netLoss:', netLoss);
 
       // El propio stats devuelve el ID numérico del jugador: se guarda de paso,
       // sin gastar una request extra. Lo usan el panel y los reportes.
@@ -7039,7 +7054,12 @@ app.post('/api/refunds/claim/weekly', authMiddleware, async (req, res) => {
       // El % sale del rango de la pérdida con la escalera del SEMANAL (editable en el panel).
       const _calc = refundTiers.calcRefund(netLoss, (await getRefundTiersByPeriod()).weekly);
       const weeklyPct = _calc.pct;
-      const refundAmount = _calc.amount;
+      // §5: lo ya cobrado como reembolso ACUMULATIVO dentro del período se descuenta
+      // (la misma pérdida no se reembolsa dos veces).
+      let _cbkPaid = 0;
+      try { _cbkPaid = await _cashbackPaidBetween(userId, fromDate, toDate); } catch (_) { /* sin descuento */ }
+      const refundAmount = Math.max(0, _calc.amount - _cbkPaid);
+      if (_cbkPaid > 0) logger.info(`[REFUND] weekly — ${username}: descuento reembolso acumulativo $${_cbkPaid} (bruto $${_calc.amount} → $${refundAmount})`);
 
       logger.info('[REFUND] weekly — calculado para', username, 'netLoss:', netLoss,
         'rango:', _calc.tier.name, 'pct:', weeklyPct, 'refund:', refundAmount);
@@ -7181,9 +7201,10 @@ app.post('/api/refunds/claim/monthly', authMiddleware, async (req, res) => {
         return res.json({ success: false, message: 'No pudimos calcular tu pérdida en este momento (la plataforma está demorada). Probá en unos minutos.', canClaim: true });
       }
       // netwin POSITIVO = el jugador perdió. Sólo casino (decisión del owner).
-      const netLoss = Math.max(0, Number(netRes.casinoNetwin) || 0);
+      // ESPEC-REEMBOLSO §5: pérdida sobre plata REAL = netwin − bonus.granted del período.
+      const netLoss = Math.max(0, (Number(netRes.casinoNetwin) || 0) - (Number(netRes.bonusGranted) || 0));
       logger.info('[REFUND] monthly — usuario:', username, 'apostado:', netRes.wagered,
-        'pagado:', netRes.payout, 'netwin(casino):', netRes.casinoNetwin, 'netLoss:', netLoss);
+        'pagado:', netRes.payout, 'netwin(casino):', netRes.casinoNetwin, 'bono otorgado:', netRes.bonusGranted || 0, 'netLoss:', netLoss);
 
       // El propio stats devuelve el ID numérico del jugador: se guarda de paso,
       // sin gastar una request extra. Lo usan el panel y los reportes.
@@ -7204,7 +7225,12 @@ app.post('/api/refunds/claim/monthly', authMiddleware, async (req, res) => {
       // El % sale del rango de la pérdida con la escalera del MENSUAL (editable en el panel).
       const _calc = refundTiers.calcRefund(netLoss, (await getRefundTiersByPeriod()).monthly);
       const monthlyPct = _calc.pct;
-      const refundAmount = _calc.amount;
+      // §5: lo ya cobrado como reembolso ACUMULATIVO dentro del período se descuenta
+      // (la misma pérdida no se reembolsa dos veces).
+      let _cbkPaid = 0;
+      try { _cbkPaid = await _cashbackPaidBetween(userId, fromDate, toDate); } catch (_) { /* sin descuento */ }
+      const refundAmount = Math.max(0, _calc.amount - _cbkPaid);
+      if (_cbkPaid > 0) logger.info(`[REFUND] monthly — ${username}: descuento reembolso acumulativo $${_cbkPaid} (bruto $${_calc.amount} → $${refundAmount})`);
 
       logger.info('[REFUND] monthly — calculado para', username, 'netLoss:', netLoss,
         'rango:', _calc.tier.name, 'pct:', monthlyPct, 'refund:', refundAmount);
@@ -7295,6 +7321,343 @@ app.post('/api/refunds/claim/monthly', authMiddleware, async (req, res) => {
     console.error('Error reclamando reembolso mensual:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
+});
+
+// ============================================================
+// REEMBOLSO ACUMULATIVO DE POR VIDA ("cashback") — docs/ESPEC-REEMBOLSO-1GIROX.md
+// Réplica de la gemela PAUTANUEVAsantino (#254 → #275). Implementado acá el
+// 2026-09-11 (WORKLOG #208).
+//
+//   netoDePorVida = Σ netwin_casino desde el alta (plegado de a 60 días: la API
+//                   admite 92 días por consulta → User.cashbackCarryNet/AnchorAt)
+//   regalado      = TODO lo acreditado sin ser carga real, INCLUIDOS los
+//                   reembolsos ya cobrados (§3.2) — máximo tramo a tramo entre
+//                   nuestras Transactions y el `bonus.granted` oficial (§3.3)
+//   reclamable    = floor(pct% × max(0, netoDePorVida − regalado) − cobrado)
+//                   con tope por día y mínimo para cobrar (panel).
+// Propiedades: se acumula hasta que reclame (no vence); al reclamar queda en 0;
+// una ganancia resta para siempre; el regalo perdido no genera reembolso.
+// La fórmula pura vive en src/utils/cashbackFormula.js (validada con la tabla
+// de casos de la §7 en scripts/test-cashback-spec.js).
+// Config editable en panel: Config['instantCashback'].
+// ============================================================
+const INSTANT_CASHBACK_DEFAULT = { enabled: false, pct: 5, rolloverX: 2, minArs: 300, maxDailyArs: 50000 };
+async function getInstantCashbackConfig() {
+  try {
+    const raw = await getConfig('instantCashback', null);
+    if (raw && typeof raw === 'object') {
+      return {
+        enabled: raw.enabled === true,
+        pct: Math.min(50, Math.max(0, Number(raw.pct) || 0)) || INSTANT_CASHBACK_DEFAULT.pct,
+        rolloverX: Math.min(50, Math.max(0, Math.round(Number(raw.rolloverX)))) || 0,
+        minArs: Math.max(0, Math.round(Number(raw.minArs))) || 0,
+        maxDailyArs: Math.max(0, Math.round(Number(raw.maxDailyArs))) || 0
+      };
+    }
+  } catch (_) { /* fallback */ }
+  return { ...INSTANT_CASHBACK_DEFAULT };
+}
+
+// Suma de reembolso acumulativo ya ACREDITADO de un usuario entre dos fechas
+// (§5: se descuenta del reembolso semanal/mensual del período).
+async function _cashbackPaidBetween(userId, fromDate, toDate) {
+  const agg = await CashbackClaim.aggregate([
+    { $match: { userId: String(userId), status: 'credited', createdAt: { $gte: fromDate, $lte: toDate } } },
+    { $group: { _id: null, total: { $sum: '$amount' } } }
+  ]);
+  return (agg && agg[0] && agg[0].total) || 0;
+}
+
+// Tipos de Transaction que son REGALO (§2.3): todo lo que no es carga real. Los
+// reembolsos por período ('refund'), el rakeback, el nivel VIP, la ruleta, el
+// fueguito, las comisiones y TODO 'bonus' (incluido el propio reembolso
+// acumulativo, metadata.source 'instant_cashback' — §3.2).
+const CASHBACK_GIFT_TX_TYPES = ['bonus', 'fire_reward', 'refund', 'rakeback', 'vip_levelup', 'referral_commission', 'roulette'];
+
+/**
+ * Estado del reembolso acumulativo de un jugador. `opts.fresh` → netwin sin
+ * cache (para la RECLAMACIÓN, §4.1). Una o dos consultas de stats por evaluación
+ * (una más por cada tramo que haya que plegar).
+ */
+async function _cashbackStateToday(userId, username, opts) {
+  const cfg = await getInstantCashbackConfig();
+  if (!cfg.enabled || !(cfg.pct > 0)) return { enabled: false };
+  const fresh = !!(opts && opts.fresh);
+  const today = periodRanges.getTodayRangeArgentinaEpoch();
+  const dayTo = new Date(today.toEpoch * 1000);
+
+  // ANCLA de por vida: desde el alta del usuario (o el arranque en 1girox).
+  const uDoc = await User.findOne({ id: userId }).select('createdAt cashbackAnchorAt cashbackCarryNet cashbackCarryGranted').lean();
+  if (!uDoc) return { enabled: true, error: 'user_not_found' };
+  let anchor = uDoc.cashbackAnchorAt ? new Date(uDoc.cashbackAnchorAt) : cashbackFormula.initialAnchor(uDoc.createdAt);
+  let carry = Number(uDoc.cashbackCarryNet) || 0;
+  let carryGranted = Number(uDoc.cashbackCarryGranted) || 0;
+
+  // PLEGADO (§3.4): si el tramo vivo supera los 85 días, se consolida el tramo
+  // más viejo (60 días) en carryNet/carryGranted y el ancla avanza. Update
+  // ATÓMICO condicionado al ancla previa → dos instancias no pliegan el mismo
+  // tramo dos veces; si el update no modificó nada, se relee y se sigue.
+  let guard = 0;
+  while (cashbackFormula.needsFold(anchor, dayTo) && guard < 4) {
+    guard++;
+    const chunk = cashbackFormula.foldChunk(anchor);
+    const foldRes = await girox.getPlayerStats(username, chunk.from, chunk.to, 'cashback-fold');
+    if (!foldRes.success) return { enabled: true, error: foldRes.error || 'stats_failed' };
+    const chunkNet = Number(foldRes.casinoNetwin) || 0;
+    const chunkGranted = Number(foldRes.bonusGranted) || 0;
+    const upd = await User.updateOne(
+      { id: userId, cashbackAnchorAt: uDoc.cashbackAnchorAt || null },
+      { $inc: { cashbackCarryNet: chunkNet, cashbackCarryGranted: chunkGranted }, $set: { cashbackAnchorAt: chunk.next } }
+    );
+    if (!upd.modifiedCount) { // otra instancia plegó primero → releer y seguir
+      const re = await User.findOne({ id: userId }).select('cashbackAnchorAt cashbackCarryNet cashbackCarryGranted').lean();
+      anchor = re && re.cashbackAnchorAt ? new Date(re.cashbackAnchorAt) : chunk.next;
+      carry = re ? (Number(re.cashbackCarryNet) || 0) : carry;
+      carryGranted = re ? (Number(re.cashbackCarryGranted) || 0) : carryGranted;
+      uDoc.cashbackAnchorAt = re && re.cashbackAnchorAt;
+      continue;
+    }
+    carry += chunkNet;
+    carryGranted += chunkGranted;
+    anchor = chunk.next;
+    uDoc.cashbackAnchorAt = chunk.next;
+    logger.info(`[cashback] fold ${username}: +$${chunkNet} al carry (total $${carry}), +$${chunkGranted} bono otorgado, ancla → ${chunk.next.toISOString().slice(0, 10)}`);
+  }
+
+  // Tramo VIVO (ancla → hoy). Las ganancias (netwin negativo) restan para siempre.
+  const liveRes = await girox.getPlayerStats(username, anchor, dayTo, 'cashback-vida', { fresh });
+  if (!liveRes.success) return { enabled: true, error: liveRes.error || 'stats_failed' };
+  const liveNet = Number(liveRes.casinoNetwin) || 0;
+  const liveGranted = Number(liveRes.bonusGranted) || 0;
+
+  // REGALADO local (§2.3/§3.3): `bonus` de las cargas + Transactions de tipo
+  // regalo, desde el alta, partido en "< ancla" y "≥ ancla" para compararlo
+  // tramo a tramo con el dato oficial. Se matchea por userId O username porque
+  // varias Transactions históricas de regalos se guardaron sin userId. Las
+  // devoluciones de retiro rechazado (payout_refund) no son regalo.
+  const giftFrom = cashbackFormula.initialAnchor(uDoc.createdAt);
+  const giftExpr = { $add: [
+    { $cond: [{ $eq: ['$type', 'deposit'] }, { $ifNull: ['$bonus', 0] }, 0] },
+    { $cond: [{ $in: ['$type', CASHBACK_GIFT_TX_TYPES] }, { $ifNull: ['$amount', 0] }, 0] }
+  ] };
+  const giftAgg = await Transaction.aggregate([
+    { $match: {
+      $or: [{ userId: String(userId) }, { username: String(username) }],
+      type: { $in: ['deposit', ...CASHBACK_GIFT_TX_TYPES] },
+      'metadata.source': { $ne: 'payout_refund' },
+      timestamp: { $gte: giftFrom }
+    } },
+    { $group: { _id: null,
+      before: { $sum: { $cond: [{ $lt: ['$timestamp', anchor] }, giftExpr, 0] } },
+      live: { $sum: { $cond: [{ $gte: ['$timestamp', anchor] }, giftExpr, 0] } } } }
+  ]);
+  const giftedLocalBefore = (giftAgg && giftAgg[0] && giftAgg[0].before) || 0;
+  const giftedLocalLive = (giftAgg && giftAgg[0] && giftAgg[0].live) || 0;
+  const giftedLocal = giftedLocalBefore + giftedLocalLive;
+  const giftedPlatform = carryGranted + liveGranted;
+  const giftedLife = cashbackFormula.giftedLife({ localBefore: giftedLocalBefore, localLive: giftedLocalLive, carryGranted, liveGranted });
+  if (Math.abs(giftedLocal - giftedPlatform) > 1) {
+    logger.info(`[cashback] ${username} regalos: local $${giftedLocal} (plegado ${giftedLocalBefore} + vivo ${giftedLocalLive}) vs plataforma $${giftedPlatform} (plegado ${carryGranted} + vivo ${liveGranted}) → base descuenta $${giftedLife}`);
+  }
+
+  // COBRADO de por vida (pending + credited: los pendientes cierran la carrera
+  // del doble click) + lo de HOY (tope diario).
+  const paidAgg = await CashbackClaim.aggregate([
+    { $match: { userId: String(userId), status: { $in: ['pending', 'credited'] } } },
+    { $group: { _id: null, total: { $sum: '$amount' },
+      today: { $sum: { $cond: [{ $eq: ['$dateKey', today.dateStr] }, '$amount', 0] } } } }
+  ]);
+  const paidLife = (paidAgg && paidAgg[0] && paidAgg[0].total) || 0;
+  const paidToday = (paidAgg && paidAgg[0] && paidAgg[0].today) || 0;
+
+  const calc = cashbackFormula.computeReclamable({
+    pct: cfg.pct, carryNet: carry, liveNet, giftedLife, paidLife, paidToday,
+    maxDailyArs: cfg.maxDailyArs, minArs: cfg.minArs
+  });
+  return {
+    enabled: true, pct: cfg.pct, rolloverX: cfg.rolloverX, minArs: cfg.minArs,
+    maxDailyArs: cfg.maxDailyArs, dateKey: today.dateStr,
+    netLife: calc.lifeNet,          // neto de por vida (puede ser negativo: venía ganando)
+    lossLife: calc.lossLife,        // pérdida REAL (neto − regalado, piso 0)
+    giftedLife, giftedLocal, giftedPlatform, // diagnóstico (logs / panel)
+    paidLife, paidToday,
+    reclamable: calc.reclamable,
+    belowMin: calc.belowMin,
+    faltaParaMinimo: calc.faltaParaMinimo
+  };
+}
+
+// Estado para el cliente (perfil de la PWA). `?fresh=1` (botón 🔄 Actualizar)
+// fuerza una lectura SIN cache del netwin, con cooldown de 30s por usuario para
+// no comerse el rate limit de la Partner API.
+const CASHBACK_FRESH_COOLDOWN_MS = 30 * 1000;
+const _cbkFreshAt = new Map(); // userId → ts del último fresh
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [k, ts] of _cbkFreshAt) if (ts < cutoff) _cbkFreshAt.delete(k);
+}, 5 * 60 * 1000).unref();
+app.get('/api/cashback/status', authMiddleware, async (req, res) => {
+  try {
+    const cfg = await getInstantCashbackConfig();
+    if (!cfg.enabled) return res.json({ enabled: false });
+    let fresh = false;
+    if (req.query && req.query.fresh === '1') {
+      const last = _cbkFreshAt.get(req.user.userId) || 0;
+      const waitMs = CASHBACK_FRESH_COOLDOWN_MS - (Date.now() - last);
+      if (waitMs > 0) {
+        const secs = Math.ceil(waitMs / 1000);
+        return res.status(429).json({ error: `Recién actualizaste. Esperá ${secs} segundos y probá de nuevo.`, retryInSec: secs });
+      }
+      _cbkFreshAt.set(req.user.userId, Date.now());
+      fresh = true;
+    }
+    const st = await _cashbackStateToday(req.user.userId, req.user.username, { fresh });
+    if (st.error) return res.json({ enabled: true, unavailable: true, pct: cfg.pct, minArs: cfg.minArs, rolloverX: cfg.rolloverX, maxDailyArs: cfg.maxDailyArs });
+    res.json(st);
+  } catch (e) {
+    logger.warn(`[cashback] status falló: ${e.message}`);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+// RECLAMO (§4): recalcula FRESCO, guard anti doble click, RESERVA con índice
+// único (userId+dateKey+seq) ANTES de acreditar, bono con rollover con reference
+// idempotente vip-cbk-<userId>-<día>-<seq> (reintento tras fallo = mismo seq =
+// misma reference → duplicate:true, no se paga dos veces), Transaction local
+// type 'bonus' + metadata.source 'instant_cashback' (alimenta `regalado` y
+// `cobrado`).
+app.post('/api/cashback/claim', authMiddleware, authLimiter, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const username = req.user.username;
+    const st = await _cashbackStateToday(userId, username, { fresh: true });
+    if (!st.enabled) return res.status(400).json({ error: 'El reembolso acumulativo no está disponible.' });
+    if (st.error) return res.status(502).json({ error: 'No pudimos calcular tu pérdida ahora. Probá en unos minutos.' });
+    const amount = st.reclamable;
+    if (!(amount > 0) || amount < st.minArs) {
+      return res.status(400).json({
+        error: st.lossLife <= 0
+          ? 'No tenés pérdida acumulada: el reembolso aplica solo sobre lo que perdiste jugando con tu plata.'
+          : `Tu reembolso disponible es $${Number(amount).toLocaleString('es-AR')} y el mínimo para reclamarlo es $${Number(st.minArs).toLocaleString('es-AR')}. Seguí jugando y probá más tarde.`,
+        reclamable: amount, minArs: st.minArs
+      });
+    }
+
+    // GUARD anti doble click (§4.2): otro reclamo del mismo jugador creado hace
+    // < 20 s → abortar. Va ANTES de reservar (no quema un seq al pedo) y se
+    // repite DESPUÉS (cierra la carrera entre dos instancias).
+    const _recent = () => CashbackClaim.findOne({ userId, createdAt: { $gte: new Date(Date.now() - 20000) } }).select('id').lean();
+    if (await _recent()) return res.status(409).json({ error: 'Hay otro reclamo en curso. Esperá unos segundos y actualizá.' });
+
+    // RESERVA (§4.3): índice único userId+dateKey+seq. Si dos requests chocan en
+    // el mismo seq, el segundo reintenta con el siguiente una vez.
+    let claimDoc = null;
+    for (let attempt = 0; attempt < 2 && !claimDoc; attempt++) {
+      const seq = await CashbackClaim.countDocuments({ userId, dateKey: st.dateKey });
+      try {
+        claimDoc = await CashbackClaim.create({
+          id: uuidv4(), userId, username, dateKey: st.dateKey, seq,
+          amount, pct: st.pct, rolloverX: st.rolloverX, netwinAtClaim: st.lossLife, status: 'pending'
+        });
+      } catch (e) {
+        if (!(e && (e.code === 11000 || String(e.message || '').includes('duplicate key')))) throw e;
+      }
+    }
+    if (!claimDoc) return res.status(409).json({ error: 'Hay otro reclamo en curso. Probá de nuevo.' });
+    const _concurrent = await CashbackClaim.findOne({
+      userId, id: { $ne: claimDoc.id }, createdAt: { $gte: new Date(Date.now() - 20000) }
+    }).select('id').lean();
+    if (_concurrent) {
+      await CashbackClaim.deleteOne({ id: claimDoc.id }).catch(() => {});
+      return res.status(409).json({ error: 'Hay otro reclamo en curso. Esperá unos segundos y actualizá.' });
+    }
+
+    // ACREDITAR (§4.4): BONO con rollover; si tiene otro bono activo, creditGift
+    // cae a depósito con multiplier (no le pisa el bono). Misma reference siempre.
+    const ref = `vip-cbk-${userId}-${st.dateKey}-${claimDoc.seq}`.slice(0, 100);
+    let credit;
+    try {
+      credit = await girox.creditGift(username, amount, {
+        description: `Reembolso ${st.pct}% de tu pérdida acumulada`, reference: ref, rolloverX: st.rolloverX
+      });
+    } catch (e) { credit = { success: false, error: e.message }; }
+    if (!credit || !credit.success) {
+      // §4.5: fallo definitivo → liberar la reserva (el reintento reusa el seq y
+      // por lo tanto la MISMA reference).
+      await CashbackClaim.deleteOne({ id: claimDoc.id }).catch(() => {});
+      logger.error(`[cashback] credit FAIL ${username} $${amount}: ${(credit && credit.error) || 'unknown'}`);
+      return res.status(502).json({ error: 'No pudimos acreditar tu reembolso ahora. Probá de nuevo en un momento.' });
+    }
+    if (credit.duplicate) logger.warn(`[cashback] ${username} ref ${ref} ya estaba acreditada (duplicate:true) — se da por pagada, no se paga dos veces`);
+    const txId = credit.data?.transfer_id || credit.data?.transferId || null;
+    await CashbackClaim.updateOne({ id: claimDoc.id }, { $set: { status: 'credited', transactionId: txId, creditedAs: credit.creditedAs || null } }).catch(() => {});
+    // §4.6: Transaction local — es lo que alimenta `regalado` (§3.2) y `cobrado`.
+    await Transaction.create({
+      id: uuidv4(), type: 'bonus', userId, username, amount,
+      description: `Reembolso acumulativo ${st.pct}% (pérdida neta de por vida)`,
+      transactionId: txId,
+      metadata: { source: 'instant_cashback', dateKey: st.dateKey, seq: claimDoc.seq, creditedAs: credit.creditedAs || null, rollover: st.rolloverX },
+      timestamp: new Date()
+    }).catch((e) => logger.error(`[cashback] Transaction no se pudo guardar (${username}, $${amount}): ${e.message}`));
+    await _emitAdminOnlyChatNote(userId, username,
+      `📉 REEMBOLSO ACUMULATIVO: reclamó $${Number(amount).toLocaleString('es-AR')} (${st.pct}% de su pérdida real acumulada de $${Number(st.lossLife).toLocaleString('es-AR')} — regalos y reembolsos previos EXCLUIDOS de la base — menos lo ya cobrado)${st.rolloverX ? ` con rollover x${st.rolloverX}` : ''}. Acreditado como ${credit.creditedAs === 'deposit' ? 'DEPÓSITO con rollover (tenía bono activo)' : 'BONO'} — el contador le arranca de 0. Este monto se descuenta de su reembolso semanal/mensual.`);
+    logger.info(`[cashback] ${username} → $${amount} acreditado como ${credit.creditedAs || '?'} (pérdida real $${st.lossLife}, seq ${claimDoc.seq})`);
+    try {
+      const u = await User.findOne({ id: userId }).lean();
+      metaCapi.track('RefundClaim',
+        { email: u && u.email, phone: u && u.phone, externalId: userId, fbc: u && u.metaFbc, fbp: u && u.metaFbp },
+        { value: amount, currency: 'ARS', content_name: 'refund_lifetime' },
+        { eventId: req.body && req.body.metaEventId, req });
+    } catch (_) { /* tracking nunca bloquea */ }
+    res.json({ success: true, amount, rolloverX: st.rolloverX, pct: st.pct, creditedAs: credit.creditedAs || null, transactionId: txId });
+  } catch (e) {
+    logger.error(`[cashback] claim falló: ${e.message}`);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+// Config del reembolso acumulativo (GET admin; POST solo admin general) — §4.7.
+app.get('/api/admin/instant-cashback', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    res.json(await getInstantCashbackConfig());
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/instant-cashback', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    const b = req.body || {};
+    const pct = Math.min(50, Math.max(0, Number(b.pct) || 0));
+    const rolloverX = Math.min(50, Math.max(0, Math.round(Number(b.rolloverX) || 0)));
+    const minArs = Math.max(0, Math.round(Number(b.minArs) || 0));
+    const maxDailyArs = Math.max(0, Math.round(Number(b.maxDailyArs) || 0));
+    const enabled = b.enabled === true;
+    if (enabled && pct <= 0) return res.status(400).json({ error: 'El % debe ser mayor a 0.' });
+    const out = { enabled, pct, rolloverX, minArs, maxDailyArs };
+    await Config.set('instantCashback', out, req.user.username);
+    logger.info(`[cashback] config guardada por ${req.user.username}: ${JSON.stringify(out)}`);
+    res.json({ success: true, ...out });
+  } catch (e) {
+    logger.warn(`[cashback] guardar config falló: ${e.message}`);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+// DIAGNÓSTICO (solo admin general): respuesta CRUDA del /stats de la Partner API
+// para un jugador — para verificar en producción que `bonus.granted` llega.
+app.get('/api/admin/girox/stats-raw', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    const username = String((req.query && req.query.username) || '').trim();
+    if (!username) return res.status(400).json({ error: 'Falta ?username=' });
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+    const to = new Date();
+    const from = new Date(Date.now() - days * 86400000);
+    const r = await girox.getPlayerStats(username, from, to, 'stats-raw', { fresh: true, includeRaw: true });
+    if (!r.success) return res.status(502).json({ error: r.error || 'stats falló' });
+    res.json({ parsed: { netwin: r.netwin, casinoNetwin: r.casinoNetwin, wagered: r.wagered, payout: r.payout,
+      bonusGranted: r.bonusGranted, bonusStillLocked: r.bonusStillLocked }, raw: r.raw });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
 });
 
 app.get('/api/refunds/history', authMiddleware, async (req, res) => {
@@ -13380,27 +13743,37 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
     }
 
     // listQuery = baseQuery + tipo (filtra SOLO la tabla, no el resumen).
+    // El reembolso ACUMULATIVO se guarda como type 'bonus' + metadata.source
+    // 'instant_cashback' (ESPEC-REEMBOLSO §4.6). Para el panel ES un reembolso:
+    // el filtro "Reembolsos" lo incluye y el de "Bonificaciones" lo excluye.
+    const CASHBACK_MATCH = { type: 'bonus', 'metadata.source': 'instant_cashback' };
     const listQuery = { ...baseQuery };
     if (type && type !== 'all') {
       // Castear a String: sin esto un objeto ({"$ne":"x"}) se colaba como
       // operador NoSQL en el query.
-      listQuery.type = String(type);
+      const t = String(type);
+      if (t === 'refund') listQuery.$or = [{ type: 'refund' }, CASHBACK_MATCH];
+      else if (t === 'bonus') { listQuery.type = 'bonus'; listQuery['metadata.source'] = { $ne: 'instant_cashback' }; }
+      else listQuery.type = t;
     }
 
     // Resumen por tipo vía aggregation sobre baseQuery (rápido, no trae documentos).
     const sumAgg = await Transaction.aggregate([
       { $match: baseQuery },
-      { $group: { _id: '$type', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+      { $group: {
+        _id: { type: '$type', cb: { $eq: [{ $ifNull: ['$metadata.source', ''] }, 'instant_cashback'] } },
+        total: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]);
-    let deposits = 0, withdrawals = 0, bonuses = 0, refunds = 0, fireRewards = 0, referrals = 0,
+    let deposits = 0, withdrawals = 0, bonuses = 0, refunds = 0, cashbacks = 0, fireRewards = 0, referrals = 0,
       rakebacks = 0, vipLevelups = 0, roulette = 0, totalAll = 0;
     for (const g of sumAgg) {
       totalAll += g.count;
-      switch (g._id) {
+      if (g._id.type === 'bonus' && g._id.cb) { cashbacks += g.total; refunds += g.total; continue; }
+      switch (g._id.type) {
         case 'deposit': deposits = g.total; break;
         case 'withdrawal': withdrawals = g.total; break;
         case 'bonus': bonuses = g.total; break;
-        case 'refund': refunds = g.total; break;
+        case 'refund': refunds += g.total; break;
         case 'fire_reward': fireRewards = g.total; break;
         case 'referral_commission': referrals = g.total; break;
         case 'rakeback': rakebacks = g.total; break;
@@ -13417,6 +13790,7 @@ app.get('/api/admin/transactions', authMiddleware, adminMiddleware, async (req, 
       withdrawals,
       bonuses,
       refunds,
+      cashbacks, // parte de `refunds` que es reembolso acumulativo (informativo)
       fireRewards,
       referrals,
       rakebacks,

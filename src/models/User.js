@@ -251,6 +251,20 @@ const userSchema = new mongoose.Schema({
   },
 
   // ============================================
+  // REEMBOLSO ACUMULATIVO de por vida (ESPEC-REEMBOLSO-1GIROX §3.4)
+  // ============================================
+  // La Partner API acepta rangos de hasta 92 días, así que el "neto de por vida"
+  // se lleva PLEGADO: `cashbackCarryNet` = netwin de casino consolidado de los
+  // tramos viejos (puede ser NEGATIVO: una ganancia resta para siempre),
+  // `cashbackCarryGranted` = bono otorgado (bonus.granted) en esos mismos tramos,
+  // `cashbackAnchorAt` = desde dónde se consulta en vivo (null = alta del usuario
+  // o arranque en 1girox). netoDePorVida = carryNet + netwin(ancla → hoy). El
+  // plegado es un update atómico condicionado al ancla previa (multi-instancia).
+  cashbackAnchorAt: { type: Date, default: null },
+  cashbackCarryNet: { type: Number, default: 0 },
+  cashbackCarryGranted: { type: Number, default: 0 },
+
+  // ============================================
   // LINK DE ACCESO DE UN SOLO USO (alta desde el panel admin)
   // ============================================
   // Se guarda SOLO el hash sha256 del token — el link en claro lo ve únicamente

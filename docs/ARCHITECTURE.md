@@ -5,7 +5,11 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-08-03** — niveles VIP por apostado acumulado (réplica de
+> Última actualización: **2026-09-11** — reembolso ACUMULATIVO de por vida sobre plata
+> real (ESPEC-REEMBOLSO-1GIROX, réplica de la gemela): §2 (CashbackClaim + campos
+> cashback* de User), §4.4 (reference vip-cbk), §4.5 (creditGift con rollover), §4.6
+> (`bonus.granted` del /stats), §5 (flujo nuevo + el período descuenta el bono
+> otorgado), §9 (trampas). Antes: 2026-09-07 (regalos como bono 0), 2026-08-03 — niveles VIP por apostado acumulado (réplica de
 > Stake): §2 (VipWagerMonth + campos User), §4.4 (references vip-lvl/vip-rake), §4.6
 > reescrita (el scraping del panel se ELIMINÓ en la v1.9 — ahora stats por username con
 > la Partner API), §4.8 (envs VIP_*, se fueron las GIROX_ADMIN_*), §5 (flujo VIP +
@@ -204,6 +208,14 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   automáticamente (ya existía), aplica también a los de lote.
 - **DailyRouletteSpin** — 1 giro/día (índices únicos userId+dateKey y
   username+dateKey). Auto-crédito en 1girox; `credit_failed` → retry desde panel.
+- **CashbackClaim** (2026-09-11) — reclamo del **reembolso ACUMULATIVO de por vida**
+  (ESPEC-REEMBOLSO-1GIROX §3/§4, ver §5). Índice ÚNICO `userId+dateKey+seq` (**no
+  quitar**): el reintento tras un fallo reusa el `seq` → misma reference
+  `vip-cbk-<userId>-<día>-<seq>` → la plataforma dedupe. `status` pending|credited
+  (los pending cuentan como cobrado), `creditedAs` bonus|deposit. En **User** viven
+  `cashbackAnchorAt` / `cashbackCarryNet` / `cashbackCarryGranted`: acumulador
+  PLEGADO del neto de por vida (la API admite 92 días por consulta: tramo vivo > 85
+  días → se consolidan 60 en el carry con update atómico condicionado al ancla).
 - **Datos 2.0** (2026-08-10, sin modelo nuevo): `GET /api/admin/datos2?days=7..90`
   — análisis por COHORTES: cada día ART es la camada de Users registrados ese
   día; por camada: % con 1+/2+/3+ cargas reales (type deposit sin
@@ -374,6 +386,7 @@ Prefijos en uso hoy:
 | `vip-lvl-<userId>-<idx>` | Bono por alcanzar un nivel VIP | userId + índice del nivel (cada nivel se paga UNA vez en la vida; por eso NO se pueden reordenar los idx de vipLevels.js) |
 | `vip-rake-<fromDateStr>-<userId>` | Rakeback semanal VIP | lunes de la semana reclamada + userId (derivada del PERÍODO, igual que los reembolsos y por el mismo motivo) |
 | `vip-welcome-<userId>` | Bono sorpresa del código de bienvenida (tipo cash) | userId (uno por cuenta para siempre, como el de instalación) |
+| `vip-cbk-<userId>-<día>-<seq>` | Reembolso ACUMULATIVO de por vida | userId + día ART + `seq` del índice único de CashbackClaim (un fallo borra el doc y el reintento recalcula el MISMO seq ⇒ misma reference) |
 
 ⚠️ **Por qué la del reembolso sale del período y no del id del claim** (`_refundReference`,
 server.js ~L6086): si la acreditación falla, el handler BORRA el RefundClaim para que el
@@ -420,6 +433,14 @@ reintento manda la misma reference y la plataforma responde `duplicate:true`.
   cargas (milestone.requireDeposits) sigue sin chequearse.
   **La devolución de retiro rechazado (vip-payoutref-*) SIGUE por depósito**:
   no es un regalo, es plata real que vuelve.
+  **`creditGift(username, amount, {description, reference, rolloverX})`**
+  (2026-09-11, giroxService): regalo CON rollover genérico. rolloverX 0 →
+  `creditUserBalance` (bono 0). rolloverX > 0 → `/bonus` con ese multiplier
+  tras precheck (config) + lectura FRESCA del jugador: con bono activo (> $50
+  bloqueado o a reclamar) cae a DEPÓSITO con `wagering.multiplier` (misma
+  reference — no le pisa el bono); rechazo de negocio → depósito; transitorio
+  → se devuelve al caller. Lo usa el reembolso acumulativo. (El fueguito sigue
+  con `_creditFireReward`, misma lógica.)
   Con `opts.multiplier` explícito (Bonificación del panel, welcome code cash,
   lotes): `/bonus` ESTRICTO sin fallback (un rechazo se ve como error). ⚠️ Ojo
   con "bono sobre bono": un bono con rollover a quien ya tiene uno activo PISA
@@ -441,6 +462,13 @@ salen de la MISMA Partner API, con la misma `X-Api-Key` y por **username**:
   VIP sin comerse el cupo de 60 req/min.
 - Devuelven `totals` + `categories.casino/sports`, cada uno con `bets_count`,
   **`wagered` (apostado)**, `payout` y `netwin` — todo en **PESOS**.
+- **`bonus: { granted, still_locked }`** (sección 2.10 del manual actualizado, soporte
+  1girox 2026-09-10): bono OTORGADO al jugador en el rango (cargas con %, /bonus,
+  campañas, bonos dados a mano en el panel de 1girox) y cuánto sigue con rollover.
+  A nivel jugador, no por categoría. `getPlayerStats`/batch lo exponen como
+  `bonusGranted` / `bonusStillLocked` (0 si la API no lo manda). Es la base de
+  "reembolso sobre plata REAL" = netwin − granted. **No existe** el desglose
+  bono/real por apuesta (saldo unificado): no pedirlo ni inventarlo.
 - ⚠️ `netwin` POSITIVO = el jugador PERDIÓ (base del reembolso); negativo = ganó.
 - Rango **máximo 92 días** por consulta, evaluado en **hora argentina** del lado de
   la plataforma (`formatStatsDate` ancla a -03:00).
@@ -643,7 +671,39 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   regalo directo** (figura como Bono en 1girox; fallback a depósito si el monto
   queda fuera de los límites del bono — ver §4.5) con la reference derivada del período.
   Ver #96 y §4.4. ⚠️ En la UI los reembolsos muestran SOLO el % — los nombres
-  Bronce/Plata/Oro son del nivel VIP (abajo).
+  Bronce/Plata/Oro son del nivel VIP (abajo). **Desde 2026-09-11 (ESPEC-REEMBOLSO
+  §5) la base del período es la pérdida sobre plata REAL:** `netLoss = max(0,
+  casinoNetwin − bonusGranted)` del mismo rango, y al monto calculado se le resta
+  lo ya cobrado como reembolso ACUMULATIVO dentro del período
+  (`_cashbackPaidBetween`). Un bono otorgado la semana anterior y perdido esta
+  semana no se descuenta (imprecisión aceptada).
+- **Reembolso ACUMULATIVO de por vida** (2026-09-11, `docs/ESPEC-REEMBOLSO-1GIROX.md`
+  de la gemela; #208): `pct%` de lo que el jugador perdió **con su plata** desde el
+  alta, nunca de regalos ni de lo que ganó, sin que el mismo peso se reembolse dos
+  veces. `_cashbackStateToday` (server.js) + fórmula pura en
+  `src/utils/cashbackFormula.js`:
+  `netoDePorVida = carryNet + netwin(ancla→hoy)` (plegado de 60 días cuando el
+  tramo vivo pasa los 85 — §2 CashbackClaim/User); `regalado = max(localViejo,
+  grantedViejo) + max(localVivo, grantedVivo)` (local = `bonus` de los deposits +
+  Transactions `bonus|fire_reward|refund|rakeback|vip_levelup|referral_commission|
+  roulette` sin `payout_refund`, matcheadas por userId O username; oficial =
+  `bonus.granted`; se toma el MAYOR tramo a tramo — nunca se reembolsa un regalo
+  que alguno de los dos vio; **incluye los propios reembolsos cobrados**: perder
+  $C de reembolso sube neto y regalado por igual → $0); `reclamable = floor(pct% ×
+  max(0, neto − regalado) − cobrado)`, `min(…, topeDiario − cobradoHoy)`, mínimo
+  para cobrar. Propiedades: se acumula hasta reclamar (no vence), al reclamar queda
+  en 0, una ganancia resta PARA SIEMPRE, el regalo perdido no genera reembolso.
+  Endpoints: `GET /api/cashback/status` (`?fresh=1` sin cache, cooldown 30s/usuario),
+  `POST /api/cashback/claim` (recalcula fresh → guard 20s → reserva `CashbackClaim`
+  → guard 20s → `girox.creditGift` con rollover del panel y reference `vip-cbk-*`
+  → fallo definitivo borra la reserva, `duplicate:true` = pagado → Transaction
+  `type:'bonus'` + `metadata.source:'instant_cashback'` + nota admin-only),
+  `GET/POST /api/admin/instant-cashback` (solo admin general: on/off, %, rollover,
+  mínimo, tope diario — `Config['instantCashback']`, arranca APAGADO),
+  `GET /api/admin/girox/stats-raw` (diagnóstico). PWA: tarjeta en el perfil
+  (`VIP.refunds.showProfileModal`, sólo si está encendido). Panel Transacciones: se
+  etiqueta "💸 Reembolso acumulativo", entra en el filtro Reembolsos (no en
+  Bonificaciones). Validación: `node scripts/test-cashback-spec.js` (tabla §7).
 - **Niveles VIP** (2026-08-03, réplica de Stake): se sube por APOSTADO acumulado de
   por vida (buckets `VipWagerMonth`, ver §2 y el motor en
   `src/services/vipLevelService.js`). Escalera en `src/utils/vipLevels.js`: umbrales
@@ -841,12 +901,16 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   etiqueta en getTransactionTypeLabel + botón de filtro + case del resumen (§6).
 - **Rate limit 60/min es POR INSTANCIA** (`GIROX_MAX_RPM`, default 55): con N instancias
   el techo real es N×55. Si aparecen 429, BAJAR el valor (§4.3).
-- **Los reportes NO son la Partner API**: `giroxReportsService` scrapea el panel
-  `admin.1girox.com` con un Bearer de sesión. Es lo más frágil que tenemos y de ahí
-  dependen reembolsos y comisiones de referidos (§4.6). El netwin es **sólo casino**
-  (`GIROX_NETWIN_SCOPE`).
-- **Sin `User.giroxUserId` no hay reembolso ni comisión** para ese usuario. El buscador
-  del panel hace LIKE: la coincidencia tiene que ser EXACTA o se le paga a otro (§4.6).
+- **El netwin sale de la Partner API por username** (§4.6; 🪦 el scraping del panel
+  con `giroxReportsService` y el gate por `giroxUserId` se fueron el 2026-07-31). Es
+  **sólo casino** (`GIROX_NETWIN_SCOPE`) y POSITIVO = perdió.
+- **Reembolsos = sobre plata REAL** (2026-09-11, ESPEC-REEMBOLSO): la base SIEMPRE
+  descuenta lo regalado (`bonus.granted` oficial y/o nuestras Transactions de regalo).
+  Al agregar un tipo nuevo de regalo (Transaction) sumarlo a `CASHBACK_GIFT_TX_TYPES`
+  (server.js) o el acumulativo lo reembolsaría. El reembolso acumulativo cobrado
+  cuenta como regalo (sin "reembolso del reembolso") — no excluirlo. El índice
+  único de `CashbackClaim` (`userId+dateKey+seq`) y el plegado condicionado al ancla
+  son la idempotencia multi-instancia: no tocarlos.
 - **Message TTL 3 días; Transaction permanente.** Snapshot en ChatDelay por eso.
 - **ChatStatus se crea con actividad**, no al crear el usuario.
 - **Atribución de publicista** se fija al registrar; el login NO la cambia. El referido

@@ -5321,10 +5321,10 @@ function renderTransactionStats(summary) {
                 <span class="stat-number">${formatMoney(summary.bonuses || 0)}</span>
                 <span class="stat-label">Bonificaciones</span>
             </div>
-            <div class="stat-card refund">
+            <div class="stat-card refund" title="Semanal + mensual + reembolso acumulativo (de por vida)${summary.cashbacks > 0 ? ` — de los cuales ${formatMoney(summary.cashbacks)} son acumulativo` : ''}">
                 <span class="icon icon-undo"></span>
                 <span class="stat-number">${formatMoney(summary.refunds || 0)}</span>
-                <span class="stat-label">Reembolsos</span>
+                <span class="stat-label">Reembolsos${summary.cashbacks > 0 ? ` <small style="opacity:.7">(💸 ${formatMoney(summary.cashbacks)})</small>` : ''}</span>
             </div>
             <div class="stat-card referral">
                 <span class="icon icon-users"></span>
@@ -5491,12 +5491,18 @@ function renderTransactions(transactions) {
         <tr>
             <td>${formatDateTime(t.timestamp || t.createdAt)}</td>
             <td>${escapeHtml(t.username)}</td>
-            <td><span class="type-badge ${t.type}">${getTransactionTypeLabel(t.type)}</span></td>
+            <td><span class="type-badge ${_isCashbackTx(t) ? 'refund' : t.type}">${_isCashbackTx(t) ? '💸 Reembolso acumulativo' : getTransactionTypeLabel(t.type)}</span></td>
             <td>${formatMoney(t.amount)}</td>
             <td>${escapeHtml(t.description || '-')}</td>
             <td>${escapeHtml(t.adminUsername || '-')}</td>
         </tr>
     `).join('');
+}
+
+// El reembolso ACUMULATIVO (ESPEC-REEMBOLSO §4.6) se guarda como type 'bonus' +
+// metadata.source 'instant_cashback'. Para el panel ES un reembolso.
+function _isCashbackTx(t) {
+    return !!(t && t.type === 'bonus' && t.metadata && t.metadata.source === 'instant_cashback');
 }
 
 function getTransactionTypeLabel(type) {
@@ -5739,6 +5745,8 @@ async function loadCBUConfig() {
     loadHgcashConfig();
     // Cargar los porcentajes de reembolso (solo admin general)
     loadRefundTiers();
+    // Cargar el reembolso acumulativo de por vida (solo admin general)
+    loadInstantCashbackCfg();
     // Cargar el estado de los niveles VIP (solo admin general)
     loadVipLevelsConfig();
     // Cargar los premios del fueguito (solo admin general)
@@ -5817,6 +5825,51 @@ async function toggleVipLevels() {
         _renderVipLevelsState();
     }
 }
+
+// ====== Reembolso ACUMULATIVO de por vida (solo admin general) ======
+// ESPEC-REEMBOLSO-1GIROX §4.7: %, rollover, mínimo y tope diario editables.
+async function loadInstantCashbackCfg() {
+    const form = document.getElementById('cashbackForm');
+    const header = document.getElementById('cashbackHeader');
+    try {
+        const r = await authFetch('/api/admin/instant-cashback');
+        if (!r.ok) { if (form) form.style.display = 'none'; if (header) header.style.display = 'none'; return; }
+        const cfg = await r.json();
+        if (form) form.style.display = '';
+        if (header) header.style.display = '';
+        const en = document.getElementById('cbkEnabled');
+        if (en) en.checked = cfg.enabled === true;
+        const set = function(id, v) { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+        set('cbkPct', cfg.pct); set('cbkRoll', cfg.rolloverX); set('cbkMin', cfg.minArs); set('cbkMax', cfg.maxDailyArs);
+        const msg = document.getElementById('cashbackMsg');
+        if (msg) { msg.style.color = cfg.enabled ? '#00c853' : '#aaa'; msg.textContent = cfg.enabled ? `🟢 ACTIVADO — ${cfg.pct}% · rollover x${cfg.rolloverX} · mínimo $${cfg.minArs} · tope diario $${cfg.maxDailyArs}` : '🔴 APAGADO — el cliente no ve la tarjeta en su perfil'; }
+    } catch (e) { if (form) form.style.display = 'none'; if (header) header.style.display = 'none'; }
+}
+async function saveInstantCashback() {
+    const msg = document.getElementById('cashbackMsg');
+    const enabled = document.getElementById('cbkEnabled').checked;
+    if (!confirm(enabled
+        ? '¿Guardar y dejar ACTIVADO el reembolso acumulativo? Los clientes van a ver la tarjeta en su perfil y podrán reclamar al instante.'
+        : '¿Guardar con el reembolso acumulativo APAGADO? Los clientes dejan de ver la tarjeta (lo ya acumulado no se pierde).')) return;
+    try {
+        const r = await authFetch('/api/admin/instant-cashback', {
+            method: 'POST',
+            body: JSON.stringify({
+                enabled,
+                pct: Number(document.getElementById('cbkPct').value) || 0,
+                rolloverX: Number(document.getElementById('cbkRoll').value) || 0,
+                minArs: Number(document.getElementById('cbkMin').value) || 0,
+                maxDailyArs: Number(document.getElementById('cbkMax').value) || 0
+            })
+        });
+        const j = await r.json();
+        if (!r.ok) { if (msg) { msg.style.color = '#ff6b6b'; msg.textContent = j.error || 'No se pudo guardar.'; } showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        showToast('Reembolso acumulativo guardado', 'success');
+        loadInstantCashbackCfg();
+    } catch (e) { if (msg) { msg.style.color = '#ff6b6b'; msg.textContent = 'Error de conexión.'; } showToast('Error de conexión', 'error'); }
+}
+window.saveInstantCashback = saveInstantCashback;
+window.loadInstantCashbackCfg = loadInstantCashbackCfg;
 
 // ====== Rangos de reembolso (solo admin general) ======
 // 🪦 Acá vivían loadRefundPercents/saveRefundPercents (% fijos por período, sin

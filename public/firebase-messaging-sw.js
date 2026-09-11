@@ -34,7 +34,8 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v112'; // v112: la burbuja del casino ahora es una PASTILLA con logo 1G + "CARGA RÁPIDA" (no más 🎧 que parecía soporte de la página), el panel arranca ABIERTO al entrar, y pista de que se puede arrastrar
+const CACHE_VERSION = 'v113'; // v113: REEMBOLSO ACUMULATIVO de por vida en el perfil (tarjeta + reclamar + actualizar) — ESPEC-REEMBOLSO-1GIROX
+// v112: // v112: la burbuja del casino ahora es una PASTILLA con logo 1G + "CARGA RÁPIDA" (no más 🎧 que parecía soporte de la página), el panel arranca ABIERTO al entrar, y pista de que se puede arrastrar
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;
 
 // Logs por-fetch del SW (corren en CADA request). Apagados por default;

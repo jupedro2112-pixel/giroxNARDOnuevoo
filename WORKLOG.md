@@ -4,7 +4,107 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-09-07**
+> **Última actualización: 2026-09-11**
+
+## Sesión 2026-09-11
+
+### 208. REEMBOLSO ACUMULATIVO de por vida sobre plata REAL (ESPEC-REEMBOLSO-1GIROX §3/§4) + reembolso semanal/mensual descuenta el bono otorgado (§5)
+- **Pedido del owner:** implementar el reembolso "tal cual" la espec portable
+  que salió de la gemela (`PAUTANUEVAsantino/docs/ESPEC-REEMBOLSO-1GIROX.md`,
+  2026-09-11; referencia `_cashbackStateToday` #254→#275 de allá). Primero el
+  diagnóstico de cómo estaba acá, después los cambios y la validación con la
+  tabla de casos de la §7.
+- **Cómo estaba (diagnóstico):** este repo SOLO tenía el reembolso por período
+  (semanal lun-mar / mensual desde el 7) con `netLoss = max(0, casinoNetwin)`:
+  (a) no existía el acumulativo de por vida (§3/§4) — ni modelo, ni endpoints,
+  ni tarjeta; (b) el período NO descontaba NINGÚN regalo: ni el `bonus.granted`
+  oficial (giroxService ni lo parseaba) ni nuestras Transactions (el helper
+  `getRefundNonDepositCredits` existe pero nadie lo llama) → un cliente que
+  cargaba $20k, recibía $20k de regalo y perdía $40k cobraba el % sobre $40k;
+  (c) el crédito del período iba como bono 0 con `creditUserBalance` (sin
+  rollover) — eso se DEJA igual (§5 no pide rollover); (d) lo que ya coincidía
+  con la espec: reserva atómica `RefundClaim` antes de acreditar, reference
+  `vip-rf-<periodKey>-<userId>` derivada del período, rangos por pérdida,
+  mínimos, sólo casino, hora argentina, 92 días.
+- **giroxService:** `getPlayerStats` / `getPlayersStatsBatch` parsean el bloque
+  `bonus` del /stats → `bonusGranted` / `bonusStillLocked` (0 si la API no lo
+  manda). `opts.includeRaw` devuelve la respuesta cruda. **`creditGift(username,
+  amount, {description, reference, rolloverX})`** nuevo: rollover 0 = bono 0
+  regalo directo (`creditUserBalance`); rollover > 0 = `/bonus` con ese
+  multiplier CON precheck (config) + lectura FRESCA del jugador: si tiene bono
+  activo (> $50 bloqueado o a reclamar) cae a DEPÓSITO con `wagering.multiplier`
+  (no le pisa el bono, misma reference). Rechazo de negocio → depósito;
+  transitorio → se devuelve al caller. Mismo criterio que `_creditFireReward`
+  (que queda intacto).
+- **Modelo nuevo `CashbackClaim`** (`src/models/CashbackClaim.js`): índice ÚNICO
+  `userId+dateKey+seq` (NO quitar) — el reintento tras un fallo reusa el seq →
+  misma reference → `duplicate:true`. `status` pending|credited, `creditedAs`.
+  **User:** `cashbackAnchorAt`, `cashbackCarryNet`, `cashbackCarryGranted`
+  (acumulador PLEGADO, §3.4).
+- **Fórmula pura `src/utils/cashbackFormula.js`** (la usa server.js y el test):
+  `netoDePorVida = carryNet + netwin(ancla→hoy)`; `regalado = max(localViejo,
+  grantedViejo) + max(localVivo, grantedVivo)`; `reclamable = floor(pct% ×
+  max(0, neto − regalado) − cobrado)`, tope diario, mínimo. Plegado: tramo vivo
+  > 85 días → se consolidan 60 días (update atómico condicionado al ancla).
+- **server.js — `_cashbackStateToday`** (después del claim mensual): config
+  `Config['instantCashback']` (`getInstantCashbackConfig`, defaults apagado /
+  5% / x2 / mín $300 / tope $50k); regalado LOCAL = `bonus` de los deposits +
+  Transactions `bonus|fire_reward|refund|rakeback|vip_levelup|
+  referral_commission|roulette` (excluye `payout_refund`; matchea por userId
+  O username porque hay Transactions viejas sin userId; **incluye los propios
+  reembolsos acumulativos** — §3.2, sin reembolso del reembolso); regalado
+  OFICIAL = `bonus.granted` plegado + vivo; se toma el MAYOR tramo a tramo y se
+  loguea `[cashback] regalos: local vs plataforma` cuando difieren. Cobrado =
+  CashbackClaim pending+credited (pendientes cierran la carrera).
+  Endpoints: `GET /api/cashback/status` (`?fresh=1` sin cache, cooldown 30s
+  por usuario), `POST /api/cashback/claim` (authLimiter; recalcula fresh →
+  guard 20s → reserva seq → guard 20s → `creditGift` con reference
+  `vip-cbk-<userId>-<día>-<seq>` → fallo definitivo borra la reserva,
+  `duplicate:true` se da por pagado → Transaction `type:'bonus'` +
+  `metadata.source:'instant_cashback'` + nota admin-only + CAPI RefundClaim),
+  `GET/POST /api/admin/instant-cashback` (solo admin general),
+  `GET /api/admin/girox/stats-raw?username=&days=` (diagnóstico: ver que
+  `bonus.granted` llega en producción).
+- **Reembolso por período (§5) — status + claim semanal/mensual:** `netLoss =
+  max(0, casinoNetwin − bonusGranted)` del período, y al monto calculado se le
+  resta lo ya cobrado como acumulativo dentro de ese período
+  (`_cashbackPaidBetween`). Imprecisión aceptada: un bono otorgado la semana
+  anterior y perdido esta semana no se descuenta (la plataforma sólo da
+  "otorgado en el rango").
+- **Panel:** card "💸 Reembolso acumulativo (de por vida)" en Configuración
+  (solo admin general: on/off, %, rollover, mínimo, tope diario). Transacciones:
+  el acumulativo (bonus + source instant_cashback) se etiqueta "💸 Reembolso
+  acumulativo", entra en el filtro **Reembolsos** (y NO en Bonificaciones) y la
+  tarjeta Reembolsos lo suma (`summary.cashbacks` informativo). **admin-sw v47.**
+- **PWA:** tarjeta "💸 Tu reembolso acumulativo" arriba del perfil (recuadro
+  USUARIO → `VIP.refunds.showProfileModal`): monto grande, EN VIVO + 🔄
+  Actualizar (fresh), botón RECLAMAR (confirm con el rollover), texto "el X% de
+  lo que perdés con tu plata (bonos y regalos no cuentan), se junta de por
+  vida, al reclamar arranca de 0, solo casino". Sólo aparece si la feature
+  está encendida en el panel. **SW v113.**
+- **Validado:** `node --check` OK en todo lo tocado + **`node
+  scripts/test-cashback-spec.js` → 10/10** casos de la §7 (fórmula, ganancia
+  que resta para siempre, sin reembolso del reembolso, regalo bloqueado
+  conservador, bono a mano del panel vía granted, plegado a los 100 días, tope
+  y mínimo; doble click y timeout+reintento simulados con colección en memoria
+  con el índice único + plataforma falsa idempotente por reference — el
+  simulador ESPEJA el handler, si se cambia el flujo real hay que actualizarlo).
+  Lectura del caso 4 de la tabla: continúa el 3 (ya perdió los $5k del
+  reembolso y pierde $100k MÁS de su plata → base $200k → $10k − $5k = $5.000).
+- **Back necesita redeploy.** La feature arranca APAGADA (`enabled:false`): el
+  owner la enciende desde el panel → Configuración → "Reembolso acumulativo".
+  El descuento del `bonus.granted` en el semanal/mensual aplica desde el deploy
+  (sin flag). PROBAR: (1) `GET /api/admin/girox/stats-raw?username=X&days=30`
+  → `parsed.bonusGranted` > 0 en alguien con bonos recientes; (2) encender en el
+  panel con % chico → en la PWA el perfil muestra la tarjeta; (3) reclamar →
+  en 1girox figura como Bono con rollover, en Transacciones "💸 Reembolso
+  acumulativo", nota interna en el chat; (4) reclamar de nuevo al toque → "otro
+  reclamo en curso" / $0; (5) log `[cashback] regalos:` cuando local y
+  plataforma difieren.
+- **No tocado (fuera de la espec):** comisiones de referidos (8% del netwin,
+  siguen incluyendo bonos perdidos); el fueguito sigue con `_creditFireReward`;
+  `bonus.still_locked` no se usa (descontar el granted completo es lo
+  conservador, §6: si 1girox agrega `forfeited`, cambiar esa única línea).
 
 ## Sesión 2026-09-07
 

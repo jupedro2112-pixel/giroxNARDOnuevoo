@@ -20,6 +20,73 @@ VIP.refunds = (function () {
         }
         // Nivel VIP en background (no bloquea los reembolsos si la plataforma demora).
         loadVipStatus().catch(() => {});
+        // Reembolso acumulativo (de por vida), también en background.
+        loadCashbackStatus(false).catch(() => {});
+    }
+
+    // ============================================
+    // REEMBOLSO ACUMULATIVO de por vida (ESPEC-REEMBOLSO-1GIROX §3/§4)
+    // pct% de lo que perdió con SU plata (regalos excluidos), se junta hasta
+    // que lo reclama y arranca de 0. `fresh` = botón 🔄 (sin cache, cooldown 30s
+    // server-side). Devuelve el estado o null.
+    // ============================================
+    async function loadCashbackStatus(fresh) {
+        try {
+            const url = `${VIP.config.API_URL}/api/cashback/status` + (fresh ? '?fresh=1' : '');
+            const response = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${VIP.state.currentToken}` }
+            });
+            const data = await response.json().catch(() => null);
+            if (response.status === 429 && data && data.error) {
+                if (VIP.ui && VIP.ui.showToast) VIP.ui.showToast(data.error, 'error');
+                return VIP.state.cashbackStatus || null;
+            }
+            if (response.ok && data) {
+                VIP.state.cashbackStatus = data;
+                VIP.state.cashbackStatusAt = Date.now();
+            }
+        } catch (error) {
+            console.error('Error cargando reembolso acumulativo:', error);
+        }
+        return VIP.state.cashbackStatus || null;
+    }
+
+    async function refreshCashback() {
+        const btn = document.getElementById('cbkRefreshBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+        await loadCashbackStatus(true);
+        const overlay = document.getElementById('profileModal');
+        if (overlay && overlay.style.display !== 'none') showProfileModal();
+    }
+
+    async function claimCashback() {
+        const st = VIP.state.cashbackStatus || {};
+        const money = (n) => '$' + (Number(n) || 0).toLocaleString('es-AR');
+        if (!(st.reclamable > 0)) return;
+        const roll = st.rolloverX > 0 ? ` Para retirarlo, apostalo x${st.rolloverX} en el casino.` : '';
+        if (!confirm(`¿Reclamar tu reembolso de ${money(st.reclamable)}?\nEntra ya a tu saldo para seguir jugando.${roll}`)) return;
+        const btn = document.getElementById('cbkClaimBtn');
+        if (btn) { if (btn.disabled) return; btn.disabled = true; btn.textContent = '⏳ Acreditando…'; }
+        try {
+            const response = await fetch(`${VIP.config.API_URL}/api/cashback/claim`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${VIP.state.currentToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                if (VIP.ui && VIP.ui.showToast) VIP.ui.showToast(data.error || 'No se pudo reclamar. Probá de nuevo.', 'error');
+            } else {
+                if (VIP.ui && VIP.ui.showToast) VIP.ui.showToast(`💸 ¡Reembolso de ${money(data.amount)} acreditado en tu saldo!`, 'success');
+                if (VIP.ui && VIP.ui.syncBalance) { try { VIP.ui.syncBalance(); } catch (e) { /* noop */ } }
+            }
+        } catch (e) {
+            if (VIP.ui && VIP.ui.showToast) VIP.ui.showToast('Error de conexión. Probá de nuevo.', 'error');
+        }
+        await loadCashbackStatus(false);
+        await loadRefundStatus();
+        const overlay = document.getElementById('profileModal');
+        if (overlay && overlay.style.display !== 'none') showProfileModal();
     }
 
     // ============================================
@@ -418,10 +485,68 @@ VIP.refunds = (function () {
         if (!VIP.state.vipStatus) {
             await loadVipStatus();
         }
+        if (!VIP.state.cashbackStatus) {
+            await loadCashbackStatus(false);
+        }
         const s = VIP.state.refundStatus;
         const v = VIP.state.vipStatus;
+        const cb = VIP.state.cashbackStatus;
         const user = VIP.state.currentUser || {};
         const money = (n) => '$' + (Number(n) || 0).toLocaleString('es-AR');
+
+        // ==========================================================
+        // REEMBOLSO ACUMULATIVO (de por vida) — tarjeta con el monto grande y
+        // el botón RECLAMAR. Solo se muestra si la feature está encendida en el
+        // panel. Textos sin jerga: "esto es tu reembolso, lo tocás y entra ya".
+        // ==========================================================
+        let cashbackHtml = '';
+        if (cb && cb.enabled) {
+            const ago = VIP.state.cashbackStatusAt ? Math.max(0, Math.round((Date.now() - VIP.state.cashbackStatusAt) / 1000)) : null;
+            const ok = !cb.unavailable && cb.reclamable > 0 && cb.reclamable >= (cb.minArs || 0);
+            let cuerpo;
+            if (cb.unavailable) {
+                cuerpo = `<div style="font-size:12px;color:#ddd;text-align:center;padding:6px 0;">No pudimos calcular tu reembolso ahora. Probá en unos minutos.</div>`;
+            } else {
+                const nota = ok
+                    ? `Tocá RECLAMAR y entra <strong style="color:#fff;">YA</strong> a tu saldo. O seguí juntando: no se vence.`
+                    : (cb.reclamable > 0
+                        ? `Se reclama desde ${money(cb.minArs)}. Seguí jugando: se junta solo.`
+                        : `Se va juntando solo a medida que jugás: el ${cb.pct}% de lo que perdés con tu plata vuelve acá.`);
+                cuerpo = `<div style="text-align:center;padding:4px 0 2px;">
+                        <div style="font-size:11px;color:#9aa4b0;letter-spacing:.4px;">TU REEMBOLSO DISPONIBLE</div>
+                        <div style="font-size:32px;font-weight:900;color:${ok ? '#4dd0ff' : '#5a6672'};margin:2px 0;text-shadow:0 2px 8px rgba(77,208,255,0.25);">${money(cb.reclamable)}</div>
+                        <div style="font-size:11px;color:#9aa4b0;line-height:1.45;">${nota}</div>
+                    </div>`;
+            }
+            const cta = ok
+                ? `<button type="button" id="cbkClaimBtn" onclick="VIP.refunds.claimCashback()"
+                       style="width:100%;margin-top:10px;background:linear-gradient(135deg,#0b5a7a,#1497c9);color:#fff;
+                              border:1px solid #4dd0ff;padding:11px;border-radius:12px;font-weight:900;font-size:13px;cursor:pointer;">
+                       💸 RECLAMAR ${money(cb.reclamable)} AHORA
+                   </button>`
+                : '';
+            const roll = cb.rolloverX > 0
+                ? `<div style="font-size:10px;color:#888;margin-top:6px;line-height:1.4;">Se acredita como bono: para retirarlo apostalo x${cb.rolloverX}.${cb.maxDailyArs > 0 ? ` Tope ${money(cb.maxDailyArs)} por día.` : ''}</div>`
+                : (cb.maxDailyArs > 0 ? `<div style="font-size:10px;color:#888;margin-top:6px;">Tope ${money(cb.maxDailyArs)} por día.</div>` : '');
+            cashbackHtml = `
+                <div style="font-size:13px;font-weight:800;color:#4dd0ff;margin-bottom:8px;">💸 Tu reembolso acumulativo</div>
+                <div style="padding:12px;background:rgba(0,0,0,0.3);border-radius:10px;margin-bottom:14px;border:1px solid rgba(77,208,255,0.35);">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                        <span style="font-size:10px;color:#6f7a86;">
+                            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#26e07f;box-shadow:0 0 6px #26e07f;margin-right:4px;"></span>EN VIVO${ago != null ? ' · hace ' + (ago < 5 ? 'instantes' : ago + ' s') : ''}
+                        </span>
+                        <button type="button" id="cbkRefreshBtn" onclick="VIP.refunds.refreshCashback()"
+                            style="background:rgba(255,255,255,0.10);border:none;color:#cfd6de;border-radius:8px;padding:4px 10px;font-size:11px;font-weight:800;cursor:pointer;">🔄 Actualizar</button>
+                    </div>
+                    ${cuerpo}
+                    ${cta}
+                    <div style="font-size:10.5px;color:#999;margin-top:8px;line-height:1.45;">
+                        El ${cb.pct}% de lo que perdés jugando <strong>con tu plata</strong> (los bonos y regalos no cuentan) se junta acá
+                        de por vida y lo reclamás cuando quieras. Al reclamar arranca de 0. Solo cuenta casino, no deportes.
+                    </div>
+                    ${roll}
+                </div>`;
+        }
 
         // ==========================================================
         // Sección NIVEL VIP — versión SIMPLE (owner 2026-08-04): sin números
@@ -627,6 +752,8 @@ VIP.refunds = (function () {
                     </div>
                 </div>
 
+                ${cashbackHtml}
+
                 ${vipHtml}
 
                 <div style="font-size:13px;font-weight:800;color:#d4af37;margin-bottom:8px;">🎁 Tus reembolsos</div>
@@ -664,7 +791,10 @@ VIP.refunds = (function () {
         claimRefund,
         showUnifiedRefundModal,
         showProfileModal,
-        closeProfileModal
+        closeProfileModal,
+        loadCashbackStatus,
+        refreshCashback,
+        claimCashback
     };
 
 })();

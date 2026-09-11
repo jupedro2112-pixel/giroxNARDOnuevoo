@@ -91,6 +91,13 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   comisiones de referidos sin comerse el límite de 60 req/min.
 - **Reembolsos por RANGO** (Bronce 3% / Plata 6% / Oro 10%), según lo perdido EN EL
   PERÍODO que se reclama — no un acumulado. Ver `src/utils/refundTiers.js`.
+  **Desde 2026-09-11 la base es la pérdida sobre plata REAL** (`netwin −
+  bonus.granted` del período) y además existe el **reembolso ACUMULATIVO de por
+  vida** (`_cashbackStateToday`, `src/utils/cashbackFormula.js`, modelo
+  `CashbackClaim`) que sigue `docs/ESPEC-REEMBOLSO-1GIROX.md` de la gemela: pct% de
+  (neto de por vida − TODO lo regalado, reembolsos cobrados incluidos) − cobrado.
+  Un tipo nuevo de regalo ⇒ sumarlo a `CASHBACK_GIFT_TX_TYPES`. Validar cambios con
+  `node scripts/test-cashback-spec.js`. Detalle: ARCHITECTURE §5.
 - **Regalos = BONO 0 "regalo directo" (2026-09-07, v1.10+):** reembolsos, ruleta,
   rakeback, nivel VIP, referidos e instalación se acreditan con `creditUserBalance`
   → `/bonus` con `multiplier: 0` (figura como Bono en 1girox, retirable al instante,

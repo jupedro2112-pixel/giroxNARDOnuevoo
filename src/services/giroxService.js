@@ -1059,6 +1059,78 @@ async function creditUserBalance(username, amount, reference = null, opts = {}) 
   return out;
 }
 
+/**
+ * Regalo CON ROLLOVER (ESPEC-REEMBOLSO §4.4 — reembolso acumulativo): acredita
+ * `amount` como BONO de 1girox con `multiplier = rolloverX`. Con rolloverX 0 es
+ * exactamente `creditUserBalance` (bono 0 regalo directo, precheck + fallback).
+ *
+ * Con rollover > 0 un /bonus PISA el bono activo del jugador (le debita lo que le
+ * quedaba). Por eso, antes de mandarlo: (a) precheck contra GET /config (bono
+ * suelto habilitado, multiplier permitido, monto en fixed_min/max) y (b) lectura
+ * FRESCA del jugador — si tiene bono bloqueado o sin reclamar por más de
+ * GIFT_BONUS_GUARD_MIN_ARS, se cae a DEPÓSITO con `wagering.multiplier` (misma
+ * reference: la idempotencia no se rompe). Un rechazo de negocio del /bonus (422,
+ * feature_disabled, bonus_out_of_range, invalid_multiplier) también cae a
+ * depósito; un error transitorio (red/429/5xx) se devuelve tal cual para que el
+ * caller reintente con la MISMA reference (un timeout puede haber acreditado).
+ *
+ * Mismo criterio que `_creditFireReward` (server.js) — acá queda como helper
+ * genérico del cliente para que cualquier regalo con rollover lo reuse.
+ *
+ * @returns misma forma que depositToUser + { creditedAs: 'bonus'|'deposit', fallbackReason? }
+ */
+const GIFT_BONUS_GUARD_MIN_ARS = 50; // resto ≤ $50 de bono viejo: se pisa (mismo piso que la Bonificación del panel)
+async function creditGift(username, amount, opts = {}) {
+  const amt = _normalizeAmount(amount);
+  if (amt === null) return { success: false, error: 'Monto inválido', code: 'invalid_amount' };
+  const roll = Math.max(0, Math.round(Number(opts.rolloverX) || 0));
+  const description = opts.description || '';
+  const reference = opts.reference || null;
+  if (roll === 0) return creditUserBalance(username, amt, reference, { description });
+
+  let viaBonus = true;
+  let why = null;
+  try {
+    const c = await getPlatformConfig();
+    const b = (c.success && c.config && c.config.bonus) || null;
+    if (!b || b.enabled === false || b.standalone_enabled === false) {
+      viaBonus = false; why = 'bono suelto deshabilitado en la plataforma';
+    } else {
+      const allowed = Array.isArray(b.multipliers) ? b.multipliers.map(Number) : null;
+      if (allowed && allowed.length && !allowed.includes(roll)) { viaBonus = false; why = `x${roll} no está entre los multiplicadores de bono (${allowed.join(', ')})`; }
+      const mn = Number(b.fixed_min) || 0;
+      const mx = Number(b.fixed_max) || 0;
+      if (viaBonus && ((mn > 0 && amt < mn) || (mx > 0 && amt > mx))) { viaBonus = false; why = `monto $${amt} fuera de los límites del bono fijo (${mn}-${mx || '∞'})`; }
+    }
+  } catch (_) { /* sin config disponible: se intenta el bono igual, la plataforma valida */ }
+
+  if (viaBonus) {
+    try {
+      // fresh:true — decisión de plata: no leer el cache corto de 8s.
+      const info = await getUserInfoByName(username, { fresh: true });
+      const locked = info ? (Number(info.bonusLocked) || 0) : 0;
+      const claim = info ? (Number(info.claimableTotal) || 0) : 0;
+      if (locked + claim > GIFT_BONUS_GUARD_MIN_ARS) {
+        viaBonus = false;
+        why = `el jugador ya tiene un bono activo (bloqueado $${locked}, a reclamar $${claim}) — otorgar otro lo pisaría`;
+      }
+    } catch (_) { /* si no se pudo leer, se sigue: la plataforma valida igual */ }
+  }
+
+  if (viaBonus) {
+    const r = await creditUserBalance(username, amt, reference, { multiplier: roll, description });
+    if (r && r.success) { r.creditedAs = 'bonus'; r.claimRequired = true; return r; }
+    const definitivo = r && (['feature_disabled', 'bonus_out_of_range', 'validation_error', 'invalid_multiplier', 'player_not_found'].includes(r.code) || r.httpStatus === 422);
+    if (!definitivo) return r; // transitorio: no cambiar de vía
+    why = `la plataforma rechazó el bono (${r.code || r.error})`;
+  }
+
+  logger.warn(`[girox] regalo a ${username} $${amt} (x${roll}) va por DEPÓSITO con rollover (figura como Carga) — ${why || 's/motivo'}`);
+  const r = await depositToUser(username, amt, description, reference, { multiplier: roll });
+  if (r && r.success) { r.creditedAs = 'deposit'; r.fallbackReason = why; }
+  return r;
+}
+
 /** Kill switch: GIROX_GIFT_AS_BONUS=0|false|off → regalos por depósito libre (como antes). */
 function _giftAsBonusEnabled() {
   const raw = String(process.env.GIROX_GIFT_AS_BONUS || '').trim().toLowerCase();
@@ -1222,6 +1294,16 @@ function formatStatsDate(date) {
 }
 
 /** Normaliza el bloque de totales que devuelve la API. */
+/** Bloque `bonus` del /stats (soporte 1girox 2026-09-10, sección 2.10 del manual
+ *  actualizado — ESPEC-REEMBOLSO §2.1): `granted` = total de bono OTORGADO al
+ *  jugador en el rango consultado; `still_locked` = cuánto de eso sigue con
+ *  rollover sin cumplir. Va a nivel jugador (no por categoría). Es el dato
+ *  oficial para calcular reembolsos sobre plata REAL. Ausente (API vieja) → 0. */
+function _statsBonus(b) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  return { granted: n(b && b.granted), stillLocked: n(b && b.still_locked) };
+}
+
 function _statsTotals(t) {
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   return {
@@ -1240,7 +1322,7 @@ function _statsTotals(t) {
  * @param {Date} toDate
  * @param {string} [label] etiqueta para logs
  * @returns {{success, netwin, casinoNetwin, sportsNetwin, wagered, payout, betsCount,
- *            playerId, from, to}} | {success:false, error, code}
+ *            bonusGranted, bonusStillLocked, playerId, from, to}} | {success:false, error, code}
  */
 async function getPlayerStats(username, fromDate, toDate, label = 'stats', opts = {}) {
   const from = formatStatsDate(fromDate);
@@ -1281,6 +1363,7 @@ async function getPlayerStats(username, fromDate, toDate, label = 'stats', opts 
   const cats = d.categories || {};
   const casino = _statsTotals(cats.casino);
   const sports = _statsTotals(cats.sports);
+  const bonus = _statsBonus(d.bonus);
 
   const out = {
     success: true,
@@ -1294,8 +1377,13 @@ async function getPlayerStats(username, fromDate, toDate, label = 'stats', opts 
     wagered: totals.wagered,
     payout: totals.payout,
     betsCount: totals.betsCount,
+    // Bono OTORGADO en el rango (dato oficial). Base de reembolsos sobre plata
+    // real = netwin − bonusGranted (ESPEC-REEMBOLSO §3/§5). 0 si la API no lo manda.
+    bonusGranted: bonus.granted,
+    bonusStillLocked: bonus.stillLocked,
     categories: { casino, sports }
   };
+  if (opts && opts.includeRaw) out.raw = d; // diagnóstico (stats-raw del panel)
   _statsCache.set(_statsKey, { data: out, ts: Date.now() }); // solo se cachea el éxito
   return out;
 }
@@ -1355,6 +1443,7 @@ async function getPlayersStatsBatch(usernames, fromDate, toDate, label = 'stats-
       const cats = p.categories || {};
       const casino = _statsTotals(cats.casino);
       const sports = _statsTotals(cats.sports);
+      const bonus = _statsBonus(p.bonus);
       players[String(p.username)] = {
         success: true,
         playerId: p.id != null ? Number(p.id) : null,
@@ -1365,6 +1454,8 @@ async function getPlayersStatsBatch(usernames, fromDate, toDate, label = 'stats-
         wagered: totals.wagered,
         payout: totals.payout,
         betsCount: totals.betsCount,
+        bonusGranted: bonus.granted,
+        bonusStillLocked: bonus.stillLocked,
         categories: { casino, sports }
       };
     }
@@ -1478,6 +1569,7 @@ module.exports = {
   // netwin / estadísticas
   getPlayerStats,
   getPlayersStatsBatch,
+  creditGift,
   formatStatsDate,
   // configuración del sitio
   getPlatformConfig,
