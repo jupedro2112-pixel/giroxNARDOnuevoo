@@ -4608,6 +4608,8 @@ function renderFirstChargeBonusBanner(user) {
     const banner = document.getElementById('chatBonusBanner');
     if (!banner) return;
     const status = user && user.firstChargeBonusStatus;
+    // % congelado al reclamar (reclamos viejos sin el campo = eran del 100%).
+    const pct = (user && user.firstChargeBonusPct != null) ? Number(user.firstChargeBonusPct) : 100;
 
     if (status === 'pending') {
         banner.style.display = '';
@@ -4616,8 +4618,8 @@ function renderFirstChargeBonusBanner(user) {
             'padding:10px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
                 '<span style="font-size:20px;">🎁</span>' +
                 '<div style="flex:1;min-width:180px;">' +
-                    '<strong style="font-size:13px;display:block;">BONO 100% PENDIENTE</strong>' +
-                    '<span style="font-size:11.5px;opacity:.92;">En su próxima carga, duplicale el monto. ' +
+                    '<strong style="font-size:13px;display:block;">BONO ' + pct + '% PENDIENTE (por instalar la app)</strong>' +
+                    '<span style="font-size:11.5px;opacity:.92;">En su próxima carga, sumale un ' + pct + '% extra' + (pct === 100 ? ' (duplicale el monto)' : '') + '. ' +
                     'Después marcalo como usado — es por única vez.</span>' +
                 '</div>' +
                 '<button onclick="markFirstChargeBonusUsed(\'' + escapeHtml(user.id) + '\')" ' +
@@ -4636,7 +4638,7 @@ function renderFirstChargeBonusBanner(user) {
         banner.innerHTML =
             '<div style="background:rgba(255,255,255,0.05);color:#888;border-radius:10px;' +
             'padding:7px 12px;margin:6px 0;font-size:11.5px;">' +
-                '✅ Bono 100% ya utilizado' + quien + '. No le corresponde otro.' +
+                '✅ Bono ' + pct + '% por instalar la app ya utilizado' + quien + '. No le corresponde otro.' +
             '</div>';
         return;
     }
@@ -4648,7 +4650,7 @@ function renderFirstChargeBonusBanner(user) {
 // Marca el bono como usado. Confirma primero: es plata que regala el agente y la
 // acción no se puede deshacer desde el panel.
 async function markFirstChargeBonusUsed(userId) {
-    if (!confirm('¿Ya le duplicaste la carga a este cliente?\n\nAl marcarlo como usado, el bono se consume y NO va a poder reclamarlo de nuevo.')) return;
+    if (!confirm('¿Ya le aplicaste el bono en la carga de este cliente?\n\nAl marcarlo como usado, el bono se consume y NO va a poder reclamarlo de nuevo.')) return;
     try {
         const resp = await fetch(`${API_URL}/api/admin/users/${encodeURIComponent(userId)}/first-charge-bonus/use`, {
             method: 'POST',
@@ -5679,10 +5681,46 @@ async function loadCommands() {
         
         // Cargar CBU
         loadCBUConfig();
+        // % del bono por instalar la app (variable {pct} de los /sys_install_bonus*)
+        loadInstallBonusPct();
     } catch (error) {
         console.error('Error loading commands:', error);
     }
 }
+
+// ====== % del bono por instalar la app (COMANDOS, solo admin general edita) ======
+async function loadInstallBonusPct() {
+    const form = document.getElementById('installBonusPctForm');
+    if (!form) return;
+    try {
+        const r = await authFetch('/api/admin/install-bonus-config');
+        if (!r.ok) { form.style.display = 'none'; return; }
+        const j = await r.json();
+        form.style.display = '';
+        const input = document.getElementById('installBonusPctInput');
+        const btn = document.getElementById('installBonusPctSaveBtn');
+        const msg = document.getElementById('installBonusPctMsg');
+        if (input) { input.value = j.pct; input.disabled = !j.canEdit; }
+        if (btn) btn.style.display = j.canEdit ? '' : 'none';
+        if (msg) msg.textContent = j.canEdit ? `Vigente: ${j.pct}%` : `Vigente: ${j.pct}% (solo el admin general lo cambia)`;
+    } catch (e) { form.style.display = 'none'; }
+}
+async function saveInstallBonusPct() {
+    const input = document.getElementById('installBonusPctInput');
+    const msg = document.getElementById('installBonusPctMsg');
+    const pct = Number(input && input.value);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 500) { showToast('El % tiene que ser un número entre 0 y 500', 'error'); return; }
+    if (!confirm(`¿Dejar el bono por instalar la app en ${pct}%?\n\nAplica al instante al cartel de la app y a los mensajes automáticos. Los clientes que YA reclamaron conservan el % que tenían.`)) return;
+    try {
+        const r = await authFetch('/api/admin/install-bonus-config', { method: 'POST', body: JSON.stringify({ pct }) });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        if (msg) msg.textContent = `Vigente: ${j.pct}%`;
+        showToast(`Bono por instalar la app: ${j.pct}%`, 'success');
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+window.saveInstallBonusPct = saveInstallBonusPct;
+window.loadInstallBonusPct = loadInstallBonusPct;
 
 function renderCommands(commands) {
     const container = document.getElementById('commandsList');

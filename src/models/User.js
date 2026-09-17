@@ -548,6 +548,14 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // % del bono CONGELADO al reclamar (2026-09-17). El % vigente vive en
+  // Config['installBonusPct'] y el owner lo cambia según el mes/día: el cliente
+  // tiene que cobrar el % que le prometió el cartel cuando reclamó, no el de hoy.
+  // null = reclamos anteriores a este campo (eran todos del 100%).
+  firstChargeBonusPct: {
+    type: Number,
+    default: null
+  },
 
   // ============================================
   // CÓDIGO DE BIENVENIDA de la Comunidad de Telegram (2026-08-03)

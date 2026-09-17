@@ -4,7 +4,56 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-09-11**
+> **Última actualización: 2026-09-17**
+
+## Sesión 2026-09-17
+
+### 209. Bono por instalar la app: 100% → 25% y el % EDITABLE desde COMANDOS (variable {pct} en todos los textos) — SW v114, admin-sw v48
+- **Pedido del owner (captura del cartel dorado "¡100% de bono en tu próxima
+  carga!"):** bajarlo a 25% y que todo lo que incluya un bono que damos sea
+  modificable desde COMANDOS, porque va variando según el mes/día.
+- **Antes:** el 100% estaba HARDCODEADO en 9 lugares: cartel de la PWA
+  (título, botón, aviso de abajo), modal de ayuda de instalación, toast,
+  mensaje `/sys_install_bonus` (seed + fallback), nota interna al agente,
+  respuesta del claim, banners "BONO 100% PENDIENTE / ya utilizado" del chat
+  del panel y el confirm "¿Ya le duplicaste la carga?".
+- **Ahora — UN solo número:** `Config['installBonusPct']` (default **25**,
+  0-500), editable en el panel → **COMANDOS → card "🎁 Bono por instalar la
+  app"** (arriba de la lista; la ve admin y depositor, la edita SOLO el admin
+  general — `GET/POST /api/admin/install-bonus-config`). Todos los textos lo
+  leen por la **variable `{pct}`**:
+  - `/sys_install_bonus` (mensaje al reclamar) — seed y fallback con `{pct}`.
+  - **Comandos nuevos** `/sys_install_bonus_banner` (título del cartel dorado)
+    y `/sys_install_bonus_banner_note` (aviso de abajo, sólo registros sin
+    pauta). Vaciarlos NO oculta el cartel: vuelve al texto por defecto (el
+    cartel siempre necesita título). El botón es `🎁 Reclamar mi {pct}%`.
+  - `GET /api/install-bonus/status` devuelve `pct`, `bannerTitle`,
+    `bannerNote`, `buttonLabel` ya renderizados; `installbonus.js` pinta el
+    cartel con eso (hasta que llega la respuesta el cartel está oculto, como
+    siempre). El HTML quedó con textos neutros sin %.
+  - Nota interna al agente, respuesta del claim, toast y modal de ayuda usan
+    el % vigente.
+- **% CONGELADO al reclamar:** `User.firstChargeBonusPct` se setea en el
+  claim con el % vigente. El banner del chat del panel ("BONO 25% PENDIENTE
+  (por instalar la app) — sumale un 25% extra") y la nota "USADO" usan ese
+  valor, no el de hoy: si el owner cambia el % mañana, el que ya reclamó cobra
+  lo que le prometió el cartel. Reclamos anteriores al campo (null) = 100%.
+- **Migración idempotente al boot:** `/sys_install_bonus` (y los 2 nuevos) con
+  "100%" LITERAL guardado → se reemplaza por `{pct}%` (`$replaceAll`). Sin eso,
+  el texto viejo de la base seguiría prometiendo 100 aunque el panel diga 25.
+  Un texto editado a mano sin "100%" no se toca. La migración vieja de
+  `{amount}` ahora escribe directo el texto con `{pct}`.
+- **No tocado:** `/sys_recover_100` ("¿Querés reclamar el 100% de tu carga?") es
+  OTRO mensaje (recuperación por reembolso, ya editable en COMANDOS como
+  siempre); el código de bienvenida tiene su propio % en Configuración
+  (`communityWelcomePercent`).
+- **Validado:** `node --check` OK (server.js, User.js, installbonus.js,
+  admin.js, SWs). **Back necesita redeploy** (seed de los comandos nuevos +
+  migración + endpoints). PROBAR: (1) COMANDOS → card muestra 25% → cambiar y
+  guardar; (2) PWA sin reclamar → cartel "¡25% de bono…" / botón "Reclamar mi
+  25%"; (3) editar `/sys_install_bonus_banner` → el cartel cambia al recargar;
+  (4) reclamar → mensaje y nota interna con 25%, banner del panel "BONO 25%
+  PENDIENTE"; (5) cambiar el % a 30 → ese cliente sigue en 25 en el panel.
 
 ## Sesión 2026-09-11
 

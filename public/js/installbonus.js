@@ -1,8 +1,8 @@
 // ========================================
 // INSTALL BONUS - Bono one-time por instalar la app
 // ========================================
-// Muestra un cartel en el chat con un botón para reclamar el 100% en la próxima
-// carga. NO acredita plata: deja el bono pendiente para que el agente lo aplique. Solo
+// Muestra un cartel en el chat con un botón para reclamar el % (configurable
+// desde el panel → COMANDOS; antes era un 100% fijo) en la próxima carga. NO acredita plata: deja el bono pendiente para que el agente lo aplique. Solo
 // se acredita estando dentro de la app instalada (display-mode: standalone).
 // Si el usuario no está en la app instalada, se le explica cómo instalarla;
 // si insiste y sigue fallando, se le explica borrar caché y reinstalar.
@@ -12,8 +12,14 @@ window.VIP = window.VIP || {};
 VIP.installBonus = (function () {
 
     let _claimed = true; // por defecto no mostramos el cartel hasta confirmar con el server
+    // % vigente + textos del cartel: los manda el server (el % se edita en el
+    // panel → COMANDOS; los textos en /sys_install_bonus_banner*). Hasta que
+    // llega la respuesta, el cartel queda oculto.
+    let _pct = null;
+    let _buttonLabel = '🎁 Reclamar mi bono';
 
     function _el(id) { return document.getElementById(id); }
+    function _pctLabel() { return _pct != null ? _pct + '%' : 'bono'; }
 
     // Consulta el estado del bono y muestra/oculta el cartel.
     async function init() {
@@ -26,6 +32,14 @@ VIP.installBonus = (function () {
             if (res.ok) {
                 const data = await res.json();
                 _claimed = data.claimed === true;
+                if (data.pct != null) _pct = Number(data.pct);
+                const title = _el('installBonusTitle');
+                if (title && data.bannerTitle) title.textContent = data.bannerTitle;
+                const notice = _el('installBonusDirectNotice');
+                if (notice && data.bannerNote) notice.textContent = data.bannerNote;
+                if (data.buttonLabel) _buttonLabel = data.buttonLabel;
+                const btn = _el('installBonusClaimBtn');
+                if (btn) btn.textContent = _buttonLabel;
             }
         } catch (e) { /* si falla, dejamos el cartel oculto */ }
         banner.style.display = _claimed ? 'none' : '';
@@ -71,7 +85,7 @@ VIP.installBonus = (function () {
                 if (banner) banner.style.display = 'none';
                 localStorage.removeItem('installBonusFailedAttempts');
                 VIP.ui.adjustLayout();
-                VIP.ui.showToast('🎁 ¡Tenés un 100% de bono en tu próxima carga!', 'success');
+                VIP.ui.showToast(data.message || ('🎁 ¡Tenés un ' + _pctLabel() + ' de bono en tu próxima carga!'), 'success');
                 setTimeout(() => VIP.ui.syncBalance(), 1000);
                 setTimeout(() => VIP.chat.loadMessages(), 800);
             } else if (data.code === 'NOT_STANDALONE') {
@@ -101,7 +115,7 @@ VIP.installBonus = (function () {
         } catch (e) {
             VIP.ui.showToast('Error de conexión', 'error');
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = '🎁 Reclamar mi 100%'; }
+            if (btn) { btn.disabled = false; btn.textContent = _buttonLabel; }
         }
     }
 
@@ -139,7 +153,7 @@ VIP.installBonus = (function () {
                     <li>Borrá / desinstalá la app de tu pantalla de inicio.</li>
                     <li>En el navegador, borrá el <strong>caché</strong> y los datos del sitio.</li>
                     <li>Volvé a abrir la página y reinstalá la app con los pasos de arriba.</li>
-                    <li>Abrí la app instalada y tocá de nuevo <strong>"🎁 Reclamar mi 100%"</strong>.</li>
+                    <li>Abrí la app instalada y tocá de nuevo <strong>"${_buttonLabel}"</strong>.</li>
                 </ol>
             </div>` : '';
 
@@ -147,11 +161,11 @@ VIP.installBonus = (function () {
         modal.className = 'ios-install-modal';
         modal.innerHTML = `
             <div class="ios-install-content">
-                <h3>🎁 Reclamá tu 100% de bono</h3>
+                <h3>🎁 Reclamá tu ${_pctLabel()} de bono</h3>
                 <p style="color:#f7931e;margin-bottom:10px;">El bono se reclama <strong>desde la app instalada</strong>. Parece que todavía no la estás usando instalada.</p>
                 <p style="color:#fff;font-size:13px;margin-bottom:8px;text-align:left;">Hacé estos pasos:</p>
                 <ol style="text-align:left;">${installSteps.map(s => `<li>${s}</li>`).join('')}</ol>
-                <p style="color:#00ff88;font-size:13px;margin-top:10px;">Ya dentro de la app instalada, tocá <strong>"🎁 Reclamar mi 100%"</strong> y el bono se acredita al instante.</p>
+                <p style="color:#00ff88;font-size:13px;margin-top:10px;">Ya dentro de la app instalada, tocá <strong>"${_buttonLabel}"</strong> y el bono queda reservado al instante.</p>
                 ${reinstallHtml}
                 <button onclick="this.closest('.ios-install-modal').remove()" class="btn btn-primary" style="margin-top:15px;">Entendido</button>
             </div>

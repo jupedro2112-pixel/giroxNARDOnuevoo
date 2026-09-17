@@ -587,6 +587,26 @@ document.addEventListener('change', function (ev) {
                 </div>
                 <div class="commands-layout">
                     <div class="commands-panel">
+                        <!-- % del bono por instalar la app (solo admin general edita). Se usa
+                             como variable {pct} en /sys_install_bonus, /sys_install_bonus_banner
+                             y /sys_install_bonus_banner_note, y en el cartel de la app. -->
+                        <div class="cbu-form" id="installBonusPctForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">🎁 Bono por instalar la app</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 8px;">
+                                Porcentaje EXTRA que el agente le suma a la próxima carga del cliente que reclamó el bono
+                                desde la app instalada. Cambialo cuando quieras: el cartel de la app y los mensajes
+                                automáticos de abajo lo leen por la variable <code>{pct}</code>. El % queda
+                                <b>congelado</b> en cada cliente al reclamarlo (cobra el que le prometió el cartel).
+                            </p>
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <label style="margin:0;">% del bono:</label>
+                                <input type="number" id="installBonusPctInput" min="0" max="500" step="1" style="width:90px;">
+                                <button class="btn-primary btn-small" id="installBonusPctSaveBtn" onclick="saveInstallBonusPct()">
+                                    <span class="icon icon-save"></span> Guardar %
+                                </button>
+                                <span id="installBonusPctMsg" style="font-size:12px;color:#aaa;"></span>
+                            </div>
+                        </div>
                         <div class="panel-subheader">
                             <h3>Comandos Personalizados</h3>
                             <button class="btn-primary btn-small" onclick="showCreateCommandModal()">

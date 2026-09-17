@@ -34,7 +34,7 @@ firebase.initializeApp(firebaseConfig);
 const messaging = firebase.messaging();
 
 // Bump this version with every deploy so the admin PWA always loads fresh code.
-const CACHE_VERSION = 'v47'; // v47: card "Reembolso acumulativo" en Configuración + etiqueta/filtro del reembolso acumulativo en Transacciones // v46: Transacciones con ruleta / rakeback / nivel VIP (etiquetas, filtros, tarjetas, total regalos) // v44: mensajes de sistema del chat — INTERNOS (adminOnly) en VERDE con etiqueta "🔒 INTERNO"; automáticos al cliente siguen naranja con 🤖
+const CACHE_VERSION = 'v48'; // v48: % del bono por instalar la app editable en COMANDOS + banners del chat con el % congelado de cada cliente // v47: card "Reembolso acumulativo" en Configuración + etiqueta/filtro del reembolso acumulativo en Transacciones // v46: Transacciones con ruleta / rakeback / nivel VIP (etiquetas, filtros, tarjetas, total regalos) // v44: mensajes de sistema del chat — INTERNOS (adminOnly) en VERDE con etiqueta "🔒 INTERNO"; automáticos al cliente siguen naranja con 🤖
 const CACHE_NAME = 'admin-sala-' + CACHE_VERSION;
 
 // Only pre-cache stable assets (icons rarely change).

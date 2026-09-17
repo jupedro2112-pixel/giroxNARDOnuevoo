@@ -114,7 +114,9 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   (el panel admin usa cookie).
 - **Mensajes automáticos al usuario** son editables desde la sección COMANDOS
   (comandos `/sys_*`). Usar el helper `renderSystemCommand(name, fallback, vars)` para
-  cualquier mensaje automático nuevo.
+  cualquier mensaje automático nuevo. **Ningún % de bono hardcodeado en textos**
+  (owner 2026-09-17, varían por mes/día): va a Config + variable (ej. `{pct}` del bono
+  por instalar la app, `Config['installBonusPct']`, editable en COMANDOS).
 - **Transaction** (cargas/retiros) es permanente (sin TTL). **Message** tiene TTL de 3
   días. La analítica de clientes se basa en Transaction.
 - **Montos en PESOS.** ⚠️ Ojo si mirás código o docs viejos: JUGAYGANA trabajaba en

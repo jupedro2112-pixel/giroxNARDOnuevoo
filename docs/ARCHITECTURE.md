@@ -736,9 +736,19 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   Config['fireMilestones']) exigen actividad de cargas y expiran el mismo día. Crédito
   como bono (rollover >0 → /bonus con multiplier; 0 → bono 0; fallback depósito —
   ver §4.5) (`vip-fire-<userId>-d<día>-<fecha>`).
-- **Bono instalación $5.000**: exige standalone real (token FCM), teléfono verificado,
-  anti-multicuenta por token FCM compartido, reserva atómica. Crédito como bono 0 (§4.5)
-  (`vip-install-<userId>` — una sola vez en la vida del usuario).
+- **Bono por instalar la app** (🪦 antes "bono instalación $5.000" acreditado; hoy NO
+  acredita plata): exige standalone real (token FCM), teléfono verificado (salvo
+  cuentas creadas por agente), anti-multicuenta por token FCM compartido, reserva
+  atómica (`installBonusClaimed` + `firstChargeBonusStatus:'pending'`). Es un **% EXTRA
+  en la PRÓXIMA CARGA que aplica el agente a mano** y marca como usado desde el chat
+  del panel (`POST /api/admin/users/:userId/first-charge-bonus/use`). **El % es
+  `Config['installBonusPct']`** (default 25; 2026-09-17 — antes 100 fijo), editable en
+  COMANDOS (card "Bono por instalar la app", sólo admin general) y se **congela** en
+  `User.firstChargeBonusPct` al reclamar. Todos los textos lo leen por la variable
+  `{pct}`: `/sys_install_bonus` (mensaje), `/sys_install_bonus_banner` y
+  `/sys_install_bonus_banner_note` (cartel dorado de la PWA, que los recibe ya
+  renderizados por `GET /api/install-bonus/status`). Migración al boot: "100%" literal
+  guardado en esos comandos → `{pct}%`.
 - **Link de acceso de un solo uso** (2026-08-03): el admin general o un DEPOSITOR
   generan `?acceso=<token>` para un cliente (`POST /api/admin/users/:userId/access-link`,
   también desde el alta del panel; regenerar pisa el anterior). En `User` vive SOLO
@@ -848,6 +858,11 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   sembrar el comando en `systemCmds` de `initializeData()`. Respuesta VACÍA en el panel
   = "no enviar" (null). Variables: montos como `${amount}` en el template y se
   reemplaza `{amount}` (el `$` queda como signo); texto como `{username}` sin `$`.
+  **Un % de bono NUNCA va hardcodeado en un texto** (owner 2026-09-17: varía según el
+  mes/día): guardarlo en Config, exponerlo como variable (`{pct}`) y, si el cliente lo
+  tiene que ver en la PWA, mandar el texto YA renderizado desde el backend (patrón del
+  cartel del bono por instalar la app). `_renderVars(template, vars)` renderiza un
+  default sin ir a la base.
 - **Identidad**: `user.id` (uuid), no `_id`. Username case-insensitive →
   `findUserByUsernameCI` (indexado + fallback), NUNCA regex nuevo.
 - **periodKey**: `YYYY-MM` (referidos y VipWagerMonth); RefundClaim usa

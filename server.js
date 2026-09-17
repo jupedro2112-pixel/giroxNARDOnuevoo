@@ -1371,6 +1371,15 @@ async function renderSystemCommand(name, fallback, vars = {}) {
   return out;
 }
 
+// Reemplazo de variables {k} en un template, sin ir a la base (para defaults).
+function _renderVars(template, vars = {}) {
+  let out = String(template == null ? '' : template);
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replace(new RegExp('\\{' + k + '\\}', 'g'), v == null ? '' : String(v));
+  }
+  return out;
+}
+
 // Arma el texto de la escalera de reembolsos VIGENTE, para la variable {escalera}
 // de los mensajes automáticos (ej. /sys_welcome). Así la bienvenida NUNCA queda
 // desactualizada cuando se cambian los rangos desde el panel (#118): se renderiza
@@ -10170,9 +10179,21 @@ async function initializeData() {
     },
     {
       name: '/sys_install_bonus',
-      description: 'Mensaje cuando el usuario reclama el bono por instalar la app (100% en su PRÓXIMA carga — no se acredita monto, lo aplica el agente). Variables: {username}',
+      description: 'Mensaje automático cuando el cliente reclama el bono por instalar la app (bono en su PRÓXIMA CARGA, lo aplica el agente). Variables: {username}, {pct} (el % vigente, se edita arriba en "Bono por instalar la app"). Si lo dejás vacío, no se envía.',
       type: 'message',
-      response: '🎁 ¡Listo {username}! Tenés un *100% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del 100% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.'
+      response: '🎁 ¡Listo {username}! Tenés un *{pct}% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del {pct}% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.'
+    },
+    {
+      name: '/sys_install_bonus_banner',
+      description: 'CARTEL dorado de la app (título) que invita a reclamar el bono por instalar la app. Variables: {pct}. Si lo dejás vacío, se usa el texto por defecto.',
+      type: 'message',
+      response: '¡{pct}% de bono en tu próxima carga!'
+    },
+    {
+      name: '/sys_install_bonus_banner_note',
+      description: 'CARTEL dorado de la app (aviso de abajo, solo para registros directos sin pauta). Variables: {pct}. Si lo dejás vacío, se usa el texto por defecto.',
+      type: 'message',
+      response: '⚠️ Es por única vez. Cuando vayas a cargar, avisale al agente que tenés el bono del {pct}% y te lo aplica en el momento.'
     },
     {
       name: '/sys_payout_paid',
@@ -10265,11 +10286,26 @@ async function initializeData() {
   try {
     const r = await Command.updateOne(
       { name: '/sys_install_bonus', response: /\{amount\}/ },
-      { $set: { response: '🎁 ¡Listo {username}! Tenés un *100% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del 100% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.' } }
+      { $set: { response: '🎁 ¡Listo {username}! Tenés un *{pct}% de bono en tu próxima carga*.\n\nCuando vayas a cargar, avisale al agente que tenés el bono del {pct}% por instalar la app y te lo aplica en el momento. 🥳\n\n⚠️ Es por única vez.' } }
     );
-    if (r.modifiedCount) console.log('✅ /sys_install_bonus con "${amount}" viejo → texto vigente (100% próxima carga)');
+    if (r.modifiedCount) console.log('✅ /sys_install_bonus con "${amount}" viejo → texto vigente ({pct}% próxima carga)');
   } catch (e) {
     console.warn(`⚠️ Migración /sys_install_bonus: ${e.message}`);
+  }
+  // MIGRACIÓN (2026-09-17, pedido del owner): el % del bono por instalar la app
+  // dejó de ser un 100% fijo — ahora es Config['installBonusPct'] (editable en
+  // COMANDOS) y los textos lo leen por la variable {pct}. Un /sys_install_bonus
+  // guardado con "100%" literal seguiría prometiendo 100 aunque el owner ponga
+  // 25 → se reemplaza el literal por la variable. Idempotente: sin "100%" no
+  // matchea más; un texto que el owner escriba a mano sin 100% no se toca.
+  try {
+    const r = await Command.updateMany(
+      { name: { $in: ['/sys_install_bonus', '/sys_install_bonus_banner', '/sys_install_bonus_banner_note'] }, response: /100%/ },
+      [{ $set: { response: { $replaceAll: { input: '$response', find: '100%', replacement: '{pct}%' } } } }]
+    );
+    if (r.modifiedCount) console.log(`✅ ${r.modifiedCount} comando(s) del bono por instalar la app: "100%" literal → variable {pct}`);
+  } catch (e) {
+    console.warn(`⚠️ Migración {pct} del bono de instalación: ${e.message}`);
   }
 
   console.log('✅ Datos inicializados correctamente');
@@ -10661,16 +10697,60 @@ app.post('/api/withdrawal/request', authMiddleware, async (req, res) => {
 // ============================================
 const INSTALL_BONUS_AMOUNT = 5000;
 
-// Estado del bono: si ya lo reclamó (para mostrar/ocultar el cartel del chat).
+// % del bono por instalar la app (owner 2026-09-17: era un 100% fijo en el
+// código; va variando según el mes/día → Config['installBonusPct'], editable
+// desde COMANDOS → "Bono por instalar la app", solo admin general). Sin cache
+// a propósito (multi-instancia). Todos los textos lo leen por la variable {pct}.
+const INSTALL_BONUS_PCT_DEFAULT = 25;
+async function getInstallBonusPct() {
+  try {
+    const n = Number(await getConfig('installBonusPct', null));
+    if (Number.isFinite(n) && n >= 0 && n <= 500) return Math.round(n);
+  } catch (_) { /* fallback */ }
+  return INSTALL_BONUS_PCT_DEFAULT;
+}
+const INSTALL_BONUS_BANNER_DEFAULT = '¡{pct}% de bono en tu próxima carga!';
+const INSTALL_BONUS_BANNER_NOTE_DEFAULT = '⚠️ Es por única vez. Cuando vayas a cargar, avisale al agente que tenés el bono del {pct}% y te lo aplica en el momento.';
+
+app.get('/api/admin/install-bonus-config', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    res.json({ pct: await getInstallBonusPct(), canEdit: req.user.role === 'admin' });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/install-bonus-config', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general puede cambiar el % del bono.' });
+    const pct = Number(req.body && req.body.pct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 500) {
+      return res.status(400).json({ error: 'El % tiene que ser un número entre 0 y 500.' });
+    }
+    await Config.set('installBonusPct', Math.round(pct), req.user.username);
+    logger.info(`[install-bonus] % del bono cambiado a ${Math.round(pct)}% por ${req.user.username}`);
+    res.json({ success: true, pct: Math.round(pct) });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+
+// Estado del bono: si ya lo reclamó (para mostrar/ocultar el cartel del chat)
+// + el % vigente y los textos del cartel (editables desde COMANDOS).
 app.get('/api/install-bonus/status', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ id: req.user.userId }).lean();
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const pct = await getInstallBonusPct();
+    const vars = { pct, username: user.username };
+    // Cartel: comando vaciado → texto por defecto (acá "vacío" no es "no mostrar",
+    // el cartel siempre necesita un título).
+    const bannerTitle = (await renderSystemCommand('/sys_install_bonus_banner', INSTALL_BONUS_BANNER_DEFAULT, vars)) || _renderVars(INSTALL_BONUS_BANNER_DEFAULT, vars);
+    const bannerNote = (await renderSystemCommand('/sys_install_bonus_banner_note', INSTALL_BONUS_BANNER_NOTE_DEFAULT, vars)) || _renderVars(INSTALL_BONUS_BANNER_NOTE_DEFAULT, vars);
     res.json({
       claimed: user.installBonusClaimed === true,
       // 'none' | 'pending' (lo tiene para usar) | 'used' (el agente ya se lo aplicó)
       bonusStatus: user.firstChargeBonusStatus || 'none',
       bonusType: 'first_charge_100',
+      pct,
+      bannerTitle,
+      bannerNote,
+      buttonLabel: `🎁 Reclamar mi ${pct}%`,
       // Se mantiene por compatibilidad con versiones cacheadas de la PWA que
       // todavía leen `amount` para armar el cartel. Ya no se acredita.
       amount: INSTALL_BONUS_AMOUNT
@@ -10758,21 +10838,25 @@ app.post('/api/install-bonus/claim', authMiddleware, async (req, res) => {
     // request concurrente ganó la carrera, éste recibe null y aborta — sin esto,
     // dos requests simultáneos dejaban dos bonos pendientes.
     //
-    // ⚠️ NO SE ACREDITA PLATA. El bono ahora es un 100% en la PRÓXIMA CARGA que
+    // ⚠️ NO SE ACREDITA PLATA. El bono es un % (Config installBonusPct) en la PRÓXIMA CARGA que
     // aplica el agente a mano. Por eso acá no hay llamada a la plataforma ni
     // Transaction: todavía no se movió un peso. La plata se mueve recién cuando el
     // cliente carga y el agente le duplica el monto.
+    // El % se CONGELA en el usuario: el owner lo cambia según el mes/día y el
+    // cliente tiene que cobrar el que le prometió el cartel cuando reclamó.
+    const pct = await getInstallBonusPct();
     const reserved = await User.findOneAndUpdate(
       { id: req.user.userId, installBonusClaimed: { $ne: true } },
       { $set: {
         installBonusClaimed: true,
         installBonusClaimedAt: new Date(),
-        firstChargeBonusStatus: 'pending'
+        firstChargeBonusStatus: 'pending',
+        firstChargeBonusPct: pct
       } }
     );
     if (!reserved) {
       return res.status(400).json({
-        error: 'Ya reclamaste tu bono del 100%.',
+        error: `Ya reclamaste tu bono del ${pct}%.`,
         code: 'ALREADY_CLAIMED'
       });
     }
@@ -10780,11 +10864,11 @@ app.post('/api/install-bonus/claim', authMiddleware, async (req, res) => {
     // Mensaje al cliente en el chat (editable desde COMANDOS /sys_install_bonus).
     const installBonusContent = await renderSystemCommand(
       '/sys_install_bonus',
-      '🎁 ¡Listo {username}! Tenés un *100% de bono en tu próxima carga*.\n\n' +
-      'Cuando vayas a cargar, avisale al agente que tenés el bono del 100% por instalar la app ' +
+      '🎁 ¡Listo {username}! Tenés un *{pct}% de bono en tu próxima carga*.\n\n' +
+      'Cuando vayas a cargar, avisale al agente que tenés el bono del {pct}% por instalar la app ' +
       'y te lo aplica en el momento. 🥳\n\n' +
       '⚠️ Es por única vez.',
-      { username: user.username }
+      { username: user.username, pct }
     );
     if (installBonusContent) await Message.create({ // null = /sys_install_bonus vaciado → no enviar
       id: uuidv4(),
@@ -10805,16 +10889,17 @@ app.post('/api/install-bonus/claim', authMiddleware, async (req, res) => {
     await _emitAdminOnlyChatNote(
       user.id,
       user.username,
-      '🎁 BONO 100% PENDIENTE — este cliente reclamó el 100% por instalar la app.\n' +
-      '👉 En su PRÓXIMA CARGA, duplicale el monto y después marcalo como usado ' +
+      `🎁 BONO ${pct}% PENDIENTE — este cliente reclamó el ${pct}% por instalar la app.\n` +
+      `👉 En su PRÓXIMA CARGA, sumale un ${pct}% extra y después marcalo como usado ` +
       'desde el botón del chat. Es por única vez.'
     ).catch(() => {});
 
     res.json({
       success: true,
-      message: '¡Tenés un 100% de bono en tu próxima carga!',
+      message: `¡Tenés un ${pct}% de bono en tu próxima carga!`,
       bonusType: 'first_charge_100',
-      status: 'pending'
+      status: 'pending',
+      pct
     });
   } catch (error) {
     logger.error(`Error en install-bonus/claim: ${error.message}`);
@@ -10823,7 +10908,7 @@ app.post('/api/install-bonus/claim', authMiddleware, async (req, res) => {
 });
 
 // ============================================
-// BONO 100% — el agente lo marca como usado
+// BONO por instalar la app (% en la próxima carga) — el agente lo marca como usado
 // ============================================
 // POST /api/admin/users/:userId/first-charge-bonus/use
 // Lo llama el agente desde el chat, DESPUÉS de haberle duplicado la carga al cliente.
@@ -10844,7 +10929,7 @@ app.post('/api/admin/users/:userId/first-charge-bonus/use', authMiddleware, admi
         firstChargeBonusUsedBy: req.user.username
       } },
       { new: true }
-    ).select('id username firstChargeBonusStatus firstChargeBonusUsedAt firstChargeBonusUsedBy').lean();
+    ).select('id username firstChargeBonusStatus firstChargeBonusUsedAt firstChargeBonusUsedBy firstChargeBonusPct').lean();
 
     if (!updated) {
       // O no existe, o no estaba pendiente. Se distingue para que el agente sepa
@@ -10861,24 +10946,26 @@ app.post('/api/admin/users/:userId/first-charge-bonus/use', authMiddleware, admi
         });
       }
       return res.status(400).json({
-        error: 'Este cliente no tiene ningún bono del 100% pendiente.',
+        error: 'Este cliente no tiene ningún bono por instalar la app pendiente.',
         code: 'NOT_PENDING'
       });
     }
 
-    logger.info(`[bono-100] ${updated.username} — marcado como USADO por ${req.user.username}`);
+    // Reclamos anteriores al campo firstChargeBonusPct eran todos del 100%.
+    const _usedPct = Number.isFinite(Number(updated.firstChargeBonusPct)) && updated.firstChargeBonusPct != null ? updated.firstChargeBonusPct : 100;
+    logger.info(`[bono-app] ${updated.username} — bono ${_usedPct}% marcado como USADO por ${req.user.username}`);
 
     // Queda registrado en el chat para que cualquier agente que lo atienda después
     // vea que ya se aplicó (y no se lo den de nuevo).
     await _emitAdminOnlyChatNote(
       updated.id,
       updated.username,
-      `✅ BONO 100% USADO — aplicado por ${req.user.username}. Este cliente ya no tiene bono pendiente.`
+      `✅ BONO ${_usedPct}% USADO — aplicado por ${req.user.username}. Este cliente ya no tiene bono pendiente.`
     ).catch(() => {});
 
     res.json({ success: true, status: 'used', usedBy: req.user.username, usedAt: updated.firstChargeBonusUsedAt });
   } catch (error) {
-    logger.error(`Error marcando bono 100% como usado: ${error.message}`);
+    logger.error(`Error marcando bono por instalar la app como usado: ${error.message}`);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
