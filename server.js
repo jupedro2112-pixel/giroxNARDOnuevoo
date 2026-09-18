@@ -10914,6 +10914,14 @@ function _autoBonusNoteText(auto, amount, agentBonus, via) {
   return txt;
 }
 
+// % vigente del bono por instalar la app — PÚBLICO (sin login): lo usan los
+// textos informativos de la PWA ("Información del Servicio") para no mostrar
+// nunca un número viejo. No revela nada sensible.
+app.get('/api/install-bonus/pct', async (req, res) => {
+  try { res.json({ pct: await getInstallBonusPct() }); }
+  catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+
 // Estado del bono: si ya lo reclamó (para mostrar/ocultar el cartel del chat)
 // + el % vigente y los textos del cartel (editables desde COMANDOS).
 app.get('/api/install-bonus/status', authMiddleware, async (req, res) => {

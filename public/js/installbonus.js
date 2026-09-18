@@ -21,6 +21,24 @@ VIP.installBonus = (function () {
     function _el(id) { return document.getElementById(id); }
     function _pctLabel() { return _pct != null ? _pct + '%' : 'bono'; }
 
+    // Pinta el % vigente en todos los textos informativos de la app (Información
+    // del Servicio, mini-tarjetas): <span class="js-install-bonus-pct">.
+    function _paintPct() {
+        if (_pct == null) return;
+        document.querySelectorAll('.js-install-bonus-pct').forEach(function (el) { el.textContent = String(_pct); });
+    }
+    // El % es público (no depende del login): así la Información del Servicio
+    // nunca muestra un número viejo. Se llama al cargar la app.
+    async function loadPublicPct() {
+        try {
+            const res = await fetch(`${VIP.config.API_URL}/api/install-bonus/pct`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.pct != null) { _pct = Number(data.pct); _paintPct(); }
+        } catch (e) { /* best-effort */ }
+    }
+    document.addEventListener('DOMContentLoaded', function () { loadPublicPct(); });
+
     // Consulta el estado del bono y muestra/oculta el cartel.
     async function init() {
         const banner = _el('installBonusBanner');
@@ -34,7 +52,7 @@ VIP.installBonus = (function () {
                 _claimed = data.claimed === true;
                 // Registro manual (alta por agente) → sin bono de bienvenida: no se muestra.
                 if (data.eligible === false) _claimed = true;
-                if (data.pct != null) _pct = Number(data.pct);
+                if (data.pct != null) { _pct = Number(data.pct); _paintPct(); }
                 const title = _el('installBonusTitle');
                 if (title && data.bannerTitle) title.textContent = data.bannerTitle;
                 const notice = _el('installBonusDirectNotice');
@@ -181,6 +199,6 @@ VIP.installBonus = (function () {
         document.body.appendChild(modal);
     }
 
-    return { init, claim };
+    return { init, claim, loadPublicPct };
 
 })();

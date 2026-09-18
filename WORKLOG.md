@@ -8,6 +8,18 @@
 
 ## Sesión 2026-09-18
 
+### 211. "Información del Servicio": el recuadro del bono por instalar la app muestra el % VIGENTE (chau "100% de regalo" fijo) — SW v116
+- **Captura del owner:** la tarjeta "Bono por instalar la app" del modal Información
+  del Servicio seguía diciendo "tu próxima carga se duplica: 100% de regalo" (texto
+  fijo del HTML); también la mini-tarjeta "Bono 100% con la app".
+- **Fix:** los dos textos llevan `<span class="js-install-bonus-pct">` y
+  `installbonus.js` los pinta con el % vigente. Como ese modal se puede abrir sin
+  login, endpoint **PÚBLICO** nuevo `GET /api/install-bonus/pct` (solo devuelve el
+  número, nada sensible) que se consulta al cargar la app; después del login el
+  status lo refresca igual. El número sale de COMANDOS → "Bonos automáticos en la
+  carga" → "% del bono": lo que se ponga ahí (25, 50, lo que sea) es lo que se ve.
+- **Validado:** `node --check` OK. Back necesita redeploy (endpoint nuevo); SW v116.
+
 ### 210. Bonos AUTOMÁTICOS en la carga con TOPE (X% hasta $20.000, 20% el resto) + corrección con nota interna + registro manual SIN bono de bienvenida + RULETA DIARIA con premios configurables (%, plata, sin premio, probabilidades) — SW v115, admin-sw v49
 - **Pedido del owner (3 puntos):** (1) "si es un bono de 50%, ajustar el bono
   automático en las cargas hasta $20.000; más monto, que dé un 20%"; que entre
