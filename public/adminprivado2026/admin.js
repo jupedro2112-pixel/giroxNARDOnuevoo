@@ -3320,13 +3320,21 @@ async function handleDeposit() {
         // Si el backend reporta que el bonus se solicitó pero no se aplicó
         // en JUGAYGANA, mostramos un toast destacado al agente para que sepa
         // que tiene que reintentar el bonus manualmente. La carga sí entró.
+        const _realBonus = Number.isFinite(Number(data.bonus)) ? Number(data.bonus) : bonus;
         if (data.bonusRequested === true && data.bonusApplied === false) {
             showToast(
-                `⚠️ Carga $${amount} OK, pero BONUS $${bonus} NO se aplicó (${data.bonusError || 'la plataforma intermitente'}). Reintentá el bonus desde el botón "Bonus".`,
+                `⚠️ Carga $${amount} OK, pero BONUS $${_realBonus} NO se aplicó (${data.bonusError || 'la plataforma intermitente'}). Reintentá el bonus desde el botón "Bonus".`,
                 'error'
             );
+        } else if (data.autoBonus && data.autoBonus.amount > 0) {
+            // El sistema aplicó (o corrigió) el bono automático que el cliente tenía pendiente.
+            const ab = data.autoBonus;
+            const corr = ab.agentBonus > 0 && Math.round(ab.agentBonus) !== Math.round(ab.amount)
+                ? ` (corregido: habías puesto ${formatMoney(ab.agentBonus)})`
+                : (ab.agentBonus > 0 ? '' : ' (el cliente lo tenía pendiente)');
+            showToast(`Depósito de ${formatMoney(amount + _realBonus)} realizado · 🎁 bono AUTOMÁTICO ${ab.pct}% = ${formatMoney(ab.amount)}${corr}`, 'success');
         } else {
-            showToast(`Depósito de ${formatMoney(amount + bonus)} realizado`, 'success');
+            showToast(`Depósito de ${formatMoney(amount + _realBonus)} realizado`, 'success');
         }
         hideModal('depositModal');
         
@@ -4619,8 +4627,8 @@ function renderFirstChargeBonusBanner(user) {
                 '<span style="font-size:20px;">🎁</span>' +
                 '<div style="flex:1;min-width:180px;">' +
                     '<strong style="font-size:13px;display:block;">BONO ' + pct + '% PENDIENTE (por instalar la app)</strong>' +
-                    '<span style="font-size:11.5px;opacity:.92;">En su próxima carga, sumale un ' + pct + '% extra' + (pct === 100 ? ' (duplicale el monto)' : '') + '. ' +
-                    'Después marcalo como usado — es por única vez.</span>' +
+                    '<span style="font-size:11.5px;opacity:.92;">Se aplica AUTOMÁTICO en su próxima carga (manual o hgcash), con el tope de bonos. ' +
+                    'No sumes nada a mano: si cargás con otro bonus, el sistema lo corrige y te avisa acá. "Marcar como usado" solo si se lo diste por otra vía.</span>' +
                 '</div>' +
                 '<button onclick="markFirstChargeBonusUsed(\'' + escapeHtml(user.id) + '\')" ' +
                     'style="background:#0b3d1f;color:#7fffb0;border:1px solid rgba(255,255,255,0.3);' +
@@ -4691,7 +4699,9 @@ function renderWelcomeCodeBonusBanner(user) {
                 '<div style="flex:1;min-width:180px;">' +
                     '<strong style="font-size:13px;display:block;">BONO SORPRESA PENDIENTE — ' + monto + '</strong>' +
                     '<span style="font-size:11.5px;opacity:.92;">Canjeó el código de bienvenida de la Comunidad. ' +
-                    'En su próxima carga, ' + (_wcEsPct ? 'sumale un ' + _wcVal + '% extra' : 'sumale ' + monto) + ' y marcalo como usado — es por única vez.</span>' +
+                    (_wcEsPct
+                        ? 'El ' + _wcVal + '% extra se aplica AUTOMÁTICO en su próxima carga (manual o hgcash), con el tope de bonos. No sumes nada a mano; "Marcar como usado" solo si se lo diste por otra vía.'
+                        : 'En su próxima carga, sumale ' + monto + ' y marcalo como usado — es por única vez.') + '</span>' +
                 '</div>' +
                 '<button onclick="markWelcomeCodeBonusUsed(\'' + escapeHtml(user.id) + '\')" ' +
                     'style="background:#0b2545;color:#8ecdf7;border:1px solid rgba(255,255,255,0.3);' +
@@ -5703,8 +5713,38 @@ async function loadInstallBonusPct() {
         if (input) { input.value = j.pct; input.disabled = !j.canEdit; }
         if (btn) btn.style.display = j.canEdit ? '' : 'none';
         if (msg) msg.textContent = j.canEdit ? `Vigente: ${j.pct}%` : `Vigente: ${j.pct}% (solo el admin general lo cambia)`;
+        // Tope de los bonos automáticos
+        const cap = j.cap || {};
+        const cEn = document.getElementById('bonusCapEnabled');
+        const cArs = document.getElementById('bonusCapArs');
+        const cRest = document.getElementById('bonusCapRestPct');
+        const cBtn = document.getElementById('bonusCapSaveBtn');
+        const cMsg = document.getElementById('bonusCapMsg');
+        if (cEn) { cEn.checked = cap.enabled !== false; cEn.disabled = !j.canEdit; }
+        if (cArs) { cArs.value = cap.capArs != null ? cap.capArs : 20000; cArs.disabled = !j.canEdit; }
+        if (cRest) { cRest.value = cap.restPct != null ? cap.restPct : 20; cRest.disabled = !j.canEdit; }
+        if (cBtn) cBtn.style.display = j.canEdit ? '' : 'none';
+        if (cMsg) cMsg.textContent = cap.enabled === false ? 'Sin tope: el % aplica sobre toda la carga' : `Ej.: bono ${j.pct}% en carga de $50.000 → $${Math.round(Math.min(50000, cap.capArs) * j.pct / 100 + Math.max(0, 50000 - cap.capArs) * cap.restPct / 100).toLocaleString('es-AR')}`;
     } catch (e) { form.style.display = 'none'; }
 }
+async function saveBonusCap() {
+    const enabled = document.getElementById('bonusCapEnabled').checked;
+    const capArs = Number(document.getElementById('bonusCapArs').value);
+    const restPct = Number(document.getElementById('bonusCapRestPct').value);
+    if (!Number.isFinite(capArs) || capArs < 0) { showToast('El tope en $ tiene que ser un número de 0 en adelante', 'error'); return; }
+    if (!Number.isFinite(restPct) || restPct < 0 || restPct > 100) { showToast('El % del resto va de 0 a 100', 'error'); return; }
+    if (!confirm(enabled
+        ? `¿Guardar el tope? Los bonos automáticos aplican su % hasta $${capArs.toLocaleString('es-AR')} de la carga y ${restPct}% sobre lo que pase.`
+        : '¿Guardar SIN tope? Los bonos automáticos aplican su % sobre toda la carga.')) return;
+    try {
+        const r = await authFetch('/api/admin/bonus-cap', { method: 'POST', body: JSON.stringify({ enabled, capArs, restPct }) });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        showToast('Tope de bonos guardado', 'success');
+        loadInstallBonusPct();
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+window.saveBonusCap = saveBonusCap;
 async function saveInstallBonusPct() {
     const input = document.getElementById('installBonusPctInput');
     const msg = document.getElementById('installBonusPctMsg');
@@ -9774,6 +9814,108 @@ async function resetRouletteDaily() {
     }
 }
 
+// ====== PREMIOS CONFIGURABLES de la ruleta diaria (2026-09-18) ======
+async function loadDailyRouletteCfg() {
+    const card = document.getElementById('drCfgCard');
+    if (!card) return;
+    try {
+        const r = await rouletteAuthFetch('/api/admin/daily-roulette');
+        if (!r.ok) { card.style.display = 'none'; return; }
+        const cfg = await r.json();
+        card.style.display = '';
+        const en = document.getElementById('drEnabled');
+        if (en) { en.checked = cfg.enabled !== false; en.disabled = !cfg.canEdit; }
+        const ra = document.getElementById('drRequireApp');
+        if (ra) { ra.checked = cfg.requireAppInstalled !== false; ra.disabled = !cfg.canEdit; }
+        const mc = document.getElementById('drMinCargas');
+        if (mc) { mc.value = cfg.minCargas30d != null ? cfg.minCargas30d : 10; mc.disabled = !cfg.canEdit; }
+        const sb = document.getElementById('drSaveBtn');
+        if (sb) sb.style.display = cfg.canEdit ? '' : 'none';
+        const list = document.getElementById('drPrizesList');
+        if (list) { list.innerHTML = ''; (cfg.prizes || []).forEach(function (p) { drAddPrize(p); }); drUpdateOdds(); }
+        card.querySelectorAll('input,select,button').forEach(function (el) { if (!cfg.canEdit && el.id !== 'drSaveBtn') el.disabled = true; });
+    } catch (e) { card.style.display = 'none'; }
+}
+function drAddPrize(p) {
+    p = p || { label: '', type: 'percent', value: '', weight: '', rolloverX: 0, emoji: '' };
+    const list = document.getElementById('drPrizesList');
+    if (!list) return;
+    const row = document.createElement('div');
+    row.className = 'dr-prize-row';
+    row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:rgba(255,255,255,0.04);padding:8px;border-radius:8px;margin-bottom:6px;';
+    row.innerHTML =
+        '<input class="drP-emoji" placeholder="🎁" value="' + escapeHtml(p.emoji || '') + '" title="emoji" style="width:44px;text-align:center;">' +
+        '<input class="drP-label" placeholder="Etiqueta (ej. 10% EXTRA)" value="' + escapeHtml(p.label || '') + '" style="flex:2;min-width:120px;">' +
+        '<select class="drP-type" style="flex:1;min-width:110px;" onchange="drUpdateOdds()">' +
+          '<option value="percent"' + (p.type === 'percent' || !p.type ? ' selected' : '') + '>% Extra próx. carga</option>' +
+          '<option value="cash"' + (p.type === 'cash' ? ' selected' : '') + '>Plata $ (al instante)</option>' +
+          '<option value="none"' + (p.type === 'none' ? ' selected' : '') + '>Sin premio</option>' +
+        '</select>' +
+        '<input class="drP-value" type="number" min="0" placeholder="valor" value="' + (p.value || '') + '" title="% o monto $ (Sin premio: vacío)" style="width:80px;">' +
+        '<input class="drP-weight" type="number" min="1" placeholder="peso" value="' + (p.weight || '') + '" title="probabilidad relativa" style="width:70px;" oninput="drUpdateOdds()">' +
+        '<input class="drP-roll" type="number" min="0" max="50" placeholder="rollX" value="' + (p.rolloverX || 0) + '" title="rollover (solo Plata $)" style="width:66px;">' +
+        '<span class="drP-odd" style="min-width:52px;text-align:right;font-weight:900;color:#ffd700;font-size:12px;"></span>' +
+        '<button type="button" class="btn-small btn-danger" onclick="this.parentNode.remove();drUpdateOdds();" style="padding:4px 9px;">✕</button>';
+    list.appendChild(row);
+    drUpdateOdds();
+}
+function drUpdateOdds() {
+    const rows = document.querySelectorAll('#drPrizesList .dr-prize-row');
+    let total = 0;
+    rows.forEach(function (r) { total += Number(r.querySelector('.drP-weight').value) || 0; });
+    const hint = document.getElementById('drOddsHint');
+    const parts = [];
+    rows.forEach(function (r) {
+        const w = Number(r.querySelector('.drP-weight').value) || 0;
+        const lbl = r.querySelector('.drP-label').value || '(sin nombre)';
+        const odd = total > 0 ? Math.round(w / total * 1000) / 10 : 0;
+        const cell = r.querySelector('.drP-odd');
+        if (cell) cell.textContent = total > 0 ? odd + '%' : '';
+        if (w > 0) parts.push(lbl + ': ' + odd + '%');
+    });
+    if (hint) hint.textContent = total > 0 ? 'Probabilidades → ' + parts.join(' · ') : '';
+}
+async function saveDailyRoulette() {
+    const rows = document.querySelectorAll('#drPrizesList .dr-prize-row');
+    const prizes = [];
+    let bad = false;
+    rows.forEach(function (r, i) {
+        const type = r.querySelector('.drP-type').value;
+        const value = Number(r.querySelector('.drP-value').value) || 0;
+        const weight = Number(r.querySelector('.drP-weight').value) || 0;
+        if (weight <= 0) bad = true;
+        if (type !== 'none' && value <= 0) bad = true;
+        prizes.push({
+            id: 'p' + i, emoji: r.querySelector('.drP-emoji').value.trim(), label: r.querySelector('.drP-label').value.trim(),
+            type, value, weight, rolloverX: Number(r.querySelector('.drP-roll').value) || 0
+        });
+    });
+    if (!prizes.length) { showToast('Agregá al menos un premio', 'error'); return; }
+    if (bad) { showToast('Cada premio necesita peso > 0 (y valor > 0, salvo Sin premio)', 'error'); return; }
+    const enabled = document.getElementById('drEnabled').checked;
+    if (!confirm((enabled ? '¿Guardar los premios y dejar la ruleta ACTIVADA?' : '¿Guardar con la ruleta APAGADA? Nadie va a poder girar.') + '\n\nLas probabilidades se aplican al instante a los próximos giros.')) return;
+    try {
+        const r = await rouletteAuthFetch('/api/admin/daily-roulette', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                enabled,
+                requireAppInstalled: document.getElementById('drRequireApp').checked,
+                minCargas30d: Number(document.getElementById('drMinCargas').value) || 0,
+                prizes
+            })
+        });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        showToast('Ruleta diaria guardada', 'success');
+        loadDailyRouletteCfg();
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+window.drAddPrize = drAddPrize;
+window.drUpdateOdds = drUpdateOdds;
+window.saveDailyRoulette = saveDailyRoulette;
+window.loadDailyRouletteCfg = loadDailyRouletteCfg;
+
 // Probar el giro de la ruleta a nombre de un user (simulación) — no
 // afecta el spin real ni acredita plata. Solo muestra qué premio le
 // habría salido con la tabla de probabilidades vigente.
@@ -9796,7 +9938,8 @@ async function rouletteTestSpin() {
             if (box) box.innerHTML = '<div style="color:#ff8080;padding:6px;font-size:12px;">❌ ' + escapeHtml(d.error || 'Error') + '</div>';
             return;
         }
-        const won = (d.prize.prizeARS || 0) > 0;
+        const isPct = d.prize.type === 'percent';
+        const won = isPct || (d.prize.prizeARS || 0) > 0;
         const color = won ? '#ffd700' : '#888';
         const bg = won ? 'rgba(255,215,0,0.10)' : 'rgba(255,255,255,0.04)';
         const border = won ? '#ffd700' : 'rgba(255,255,255,0.18)';
@@ -9805,8 +9948,8 @@ async function rouletteTestSpin() {
                 '<div style="background:' + bg + ';border:1.5px solid ' + border + ';border-radius:9px;padding:10px 12px;display:flex;align-items:center;gap:10px;">' +
                     '<div style="font-size:30px;line-height:1;">' + (d.prize.emoji || '🎲') + '</div>' +
                     '<div style="flex:1;">' +
-                        '<div style="color:' + color + ';font-weight:900;font-size:14px;">' + escapeHtml(d.prize.prizeLabel) + (won ? ' · $' + Number(d.prize.prizeARS).toLocaleString('es-AR') : '') + '</div>' +
-                        '<div style="color:#aaa;font-size:11px;">A nombre de <strong>@' + escapeHtml(d.username) + '</strong> · peso ' + d.prize.weight + ' · simulación, no afecta nada real.</div>' +
+                        '<div style="color:' + color + ';font-weight:900;font-size:14px;">' + escapeHtml(d.prize.prizeLabel) + (isPct ? ' · +' + d.prize.prizePct + '% en la próxima carga' : (won ? ' · $' + Number(d.prize.prizeARS).toLocaleString('es-AR') + (d.prize.rolloverX > 0 ? ' (rollover x' + d.prize.rolloverX + ')' : '') : '')) + '</div>' +
+                        '<div style="color:#aaa;font-size:11px;">A nombre de <strong>@' + escapeHtml(d.username) + '</strong> · probabilidad ' + (d.prize.probPct != null ? d.prize.probPct + '%' : 'peso ' + d.prize.weight) + ' · simulación, no afecta nada real.</div>' +
                     '</div>' +
                 '</div>';
         }
@@ -9820,8 +9963,9 @@ async function loadRouletteAdmin() {
     const body = document.getElementById('rouletteAdminBody');
     if (!body) return;
     body.innerHTML = '<div style="color:#aaa;text-align:center;padding:24px;">⏳ Cargando…</div>';
-    // Cargar budget en paralelo (no bloqueante).
+    // Cargar budget y premios configurables en paralelo (no bloqueante).
     loadRouletteBudget();
+    loadDailyRouletteCfg();
     try {
         const [statsResp, historyResp] = await Promise.all([
             rouletteAuthFetch('/api/admin/roulette/stats?days=' + days),

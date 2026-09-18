@@ -58,13 +58,17 @@
         let subText;
         if (_state.alreadySpun && spin) {
             const won = Number(spin.prizeARS || 0) > 0;
-            if (won && spin.status === 'credited') {
+            if (spin.prizeType === 'percent' || spin.status === 'percent_pending') {
+                subText = '+' + _fmt(spin.prizePct) + '% próx. carga';
+            } else if (won && spin.status === 'credited') {
                 subText = 'Ganaste $' + _fmt(spin.prizeARS);
             } else if (won && spin.status === 'credit_failed') {
                 subText = 'Escribinos';
             } else {
                 subText = 'Volvé mañana';
             }
+        } else if (Number(_state.pendingPct || 0) > 0) {
+            subText = '+' + _fmt(_state.pendingPct) + '% pendiente';
         } else {
             subText = '¡GIRÁ HOY!';
         }
@@ -187,6 +191,23 @@
         }
         const spin = spinResult || _state.spin;
         const alreadySpun = !!(spin && (spin.prizeARS != null));
+        // Tabla de premios con la probabilidad REAL de cada uno (transparencia —
+        // los premios y pesos los define el panel).
+        const _prizeRows = (_state.prizes || []).map(function (p) {
+            const val = p.type === 'percent' ? ('+' + _fmt(p.value) + '% en tu próxima carga')
+                : (p.type === 'cash' ? ('$' + _fmt(p.value) + (p.rolloverX > 0 ? ' (rollover x' + p.rolloverX + ')' : '')) : 'Sin premio');
+            return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:rgba(255,255,255,0.04);border-radius:8px;">' +
+                '<span style="font-size:12px;color:#fff;font-weight:800;">' + _esc(p.emoji || '🎁') + ' ' + _esc(p.label) + '</span>' +
+                '<span style="font-size:10.5px;color:#aaa;flex:1;text-align:center;">' + _esc(val) + '</span>' +
+                '<span style="font-size:11.5px;font-weight:900;color:#ffd700;white-space:nowrap;">' + _fmt(p.probPct) + '%</span></div>';
+        }).join('');
+        const prizesHtml = _prizeRows
+            ? '<div style="margin-top:10px;"><div style="color:#ffd700;font-weight:900;font-size:11px;letter-spacing:1px;text-align:center;margin-bottom:6px;">🎁 PREMIOS Y PROBABILIDADES</div>' +
+              '<div style="display:flex;flex-direction:column;gap:4px;">' + _prizeRows + '</div></div>'
+            : '';
+        const pendingHtml = (!alreadySpun && Number(_state.pendingPct || 0) > 0)
+            ? '<div style="background:rgba(102,255,102,0.12);border:1px solid #66ff66;border-radius:9px;padding:8px 12px;margin-bottom:10px;color:#fff;font-size:12px;font-weight:800;text-align:center;">🎁 Tenés <span style="color:#66ff66;">+' + _fmt(_state.pendingPct) + '% EXTRA</span> pendiente: se aplica solo en tu próxima carga.</div>'
+            : '';
         let html = '<div style="background:linear-gradient(180deg,#1a0033,#0a001a);border:2px solid #ffd700;border-radius:16px;padding:20px 16px;color:#fff;max-width:560px;width:100%;margin:14px auto;position:relative;">';
         html += '<button onclick="VIP.roulette.close()" style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.20);color:#fff;font-size:18px;cursor:pointer;line-height:1;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;">✕</button>';
         html += '<h2 style="color:#ffd700;text-align:center;margin:0 0 4px;font-size:22px;font-weight:900;letter-spacing:1.5px;padding-right:36px;">🎰 RULETA DIARIA</h2>';
@@ -195,12 +216,20 @@
         if (alreadySpun) {
             // Estado: ya giró hoy.
             const won = Number(spin.prizeARS || 0) > 0;
-            if (won && spin.status === 'credited') {
+            if (spin.prizeType === 'percent' || spin.status === 'percent_pending') {
+                // Premio en %: queda pendiente y lo aplica sola la próxima carga.
+                html += '<div id="rouletteResultBox" style="background:linear-gradient(135deg,rgba(102,255,102,0.10),rgba(255,215,0,0.10));border:2px solid #66ff66;border-radius:14px;padding:24px 16px;text-align:center;margin-bottom:12px;">';
+                html += '<div style="font-size:60px;line-height:1;margin-bottom:8px;">🎉</div>';
+                html += '<div style="color:#66ff66;font-size:13px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">¡GANASTE!</div>';
+                html += '<div style="color:#fff;font-size:30px;font-weight:900;margin-bottom:6px;">+' + _fmt(spin.prizePct) + '% EXTRA</div>';
+                html += '<div style="background:rgba(102,255,102,0.20);border:1px solid #66ff66;border-radius:8px;padding:9px 12px;margin-top:10px;color:#fff;font-size:13px;font-weight:800;">✅ Se aplica solo en tu PRÓXIMA CARGA. No tenés que avisar nada.</div>';
+                html += '</div>';
+            } else if (won && spin.status === 'credited') {
                 html += '<div id="rouletteResultBox" style="background:linear-gradient(135deg,rgba(102,255,102,0.10),rgba(255,215,0,0.10));border:2px solid #66ff66;border-radius:14px;padding:24px 16px;text-align:center;margin-bottom:12px;">';
                 html += '<div style="font-size:60px;line-height:1;margin-bottom:8px;">🎉</div>';
                 html += '<div style="color:#66ff66;font-size:13px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">¡GANASTE!</div>';
                 html += '<div style="color:#fff;font-size:32px;font-weight:900;margin-bottom:6px;">$' + _fmt(spin.prizeARS) + '</div>';
-                html += '<div style="background:rgba(102,255,102,0.20);border:1px solid #66ff66;border-radius:8px;padding:9px 12px;margin-top:10px;color:#fff;font-size:13px;font-weight:800;">✅ Acreditado a tu saldo automáticamente</div>';
+                html += '<div style="background:rgba(102,255,102,0.20);border:1px solid #66ff66;border-radius:8px;padding:9px 12px;margin-top:10px;color:#fff;font-size:13px;font-weight:800;">✅ Acreditado a tu saldo automáticamente' + (spin.rolloverX > 0 ? ' · para retirarlo apostalo x' + _fmt(spin.rolloverX) : '') + '</div>';
                 if (spin.creditTxId) html += '<div style="color:#888;font-size:10px;margin-top:6px;font-family:monospace;">tx: ' + _esc(spin.creditTxId) + '</div>';
                 html += '</div>';
 
@@ -222,10 +251,12 @@
                 html += '<div style="color:#ddd;font-size:14px;">Volvé mañana a partir de las 00:00 para girar otra vez 🎰</div>';
                 html += '</div>';
             }
-            html += '<button onclick="VIP.roulette.close()" style="width:100%;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.20);padding:12px;border-radius:10px;font-weight:800;font-size:13px;cursor:pointer;">CERRAR</button>';
+            html += prizesHtml;
+            html += '<button onclick="VIP.roulette.close()" style="width:100%;margin-top:12px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.20);padding:12px;border-radius:10px;font-weight:800;font-size:13px;cursor:pointer;">CERRAR</button>';
         } else {
-            // Estado: aún no giró. Ícono 🎰 con animación + CTA. Sin tabla
-            // de probabilidades (el reparto ahora es por monto diario).
+            // Estado: aún no giró. Ícono 🎰 con animación + CTA + tabla de premios
+            // con probabilidades (los define el panel).
+            html += pendingHtml;
             html += '<div id="rouletteResultBox" style="background:linear-gradient(135deg,#4a0080,#7c00cc);border:2px solid #ffd700;border-radius:14px;padding:28px 16px;text-align:center;margin-bottom:12px;box-shadow:inset 0 0 30px rgba(255,215,0,0.20);">';
             html += '<div style="font-size:72px;line-height:1;margin-bottom:6px;animation:rouletteIcon 2s ease-in-out infinite;">🎰</div>';
             html += '<div style="color:#ffd700;font-size:16px;font-weight:900;letter-spacing:1px;margin-bottom:4px;">Tu giro de hoy te espera</div>';
@@ -233,6 +264,7 @@
             html += '<button id="rouletteSpinBtn" onclick="VIP.roulette.spin()" style="background:linear-gradient(135deg,#ffd700,#f7931e);color:#000;border:none;padding:16px 40px;border-radius:12px;font-weight:900;font-size:18px;cursor:pointer;letter-spacing:2px;box-shadow:0 4px 16px rgba(255,215,0,0.50);">🎰 GIRAR</button>';
             html += '</div>';
             html += '<style>@keyframes rouletteIcon { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(10deg); } }</style>';
+            html += prizesHtml;
         }
 
         // Bloque de transparencia: ganadores del día (live), DENTRO del modal.
@@ -309,10 +341,14 @@
             _state.spin = {
                 prizeARS: d.prize.prizeARS,
                 prizeLabel: d.prize.prizeLabel,
+                prizeType: d.prize.type || (d.prize.prizeARS > 0 ? 'cash' : 'none'),
+                prizePct: d.prize.prizePct || 0,
+                rolloverX: d.prize.rolloverX || 0,
                 status: d.prize.status,
                 spunAt: new Date().toISOString(),
                 creditTxId: d.prize.transactionId || null
             };
+            if (d.prize.type === 'percent') _state.pendingPct = d.prize.prizePct || 0;
             _renderModal();
             renderHomeCard();
             // Refrescar saldo del header (mismo patrón que installbonus/withdraw).

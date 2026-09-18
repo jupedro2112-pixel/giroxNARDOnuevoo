@@ -24,9 +24,15 @@ const spinSchema = new mongoose.Schema({
 
   spunAt: { type: Date, default: Date.now, immutable: true, index: true },
 
-  // Premio ganado: monto ARS. 0 = sin premio.
+  // Premio ganado: monto ARS. 0 = sin premio (o premio en %).
   prizeARS: { type: Number, required: true, default: 0, min: 0 },
-  prizeLabel: { type: String, default: '' }, // ej. "$10.000", "SIN PREMIO"
+  prizeLabel: { type: String, default: '' }, // ej. "$10.000", "SIN PREMIO", "20% EXTRA"
+  // v2 (2026-09-18, premios configurables): 'cash' = plata al instante (bono con
+  // rolloverX), 'percent' = X% EXTRA pendiente para la próxima carga (prizePct;
+  // lo aplica solo la carga — ver resolveAutoBonus en server.js), 'none'.
+  prizeType: { type: String, enum: ['cash', 'percent', 'none'], default: 'cash' },
+  prizePct: { type: Number, default: 0 },
+  rolloverX: { type: Number, default: 0 },
 
   // Anti-fraude
   ipAddress: { type: String, default: null },
@@ -38,7 +44,8 @@ const spinSchema = new mongoose.Schema({
   // Si prizeARS=0, status='no_prize'.
   status: {
     type: String,
-    enum: ['no_prize', 'won', 'credited', 'credit_failed'],
+    // 'percent_pending' = premio en % que queda para la próxima carga (v2).
+    enum: ['no_prize', 'won', 'credited', 'credit_failed', 'percent_pending'],
     default: 'won',
     index: true
   },

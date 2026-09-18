@@ -5,7 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-09-11** — reembolso ACUMULATIVO de por vida sobre plata
+> Última actualización: **2026-09-18** — bonos AUTOMÁTICOS en la carga con tope
+> (`resolveAutoBonus`, `src/utils/bonusCap.js`), registro manual sin bienvenida, ruleta
+> diaria con premios configurables (§2, §5, §8, §9). Antes: 2026-09-11 — reembolso ACUMULATIVO de por vida sobre plata
 > real (ESPEC-REEMBOLSO-1GIROX, réplica de la gemela): §2 (CashbackClaim + campos
 > cashback* de User), §4.4 (reference vip-cbk), §4.5 (creditGift con rollover), §4.6
 > (`bonus.granted` del /stats), §5 (flujo nuevo + el período descuenta el bono
@@ -208,6 +210,9 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   automáticamente (ya existía), aplica también a los de lote.
 - **DailyRouletteSpin** — 1 giro/día (índices únicos userId+dateKey y
   username+dateKey). Auto-crédito en 1girox; `credit_failed` → retry desde panel.
+  v2 (2026-09-18): `prizeType` cash|percent|none, `prizePct`, `rolloverX`, status
+  `percent_pending`. Los premios viven en `Config['dailyRoulette']` (panel). El % ganado
+  queda en `User.dailyRoulettePendingPct/Label/WonAt` hasta que lo consume una carga.
 - **CashbackClaim** (2026-09-11) — reclamo del **reembolso ACUMULATIVO de por vida**
   (ESPEC-REEMBOLSO-1GIROX §3/§4, ver §5). Índice ÚNICO `userId+dateKey+seq` (**no
   quitar**): el reintento tras un fallo reusa el `seq` → misma reference
@@ -725,17 +730,36 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   `vip-refcom-<payoutId>` reusando el documento de intentos fallidos). El revenue sale
   del netwin del panel × `GIROX_REFERRAL_COMMISSION_PCT` (8%) y sobre eso la tasa del
   referidor (7%). Ver §4.6.
-- **Ruleta diaria**: requiere PWA instalada (token FCM standalone) + cliente activo
-  (>10 cargas reales/30d). Pick ponderado + **budget pacing** (distribuye el
-  presupuesto diario por hora ART; si excede → fuerza SIN PREMIO). Auto-crédito como
-  bono 0 (`vip-roulette-<spinId>`, ver §4.5); `credit_failed` → retry desde el panel con
-  la MISMA reference. Cada premio acreditado escribe una **Transaction type
-  'roulette'** (idempotente por metadata.spinId — 2026-09-07; antes era invisible
-  en Transacciones).
+- **Ruleta diaria** (v2 2026-09-18, premios CONFIGURABLES): gates editables en el panel
+  (`Config['dailyRoulette']`: `enabled`, `requireAppInstalled` default sí,
+  `minCargas30d` default 10 = "más de 10 cargas reales en 30 días"; default = la tabla
+  vieja en $, así que sin guardar nada se comporta como siempre). Premios `percent`
+  (X% EXTRA pendiente para la próxima carga → `User.dailyRoulettePendingPct`, lo aplica
+  `resolveAutoBonus` con tope), `cash` (plata al instante vía `girox.creditGift` con
+  `rolloverX`, reference `vip-roulette-<spinId>`) y `none`; `weight` = probabilidad
+  (`probPct` real en status/panel/PWA). **Budget pacing** degrada a "sin premio" o al
+  primer % (no gasta plata). `credit_failed` → retry desde el panel con la MISMA
+  reference y el rollover del giro. Cada premio en $ escribe una **Transaction type
+  'roulette'** (idempotente por metadata.spinId). ⚠️ Sigue el candado de pushes de
+  ruleta (#204).
 - **Fueguito**: reclamo diario sin requisitos; premios de hitos (editables en panel,
   Config['fireMilestones']) exigen actividad de cargas y expiran el mismo día. Crédito
   como bono (rollover >0 → /bonus con multiplier; 0 → bono 0; fallback depósito —
   ver §4.5) (`vip-fire-<userId>-d<día>-<fecha>`).
+- **BONO AUTOMÁTICO EN LA CARGA** (2026-09-18, #210): `resolveAutoBonus(user, amount,
+  usedBy)` (server.js) reserva atómico UN bono pendiente por carga, en orden: bono por
+  instalar la app (% congelado) → código de bienvenida `next_charge` → % de la ruleta
+  diaria → `PromoBonus` activo en %. Monto con TOPE (`src/utils/bonusCap.js`,
+  `Config['bonusCap']` {enabled, capArs 20000, restPct 20}): `pct% × min(carga, cap) +
+  restPct% × exceso` cuando pct > restPct. Lo usan la carga MANUAL (`/api/admin/deposit`:
+  pisa el bonus tipeado por el agente y deja nota interna con el motivo; sin bono
+  pendiente vale el del agente) y la AUTO-CARGA hgcash (bono adjunto al deposit). Si la
+  carga o el bono adjunto fallan → `revert()`. Config en COMANDOS → "Bonos automáticos en
+  la carga". Nada de esto se aplica a mano: el botón "Marcar como usado" del panel queda
+  sólo para bonos dados por otra vía.
+- **Registro MANUAL sin bienvenida** (2026-09-18): `_welcomeBonusEligible(u)` = no
+  `createdByAgent` ni `acquisitionSource:'manual'`. Sin eso no hay bono por instalar la
+  app (cartel oculto, claim `MANUAL_SIGNUP`) ni código de bienvenida (`MANUAL_SIGNUP`).
 - **Bono por instalar la app** (🪦 antes "bono instalación $5.000" acreditado; hoy NO
   acredita plata): exige standalone real (token FCM), teléfono verificado (salvo
   cuentas creadas por agente), anti-multicuenta por token FCM compartido, reserva
@@ -880,6 +904,9 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   y limpiar el flag después → TOCTOU/doble cobro). Patrón: `findOneAndUpdate` con guard
   del flag (ruleta, bono instalación, fueguito claim-reward) o `create` con índice único
   (reembolsos). Si el crédito falla, revertir la reserva. Ver #96.
+- **Bonos en % NUNCA se aplican a mano** (2026-09-18): todo bono pendiente en % entra por
+  `resolveAutoBonus` en la carga (manual y hgcash) con el tope de `bonusCap`. Una fuente
+  nueva de bono en % ⇒ sumarla ahí (claim atómico + revert), no un banner para el agente.
 - **Endpoints muertos**: se eliminan con comentario-lápida y rollback `git revert`.
 - **Validación local**: sólo `node --check` (no hay node_modules en Tails).
 
@@ -934,6 +961,9 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   `PUBLISHER_ADMIN_ALLOWED_PATHS`.
 - **`adminMiddleware` deja pasar 4 roles** — todo endpoint sensible re-chequea
   `role==='admin'` explícito (patrón #80; los CRÍTICOS ya están cerrados).
+- **Bono automático = una sola fuente por carga y con tope**: `resolveAutoBonus` reserva
+  atómico y `revert()` si falla; el bonus tipeado por el agente se pisa cuando hay bono
+  pendiente (nota interna). No volver a poner "avisale al agente" en los textos.
 - **NADA de RULETA por push** (owner 2026-08-30): la ruleta diaria no está activa.
   `notificationService.isRouletteText()` bloquea en las 5 funciones de envío FCM
   cualquier push cuyo título/cuerpo mencione ruleta/roulette/giro gratis/girá (o

@@ -32,6 +32,8 @@ VIP.installBonus = (function () {
             if (res.ok) {
                 const data = await res.json();
                 _claimed = data.claimed === true;
+                // Registro manual (alta por agente) → sin bono de bienvenida: no se muestra.
+                if (data.eligible === false) _claimed = true;
                 if (data.pct != null) _pct = Number(data.pct);
                 const title = _el('installBonusTitle');
                 if (title && data.bannerTitle) title.textContent = data.bannerTitle;
@@ -103,6 +105,12 @@ VIP.installBonus = (function () {
                 if (input) input.value = '';
                 if (err) err.classList.remove('show');
                 VIP.ui.showModal('verifyPhoneModal');
+            } else if (data.code === 'MANUAL_SIGNUP') {
+                _claimed = true;
+                const banner = _el('installBonusBanner');
+                if (banner) banner.style.display = 'none';
+                VIP.ui.adjustLayout();
+                VIP.ui.showToast(data.error || 'Este bono no aplica a tu cuenta.', 'info');
             } else if (data.code === 'ALREADY_CLAIMED') {
                 _claimed = true;
                 const banner = _el('installBonusBanner');

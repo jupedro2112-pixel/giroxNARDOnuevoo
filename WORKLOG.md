@@ -4,7 +4,97 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-09-17**
+> **Última actualización: 2026-09-18**
+
+## Sesión 2026-09-18
+
+### 210. Bonos AUTOMÁTICOS en la carga con TOPE (X% hasta $20.000, 20% el resto) + corrección con nota interna + registro manual SIN bono de bienvenida + RULETA DIARIA con premios configurables (%, plata, sin premio, probabilidades) — SW v115, admin-sw v49
+- **Pedido del owner (3 puntos):** (1) "si es un bono de 50%, ajustar el bono
+  automático en las cargas hasta $20.000; más monto, que dé un 20%"; que entre
+  automático tanto con hgcash como en la carga manual del agente, y si el agente
+  no puso bono o puso uno distinto, que se corrija y se explique en interno;
+  (2) el registro MANUAL no cuenta con el bono de bienvenida; (3) premios de la
+  ruleta diaria editables desde RULETA DIARIA: % o plata, con probabilidades.
+- **Cómo estaba:** los bonos pendientes (bono por instalar la app, código de
+  bienvenida en %, bono de carga de lote) los aplicaba el AGENTE a mano ("avisale
+  al agente…", banner verde + "Marcar como usado"); hgcash cargaba SIEMPRE sin
+  bono; no había tope; la ruleta tenía una tabla fija de premios en $ (pirámide
+  2026-05-12) y el gate "app instalada + >10 cargas/30d" hardcodeado.
+- **(1) Motor `resolveAutoBonus(user, amount, usedBy)` (server.js, junto al bono
+  de instalación):** busca en orden de prioridad UN solo bono pendiente por
+  carga — bono por instalar la app (% congelado; reclamos viejos = 100) →
+  código de bienvenida (`next_charge`) → % de la ruleta diaria
+  (`User.dailyRoulettePendingPct`) → `PromoBonus` activo en % (lotes, con el
+  tope de lectura 30% de siempre) — lo RESERVA atómico (pending→used /
+  active→used / pct→0) y devuelve `{pct, bonus, source, label, rule, revert}`.
+  El monto sale de **`src/utils/bonusCap.js`** (puro): `pct% × min(carga, capArs)
+  + restPct% × max(0, carga − capArs)`, sólo cuando pct > restPct.
+  `Config['bonusCap']` = `{enabled, capArs:20000, restPct:20}`, editable en
+  COMANDOS → card "🎁 Bonos automáticos en la carga" (solo admin general;
+  `POST /api/admin/bonus-cap`, el GET viaja en `install-bonus-config`).
+  - **Carga manual (`POST /api/admin/deposit`):** `_effectiveBonus = auto.bonus
+    > 0 ? auto.bonus : bonusDelAgente`. Con bono pendiente se PISA lo que tipeó
+    el agente y queda nota interna `_autoBonusNoteText` ("el agente había puesto
+    $X → se CORRIGIÓ a $Y por el bono pendiente y el tope" / "no había puesto
+    bonus → se agregó solo"). Sin bono pendiente, vale el del agente como
+    siempre. Si la carga o el bono adjunto fallan → `revert()` (el bono vuelve
+    a pendiente). Respuesta con `bonus` real y `autoBonus{pct,amount,source,
+    label,rule,agentBonus}` → el toast del panel dice "bono AUTOMÁTICO 25% =
+    $X (corregido: habías puesto $Y)". Mensaje al cliente, Transaction.bonus,
+    Transaction 'bonus' separada y logs usan el efectivo.
+  - **Auto-carga hgcash:** mismo motor; `depositToUser` con `bonusAmount`;
+    revert si falla; `claimPendingBonus`; `Transaction.bonus`; mensaje
+    `/sys_deposit_bonus` con `{bonus}`; nota interna del bono automático.
+  - Textos: seeds/fallbacks de `/sys_install_bonus`, `/sys_install_bonus_banner_note`
+    y `/sys_welcome_code` ya no dicen "avisale al agente" ("se aplica SOLO en tu
+    próxima carga") + **migración idempotente** al boot (sólo si el texto guardado
+    todavía tiene esa frase). Notas internas al reclamar/canjear y banners verdes
+    del panel dicen "se aplica AUTOMÁTICO… no sumes nada a mano" (el botón
+    "Marcar como usado" queda para el caso de haberlo dado por otra vía).
+- **(2) Registro manual sin bienvenida:** `_welcomeBonusEligible(u)` = no
+  `createdByAgent` ni `acquisitionSource:'manual'`. Aplica al **bono por instalar
+  la app** (status `eligible:false, ineligible:'manual'` → la PWA no muestra el
+  cartel; claim → 400 `MANUAL_SIGNUP`) y al **código de bienvenida de la
+  Comunidad** (claim → 400 `MANUAL_SIGNUP`). Lectura: "bono de bienvenida de
+  50%" = los bonos de bienvenida de este repo (app + código), cuyo % lo pone el
+  owner; NO existe acá un "bono de 1ª carga para todos" como en la gemela.
+- **(3) Ruleta diaria v2:** `Config['dailyRoulette']` = `{enabled,
+  requireAppInstalled, minCargas30d, prizes[{emoji,label,type
+  percent|cash|none, value, weight, rolloverX}]}`; default = la tabla vieja
+  (cash) con `enabled:true`, app requerida y >10 cargas/30d → **sin cambio de
+  comportamiento hasta que el owner guarde**. `GET/POST /api/admin/daily-roulette`
+  (POST solo admin general, máx 12 premios). Panel → Ruleta diaria → card
+  "🎁 PREMIOS DE LA RULETA DIARIA" (on/off, exigir app, cargas mínimas, filas
+  con emoji/etiqueta/tipo/valor/peso/rollover y la **probabilidad real** de cada
+  fila + resumen). Spin: `percent` → `User.dailyRoulettePendingPct/Label` +
+  nota interna (lo consume la próxima carga vía resolveAutoBonus, con tope);
+  `cash` → `girox.creditGift` con `rolloverX` (0 = bono directo como antes) +
+  Transaction 'roulette'; `none`. Budget pacing degrada a "sin premio" o al
+  primer % (no gasta plata). `DailyRouletteSpin`: `prizeType/prizePct/rolloverX`,
+  status nuevo `percent_pending`. Retry-credit del panel usa el rollover del
+  giro. Status/test-spin/stats devuelven `prizes` con `probPct`. **PWA:** tabla
+  "🎁 PREMIOS Y PROBABILIDADES" en el modal, resultado "+X% EXTRA — se aplica
+  solo en tu próxima carga", cartel de % pendiente, recuadro RULETA del home
+  ("+X% próx. carga"). ⚠️ El candado de pushes de ruleta (#204) sigue: nada de
+  ruleta por push.
+- **Validado:** `node --check` OK en todo lo tocado; `node
+  scripts/test-bonus-cap.js` → 12/12 (50%: $10k→$5.000, $20k→$10.000,
+  $50k→$16.000; 25%: $50k→$11.000; ≤20% sin tope; tope apagado; 100% viejo);
+  `node scripts/test-cashback-spec.js` sigue 10/10. **Back necesita redeploy.**
+  PROBAR: (a) cliente con bono app pendiente + carga manual SIN bonus → entra
+  con el % y nota "se agregó solo"; con bonus distinto → nota "se CORRIGIÓ";
+  (b) transferencia hgcash del mismo cliente → carga + bono automático + mensaje
+  `/sys_deposit_bonus`; (c) carga de $50.000 con bono 50% → bono $16.000;
+  (d) usuario creado por agente → no ve el cartel del bono de la app y el código
+  de bienvenida le rebota; (e) panel → Ruleta diaria → agregar premio "20%
+  EXTRA" peso 30 → guardar → girar en la PWA → "+20% EXTRA" pendiente → cargar
+  → el 20% entra solo.
+- **No tocado:** el fueguito "100% próxima carga" (hito día 15,
+  `FireStreak.pendingNextLoadBonus`) sigue como estaba (se limpia cuando la
+  carga lleva bonus) — no entra en el motor porque su % no está persistido como
+  tal; si el owner lo quiere automático, es sumarlo a `resolveAutoBonus`. Las
+  comisiones de referidos y el reembolso acumulativo no cambian (el bono
+  automático entra como `bonus` del deposit → ya cuenta como regalo).
 
 ## Sesión 2026-09-17
 

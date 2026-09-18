@@ -107,6 +107,13 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   multiplier (si el jugador ya tiene bono activo cae a depósito con multiplier — no
   pisarle el bono). La **devolución de retiro rechazado** sigue como depósito (no es
   regalo). La ruleta ahora escribe Transaction type 'roulette'. Detalle: ARCHITECTURE §4.5.
+- **Bonos AUTOMÁTICOS en la carga con TOPE (2026-09-18):** todo bono en % pendiente
+  (app, código de bienvenida, ruleta diaria, lote) lo aplica `resolveAutoBonus` en la
+  carga manual y en hgcash — X% hasta `Config['bonusCap'].capArs` ($20.000) y `restPct`
+  (20%) sobre el resto (`src/utils/bonusCap.js`, test `scripts/test-bonus-cap.js`). Pisa
+  el bonus del agente y deja nota interna. Registro manual (`createdByAgent` /
+  `acquisitionSource:'manual'`) = sin bonos de bienvenida. Ruleta diaria: premios en
+  `Config['dailyRoulette']` (panel), % pendiente en `User.dailyRoulettePendingPct`.
 - **Roles:** `user`, `admin` (todo), `depositor` (solo cargas), `withdrawer` (solo
   retiros), `publisher_admin` (solo crea usuarios de su publicista — lockdown via
   `PUBLISHER_ADMIN_ALLOWED_PATHS`).

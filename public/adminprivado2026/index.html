@@ -591,20 +591,36 @@ document.addEventListener('change', function (ev) {
                              como variable {pct} en /sys_install_bonus, /sys_install_bonus_banner
                              y /sys_install_bonus_banner_note, y en el cartel de la app. -->
                         <div class="cbu-form" id="installBonusPctForm" style="display:none;margin-bottom:14px;">
-                            <h3 style="margin:0 0 6px;">🎁 Bono por instalar la app</h3>
+                            <h3 style="margin:0 0 6px;">🎁 Bonos automáticos en la carga</h3>
                             <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 8px;">
-                                Porcentaje EXTRA que el agente le suma a la próxima carga del cliente que reclamó el bono
-                                desde la app instalada. Cambialo cuando quieras: el cartel de la app y los mensajes
-                                automáticos de abajo lo leen por la variable <code>{pct}</code>. El % queda
-                                <b>congelado</b> en cada cliente al reclamarlo (cobra el que le prometió el cartel).
+                                <b>Bono por instalar la app:</b> % EXTRA en la próxima carga del cliente que lo reclamó desde la app
+                                instalada (solo registros propios: si la cuenta la creó un agente, no aplica). El cartel de la app y los
+                                mensajes automáticos lo leen por la variable <code>{pct}</code>; queda <b>congelado</b> en cada cliente al reclamar.
                             </p>
-                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
                                 <label style="margin:0;">% del bono:</label>
                                 <input type="number" id="installBonusPctInput" min="0" max="500" step="1" style="width:90px;">
                                 <button class="btn-primary btn-small" id="installBonusPctSaveBtn" onclick="saveInstallBonusPct()">
                                     <span class="icon icon-save"></span> Guardar %
                                 </button>
                                 <span id="installBonusPctMsg" style="font-size:12px;color:#aaa;"></span>
+                            </div>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 8px;">
+                                <b>Tope de TODOS los bonos automáticos</b> (app, código de bienvenida, ruleta diaria, lotes): el % del bono
+                                aplica hasta el monto de carga del tope; sobre lo que cargue de más va el "% del resto". Se aplican
+                                <b>solos</b> en la carga manual y en la automática hgcash: si el agente pone otro bonus, el sistema lo
+                                corrige y deja una nota interna en el chat.
+                            </p>
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <label style="margin:0;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="bonusCapEnabled" style="width:auto;"> Tope activo</label>
+                                <label style="margin:0;">hasta $</label>
+                                <input type="number" id="bonusCapArs" min="0" step="1000" style="width:110px;">
+                                <label style="margin:0;">% del resto:</label>
+                                <input type="number" id="bonusCapRestPct" min="0" max="100" step="1" style="width:70px;">
+                                <button class="btn-primary btn-small" id="bonusCapSaveBtn" onclick="saveBonusCap()">
+                                    <span class="icon icon-save"></span> Guardar tope
+                                </button>
+                                <span id="bonusCapMsg" style="font-size:12px;color:#aaa;"></span>
                             </div>
                         </div>
                         <div class="panel-subheader">
@@ -1797,6 +1813,31 @@ document.addEventListener('change', function (ev) {
                         <button class="refresh-btn" onclick="loadRouletteAdmin()" title="Actualizar">🔄</button>
                     </div>
                 </div>
+                <!-- PREMIOS CONFIGURABLES v2 (2026-09-18): % extra en la próxima carga /
+                     plata al instante (con rollover) / sin premio, con probabilidad. -->
+                <div id="drCfgCard" style="display:none;background:linear-gradient(135deg,rgba(38,224,127,0.10),rgba(0,150,90,0.06));border:1.5px solid rgba(38,224,127,0.55);border-radius:11px;padding:13px 14px;margin-bottom:14px;">
+                    <div style="color:#26e07f;font-weight:900;font-size:12px;letter-spacing:0.6px;margin-bottom:6px;">🎁 PREMIOS DE LA RULETA DIARIA</div>
+                    <div style="color:#bbb;font-size:11px;margin-bottom:9px;line-height:1.5;">
+                        <b>% Extra</b> = se suma AUTOMÁTICO en su próxima carga (manual o hgcash, con el tope de bonos) · <b>Plata $</b> = se acredita al instante como bono (con rollover) ·
+                        <b>Sin premio</b> = pierde el giro. El <b>peso</b> define la probabilidad: abajo se ve el % real de cada premio. El cliente ve la misma tabla en la app.
+                    </div>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:9px;">
+                        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#fff;cursor:pointer;">
+                            <input type="checkbox" id="drEnabled" style="accent-color:#26e07f;"> <span><b>Ruleta diaria ACTIVADA</b></span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#fff;cursor:pointer;">
+                            <input type="checkbox" id="drRequireApp" style="accent-color:#26e07f;"> <span>Exigir app instalada</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#fff;">
+                            Cargas mínimas en 30 días (más de): <input id="drMinCargas" type="number" min="0" max="1000" value="10" style="width:60px;background:rgba(0,0,0,0.45);border:1px solid rgba(38,224,127,0.40);color:#fff;padding:5px 7px;border-radius:6px;">
+                        </label>
+                    </div>
+                    <div id="drPrizesList"></div>
+                    <button type="button" class="btn-secondary btn-small" onclick="drAddPrize()" style="margin:6px 6px 6px 0;">➕ Agregar premio</button>
+                    <button type="button" class="btn-primary btn-small" id="drSaveBtn" onclick="saveDailyRoulette()" style="margin:6px 0;">💾 Guardar ruleta diaria</button>
+                    <div id="drOddsHint" style="color:#8fb;font-size:11px;margin-top:6px;"></div>
+                </div>
+
                 <!-- Budget diario: monto máximo a regalar por día, distribuido
                      a lo largo de las 24h. Si el pool de la hora ya se gastó,
                      se fuerza SIN PREMIO automáticamente. -->

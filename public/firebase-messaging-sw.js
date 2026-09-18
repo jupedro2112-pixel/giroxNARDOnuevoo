@@ -34,7 +34,8 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v114'; // v114: el cartel del bono por instalar la app toma el % y los textos del server (editables en COMANDOS) — chau 100% fijo
+const CACHE_VERSION = 'v115'; // v115: ruleta diaria con premios en % y tabla de probabilidades + bonos pendientes se aplican solos en la carga + sin bono de bienvenida para registros manuales
+// v114: // v114: el cartel del bono por instalar la app toma el % y los textos del server (editables en COMANDOS) — chau 100% fijo
 // v113: // v113: REEMBOLSO ACUMULATIVO de por vida en el perfil (tarjeta + reclamar + actualizar) — ESPEC-REEMBOLSO-1GIROX
 // v112: // v112: la burbuja del casino ahora es una PASTILLA con logo 1G + "CARGA RÁPIDA" (no más 🎧 que parecía soporte de la página), el panel arranca ABIERTO al entrar, y pista de que se puede arrastrar
 const CACHE_NAME = 'sala-juegos-fcm-' + CACHE_VERSION;

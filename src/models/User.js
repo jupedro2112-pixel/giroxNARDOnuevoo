@@ -556,6 +556,12 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  // RULETA DIARIA v2 (2026-09-18): % EXTRA ganado y todavía sin usar. Lo consume
+  // la próxima carga (manual o hgcash) vía resolveAutoBonus (server.js); un
+  // premio nuevo en % pisa uno anterior sin usar. 0 = nada pendiente.
+  dailyRoulettePendingPct: { type: Number, default: 0 },
+  dailyRoulettePendingLabel: { type: String, default: null },
+  dailyRouletteWonAt: { type: Date, default: null },
 
   // ============================================
   // CÓDIGO DE BIENVENIDA de la Comunidad de Telegram (2026-08-03)
