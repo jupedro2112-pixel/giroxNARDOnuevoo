@@ -4616,8 +4616,10 @@ function renderFirstChargeBonusBanner(user) {
     const banner = document.getElementById('chatBonusBanner');
     if (!banner) return;
     const status = user && user.firstChargeBonusStatus;
-    // % congelado al reclamar (reclamos viejos sin el campo = eran del 100%).
-    const pct = (user && user.firstChargeBonusPct != null) ? Number(user.firstChargeBonusPct) : 100;
+    // % congelado al reclamar. Sin el campo (reclamo viejo) → se aplica el % vigente del
+    // panel (el server los backfillea al arrancar); acá se muestra como "% vigente".
+    const pct = (user && user.firstChargeBonusPct != null) ? Number(user.firstChargeBonusPct) : null;
+    const pctTxt = pct != null ? pct + '%' : '(% vigente del panel)';
 
     if (status === 'pending') {
         banner.style.display = '';
@@ -4626,7 +4628,7 @@ function renderFirstChargeBonusBanner(user) {
             'padding:10px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
                 '<span style="font-size:20px;">🎁</span>' +
                 '<div style="flex:1;min-width:180px;">' +
-                    '<strong style="font-size:13px;display:block;">BONO ' + pct + '% PENDIENTE (por instalar la app)</strong>' +
+                    '<strong style="font-size:13px;display:block;">BONO ' + pctTxt + ' PENDIENTE (por instalar la app)</strong>' +
                     '<span style="font-size:11.5px;opacity:.92;">Se aplica AUTOMÁTICO en su próxima carga (manual o hgcash), con el tope de bonos. ' +
                     'No sumes nada a mano: si cargás con otro bonus, el sistema lo corrige y te avisa acá. "Marcar como usado" solo si se lo diste por otra vía.</span>' +
                 '</div>' +
@@ -4646,7 +4648,7 @@ function renderFirstChargeBonusBanner(user) {
         banner.innerHTML =
             '<div style="background:rgba(255,255,255,0.05);color:#888;border-radius:10px;' +
             'padding:7px 12px;margin:6px 0;font-size:11.5px;">' +
-                '✅ Bono ' + pct + '% por instalar la app ya utilizado' + quien + '. No le corresponde otro.' +
+                '✅ Bono ' + pctTxt + ' por instalar la app ya utilizado' + quien + '. No le corresponde otro.' +
             '</div>';
         return;
     }

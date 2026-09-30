@@ -8,6 +8,20 @@
 
 ## Sesión 2026-09-30
 
+### 213. FIX: reclamos VIEJOS del bono de la app (sin % congelado) se aplicaban al 100% — ahora toman el % vigente (backfill al boot) — admin-sw v51
+- **Captura del owner (gxFranco896):** carga hgcash de $2.000 → "bono por instalar la app
+  (100%) → $2.000". Preguntó por qué 100% si ese 100% ya se sacó.
+- **Causa:** el cliente reclamó el bono ANTES del #209 (cuando era 100% fijo), así que su
+  `firstChargeBonusPct` quedó null; el motor (#210) tomaba null como 100 ("lo que prometía
+  el cartel en su momento"). Decisión del owner: el 100% viejo no existe más.
+- **Fix:** (1) migración idempotente al boot: pendientes con `firstChargeBonusPct` null →
+  se congelan al % vigente del panel (`installBonusPct`, hoy 25); (2) `claimInstallBonusPercent`
+  y el endpoint "marcar usado": null → % vigente (red de seguridad); (3) banner del panel:
+  sin % congelado muestra "(% vigente del panel)" en vez de "100%". Los ya usados no se
+  tocan (historia). ⚠️ El caso de la captura ya cobró $2.000 al 100%: no se revierte solo.
+- **Validado:** `node --check` OK. Back necesita redeploy (la migración corre al arrancar y
+  loguea "N bono(s) de la app pendientes sin % congelado → 25%").
+
 ### 212. Réplica #172/#173 del gemelo (AUTOREEMBOLSOSjygactivo): lotes con regalo — tope del % en textos/cartel, bono canjeado vence a las 24 h (`useHours`), resumen por lote (canjeó/cargó/venció) — admin-sw v50
 - **Origen:** paquete `~/Documents/AUTOREEMBOLSOSjygactivo/docs/replicas/README-2026-09-29-lotes.md`
   + patch `2026-09-29-lotes-tope-24h-resumen.patch` (commits `7077ec9` / `8329e50` de allá,

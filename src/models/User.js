@@ -551,7 +551,8 @@ const userSchema = new mongoose.Schema({
   // % del bono CONGELADO al reclamar (2026-09-17). El % vigente vive en
   // Config['installBonusPct'] y el owner lo cambia según el mes/día: el cliente
   // tiene que cobrar el % que le prometió el cartel cuando reclamó, no el de hoy.
-  // null = reclamos anteriores a este campo (eran todos del 100%).
+  // null = reclamos anteriores a este campo: al boot los PENDIENTES se congelan al %
+  // vigente (2026-09-30: el 100% viejo ya no existe); en runtime null → % vigente.
   firstChargeBonusPct: {
     type: Number,
     default: null

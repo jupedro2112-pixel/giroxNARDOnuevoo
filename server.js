@@ -10360,6 +10360,21 @@ async function initializeData() {
   } catch (e) {
     console.warn(`⚠️ Migración textos bono automático: ${e.message}`);
   }
+  // MIGRACIÓN (2026-09-30, owner: "¿por qué da el 100% si ya lo sacamos?"): los reclamos
+  // del bono por instalar la app anteriores al campo firstChargeBonusPct quedaron SIN %
+  // congelado y el motor los tomaba como 100% (lo que prometía el cartel viejo). El 100%
+  // ya no existe → los PENDIENTES sin % se congelan al % vigente del panel. Idempotente
+  // (sólo matchea los que tienen null); los ya usados no se tocan (son historia).
+  try {
+    const pctVig = await getInstallBonusPct();
+    const r = await User.updateMany(
+      { firstChargeBonusStatus: 'pending', $or: [{ firstChargeBonusPct: null }, { firstChargeBonusPct: { $exists: false } }] },
+      { $set: { firstChargeBonusPct: pctVig } }
+    );
+    if (r.modifiedCount) console.log(`✅ ${r.modifiedCount} bono(s) de la app pendientes sin % congelado → ${pctVig}% (el vigente; chau 100% viejo)`);
+  } catch (e) {
+    console.warn(`⚠️ Migración % del bono de la app: ${e.message}`);
+  }
 
   console.log('✅ Datos inicializados correctamente');
 }
@@ -10850,8 +10865,10 @@ async function claimInstallBonusPercent(user, usedBy) {
       { new: false }
     ).select('firstChargeBonusPct').lean();
     if (!prev) return { pct: 0, claimed: false };
-    // Reclamos anteriores al campo firstChargeBonusPct eran del 100%.
-    const pct = (prev.firstChargeBonusPct != null && Number.isFinite(Number(prev.firstChargeBonusPct))) ? Number(prev.firstChargeBonusPct) : 100;
+    // Reclamos anteriores al campo firstChargeBonusPct (sin % congelado): valen el %
+    // VIGENTE del panel — el 100% viejo ya no existe (owner 2026-09-30). Al boot además
+    // se backfillean los pendientes con el % vigente, así que acá es sólo red de seguridad.
+    const pct = (prev.firstChargeBonusPct != null && Number.isFinite(Number(prev.firstChargeBonusPct))) ? Number(prev.firstChargeBonusPct) : await getInstallBonusPct();
     return { pct, claimed: pct > 0, source: 'install_bonus', label: `bono por instalar la app (${pct}%)`,
       revert: () => User.updateOne({ id: user.id, firstChargeBonusStatus: 'used', firstChargeBonusUsedBy: usedBy || 'auto' },
         { $set: { firstChargeBonusStatus: 'pending', firstChargeBonusUsedAt: null, firstChargeBonusUsedBy: null } }).catch(() => {}) };
@@ -11179,8 +11196,8 @@ app.post('/api/admin/users/:userId/first-charge-bonus/use', authMiddleware, admi
       });
     }
 
-    // Reclamos anteriores al campo firstChargeBonusPct eran todos del 100%.
-    const _usedPct = Number.isFinite(Number(updated.firstChargeBonusPct)) && updated.firstChargeBonusPct != null ? updated.firstChargeBonusPct : 100;
+    // Sin % congelado (reclamo viejo) → el % vigente del panel (el 100% viejo ya no existe).
+    const _usedPct = Number.isFinite(Number(updated.firstChargeBonusPct)) && updated.firstChargeBonusPct != null ? updated.firstChargeBonusPct : await getInstallBonusPct();
     logger.info(`[bono-app] ${updated.username} — bono ${_usedPct}% marcado como USADO por ${req.user.username}`);
 
     // Queda registrado en el chat para que cualquier agente que lo atienda después
