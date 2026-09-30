@@ -5,7 +5,8 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-09-18** — bonos AUTOMÁTICOS en la carga con tope
+> Última actualización: **2026-09-30** — lotes: tope del % en textos, `useHours` (bono
+> canjeado vence a las 24 h), resumen por lote (§2 NotifBatch). Antes: 2026-09-18 — bonos AUTOMÁTICOS en la carga con tope
 > (`resolveAutoBonus`, `src/utils/bonusCap.js`), registro manual sin bienvenida, ruleta
 > diaria con premios configurables (§2, §5, §8, §9). Antes: 2026-09-11 — reembolso ACUMULATIVO de por vida sobre plata
 > real (ESPEC-REEMBOLSO-1GIROX, réplica de la gemela): §2 (CashbackClaim + campos
@@ -208,6 +209,18 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   del PromoBonus). Panel: cards "🎁 Lote con regalo" y "📤 Lotes enviados" en
   Notificaciones. El depósito con bonus marca el PromoBonus activo como usado
   automáticamente (ya existía), aplica también a los de lote.
+- **Lotes con regalo — réplica #172/#173 del gemelo (2026-09-30, #212):** `NotifBatch.useHours`
+  (default 24): en modo 'code' con %, el PromoBonus vence a `canje + useHours` (en 'window'
+  sigue el `expiresAt` del lote). El % de lote lo aplica `resolveAutoBonus` con el tope de
+  `bonusCap` vía `_loteBonusAmount`; `_loteCapTxt` arma " (X% hasta $20.000, el resto al
+  20%)" para la nota interna, el texto al cliente (`_giftLabelOf`) y el cartel verde del
+  chat (`capTxt` de `GET /api/admin/promo-bonus`). `PromoBonus.usesCount/usesTotalBonus`
+  registran la carga que lo usó (los setea `settle()` al aplicar, `revert()` los limpia) y
+  alimentan el resumen por lote: `GET /api/admin/notif-batches` (usados/activos/vencidos/
+  bonoTotal) y `GET /:id` (vencimiento lazy + `outcome` used|active|expired|cancelled +
+  `summary`). Código ajeno a la lista → "Este código no es para tu cuenta". ⚠️ Acá NO hay
+  `applyMode`/franja horaria (`_inDailyWindow`) como en el gemelo: el % de lote es siempre
+  automático desde #210.
 - **DailyRouletteSpin** — 1 giro/día (índices únicos userId+dateKey y
   username+dateKey). Auto-crédito en 1girox; `credit_failed` → retry desde panel.
   v2 (2026-09-18): `prizeType` cash|percent|none, `prizePct`, `rolloverX`, status

@@ -46,6 +46,11 @@ const promoBonusSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'used', 'expired'], default: 'active', index: true },
   usedBy: { type: String, default: null },
   usedAt: { type: Date, default: null },
+  // #173: cuántas cargas lo usaron (acá siempre 0|1: vale por una carga) y cuánto
+  // bono en $ salió por él (lo setea resolveAutoBonus al aplicarlo). Alimentan el
+  // resumen por lote del panel ("N cargaron ($X regalados)").
+  usesCount:    { type: Number, default: 0 },
+  usesTotalBonus: { type: Number, default: 0 },
 
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: false });

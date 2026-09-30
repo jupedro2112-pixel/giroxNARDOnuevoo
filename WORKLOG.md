@@ -4,7 +4,67 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-09-18**
+> **Última actualización: 2026-09-30**
+
+## Sesión 2026-09-30
+
+### 212. Réplica #172/#173 del gemelo (AUTOREEMBOLSOSjygactivo): lotes con regalo — tope del % en textos/cartel, bono canjeado vence a las 24 h (`useHours`), resumen por lote (canjeó/cargó/venció) — admin-sw v50
+- **Origen:** paquete `~/Documents/AUTOREEMBOLSOSjygactivo/docs/replicas/README-2026-09-29-lotes.md`
+  + patch `2026-09-29-lotes-tope-24h-resumen.patch` (commits `7077ec9` / `8329e50` de allá,
+  plataforma JUGAYGANA). Portado a 1girox siguiendo el prompt del README, con los MISMOS
+  nombres de campos, endpoints y funciones del panel.
+- **Adaptaciones a ESTE repo (difiere del gemelo):** acá el % de lote ya se aplica SOLO
+  en la carga desde #210 (`resolveAutoBonus` → `claimPromoBonusPercent`, manual y hgcash)
+  y el tope ya era `Config['bonusCap']` (`capArs` $20.000 / `restPct` 20%) — no existen
+  `applyMode/applyScope/autoApply`, `claimAutoPromoPercent` ni la franja horaria
+  (`_inDailyWindow`), así que el punto 2 del prompt (minuto final inclusive) **no aplica**
+  (nada que portar). Como el % es siempre automático, los textos del canje/notificación
+  que decían "avisale al agente" / "aplicáselo y marcalo como usado" pasan a "se aplica
+  SOLO en tu próxima carga" y el cartel verde del chat dice "Se suma SOLO al cargar — NO
+  hay que marcar nada" con botón "✕ Cancelar bono" (para $ fijo sigue "Marcar usado").
+- **#172 tope del % de lote:** helpers `_loteBonusAmount(amount, pct, cfg)` = min(carga,
+  tope) × pct% + max(0, carga − tope) × min(pct, restPct)% y `_loteCapTxt(pct, cfg)` →
+  " (100% hasta $20.000, el resto al 20%)" o '' (pct ≤ restPct / tope apagado), con cache
+  `_bonusCapCfgCache` (última config leída) para los textos sync. `resolveAutoBonus` usa
+  `_loteBonusAmount` para la fuente `promo_bonus` (mismo resultado que `bonusWithCap`) y
+  devuelve `capTxt`; la nota interna de lote pasa al formato del gemelo "⚡ BONO DE LOTE
+  AUTOMÁTICO aplicado en esta carga: +X%{capTxt} = $Y (label). El bono quedó USADO…" (+ la
+  frase de corrección si el agente había puesto otro bonus); `_giftLabelOf` (texto al
+  cliente, lotes en %) y `GET /api/admin/promo-bonus` (`capTxt`, mostrado en el cartel
+  verde) lo incluyen. Ej.: lote 100%, carga $30.000 → $22.000.
+- **#172 código ajeno:** `_tryClaimNotifBatchCode` con lista y usuario fuera → "Este código
+  no es para tu cuenta: el lote se envió a otros usuarios."
+- **#173 `useHours`:** `NotifBatch.useHours` (default 24, 1–168; POST lo lee/valida y lo
+  guarda en el lote público y en el de lista). `_activateBatchPromoBonus`: en modo 'code'
+  el PromoBonus vence a `canje + useHours`; en 'window' sigue la vigencia del lote. Canje:
+  "Válido hasta" con `pb.expiresAt`; notificación del código con %: "…y, una vez canjeado,
+  tenés Xhs para usarlo en tu carga".
+- **#173 resumen por lote:** `PromoBonus.usesCount/usesTotalBonus` (nuevos; los setea
+  `settle()` de `claimPromoBonusPercent` al aplicar el bono, `revert()` los limpia).
+  `GET /api/admin/notif-batches` proyecta `useHours` y agrega por lote `usados/activos/
+  vencidos/bonoTotal` (aggregate de PromoBonus `sourceRuleCode:'lote'`). `GET /:id`:
+  vence lazy los activos pasados de plazo, devuelve por destinatario `outcome` (used |
+  active | expired | cancelled), `bonusExpiresAt`, `usesCount`, `usesTotalBonus`,
+  `cargaMonto` y un `summary` {total, canjearon, usaron, activos, vencidos, cancelados,
+  bonoTotal}.
+- **Panel:** input `giftBatchUseHours` ("⏱ Horas para usarlo tras canjear", solo modo
+  código + regalo %, enviado como `useHours`); fila del lote (solo %) con "N cargaron ($X)
+  · N activos · N vencidos sin usar · ⏱ Nhs para usar"; "Ver lote" arranca con el resumen
+  y cada fila usa `outcome` ("canjeó dd/mm hh:mm · cargó con el bono … · carga $X · bono
+  $Y · lo aplicó Z" / "activo · vence …" / "venció sin usar (…)" / "cancelado o
+  reemplazado"). **admin-sw v50.** Sin bump de la PWA.
+- **Validado:** `node --check` OK (server.js, NotifBatch, PromoBonus, admin.js, admin-sw);
+  scan TDZ de las 265 rutas: 0 middlewares usados antes de su `const` (los 3 avisos del
+  scan son palabras del array de paths de un `app.use`, no middlewares);
+  `_loteBonusAmount`/`_loteCapTxt` verificados con los casos del README (100%/$10.000 con
+  tope $5.000 → $6.000; 50% → $3.500; 20% → $2.000; acá 100%/$30.000 → $22.000).
+  **Back necesita redeploy.** PROBAR (checklist del README): (1) lote % 100% + carga
+  $30.000 → bono $22.000, nota y cartel con "(100% hasta $20.000, el resto al 20%)";
+  (2) lote con código + %, "horas para usarlo" = 1 → canjear → "Válido hasta" una hora
+  después; a la hora "Ver lote" lo marca "venció sin usar"; (3) canjear y cargar → la fila
+  suma "1 cargaron ($X)" y el detalle "cargó con el bono"; (4) canjear con una cuenta que
+  no está en la lista → "Este código no es para tu cuenta…". (Sin franja horaria acá:
+  el punto 4 del checklist no aplica.)
 
 ## Sesión 2026-09-18
 
