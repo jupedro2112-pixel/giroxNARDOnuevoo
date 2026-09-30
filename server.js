@@ -2242,6 +2242,20 @@ async function hgcashAutoCarga({ movement, comprobante, mode }) {
       metadata: { source: 'auto_hgcash', movementId: movement.movementId, comprobanteId: comprobante.id },
       timestamp: new Date()
     });
+    // Bonificación como Transaction PROPIA (type 'bonus'), igual que la carga manual:
+    // sin esto el dashboard de Transacciones mostraba Bonificaciones $0 / Total regalos
+    // $0 aunque en 1girox el bono figuraba (owner 2026-09-30, caso gxFranco896).
+    if (_hgBonusApplied) {
+      await Transaction.create({
+        id: uuidv4(), type: 'bonus', amount: Number(_auto.bonus),
+        username: user.username, userId: user.id,
+        description: `Bonificación incluida en carga automática hgcash de $${Number(amount).toLocaleString('es-AR')} — automática: ${_auto.label}`,
+        adminUsername: 'auto-hgcash', adminRole: 'system',
+        transactionId: result.data?.transfer_id || result.data?.transferId,
+        metadata: { source: _auto.source || 'auto_bonus', movementId: movement.movementId, autoBonus: { pct: _auto.pct, rule: _auto.rule } },
+        timestamp: new Date()
+      }).catch((e) => logger.warn(`[auto-bonus] hgcash: no se pudo registrar la Transaction del bono (${user.username}): ${e.message}`));
+    }
 
     // Mensaje al cliente (usa /sys_deposit si está; si no, fallback).
     let newBalance = null;

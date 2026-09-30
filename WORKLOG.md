@@ -8,6 +8,27 @@
 
 ## Sesión 2026-09-30
 
+### 214. FIX: el bono automático de la auto-carga hgcash no aparecía en Transacciones (Bonificaciones $0) aunque en 1girox sí
+- **Captura del owner:** 1girox muestra "Carga $2.000" + "Bono $2.000" para gxFranco896;
+  el dashboard de Transacciones del panel mostraba Bonificaciones $0 y Total regalos $0.
+- **Causa:** en hgcash el bono iba SOLO como campo `bonus` de la Transaction de la carga;
+  el resumen del panel cuenta las bonificaciones por Transactions tipo `bonus` (la carga
+  manual sí crea esa fila aparte, hgcash no).
+- **Fix:** `hgcashAutoCarga` crea la Transaction `bonus` propia ("Bonificación incluida en
+  carga automática hgcash de $X — automática: <fuente>", `metadata.source` = fuente del
+  bono, adminUsername auto-hgcash). De paso queda contada como regalo para el reembolso
+  acumulativo (ya lo estaba vía `bonus` del deposit — no se duplica: el aggregate de
+  regalos suma `bonus` del deposit + Transactions 'bonus'… ⚠️ ver nota).
+- ⚠️ **Nota:** el aggregate de regalos del reembolso acumulativo (`_cashbackStateToday`)
+  suma `deposit.bonus` Y las Transactions 'bonus' → con la fila nueva el bono de hgcash se
+  contaría dos veces en `giftedLocal`, igual que YA pasaba con la carga manual (que
+  también crea ambas). Como `giftedLife` toma el MÁXIMO tramo a tramo contra el
+  `bonus.granted` oficial, el efecto es conservador (a favor de la casa), no un pago de
+  más. Queda anotado para corregirlo en una limpieza (excluir `deposit.bonus` cuando
+  exista la fila 'bonus' del mismo depósito).
+- **Validado:** `node --check` OK. Back necesita redeploy. El caso de la captura (ya
+  cargado) no se reescribe: la fila faltante es solo de ese depósito.
+
 ### 213. FIX: reclamos VIEJOS del bono de la app (sin % congelado) se aplicaban al 100% — ahora toman el % vigente (backfill al boot) — admin-sw v51
 - **Captura del owner (gxFranco896):** carga hgcash de $2.000 → "bono por instalar la app
   (100%) → $2.000". Preguntó por qué 100% si ese 100% ya se sacó.
