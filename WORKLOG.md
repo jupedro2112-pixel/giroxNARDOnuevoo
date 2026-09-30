@@ -19,13 +19,12 @@
   bono, adminUsername auto-hgcash). De paso queda contada como regalo para el reembolso
   acumulativo (ya lo estaba vía `bonus` del deposit — no se duplica: el aggregate de
   regalos suma `bonus` del deposit + Transactions 'bonus'… ⚠️ ver nota).
-- ⚠️ **Nota:** el aggregate de regalos del reembolso acumulativo (`_cashbackStateToday`)
-  suma `deposit.bonus` Y las Transactions 'bonus' → con la fila nueva el bono de hgcash se
-  contaría dos veces en `giftedLocal`, igual que YA pasaba con la carga manual (que
-  también crea ambas). Como `giftedLife` toma el MÁXIMO tramo a tramo contra el
-  `bonus.granted` oficial, el efecto es conservador (a favor de la casa), no un pago de
-  más. Queda anotado para corregirlo en una limpieza (excluir `deposit.bonus` cuando
-  exista la fila 'bonus' del mismo depósito).
+- **Doble conteo corregido de paso:** el aggregate de regalos del reembolso acumulativo
+  (`_cashbackStateToday`, #208) sumaba `deposit.bonus` Y las Transactions 'bonus' → el
+  bono de una carga manual contaba dos veces en `giftedLocal` (conservador por el máximo
+  contra `bonus.granted`, pero incorrecto). Ahora suma SOLO las Transactions de regalo;
+  las pocas cargas hgcash con bono entre el #210 y este fix (sin fila propia) las cubre
+  el `granted` oficial.
 - **Validado:** `node --check` OK. Back necesita redeploy. El caso de la captura (ya
   cargado) no se reescribe: la fila faltante es solo de ese depósito.
 

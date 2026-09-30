@@ -7473,14 +7473,15 @@ async function _cashbackStateToday(userId, username, opts) {
   // varias Transactions históricas de regalos se guardaron sin userId. Las
   // devoluciones de retiro rechazado (payout_refund) no son regalo.
   const giftFrom = cashbackFormula.initialAnchor(uDoc.createdAt);
-  const giftExpr = { $add: [
-    { $cond: [{ $eq: ['$type', 'deposit'] }, { $ifNull: ['$bonus', 0] }, 0] },
-    { $cond: [{ $in: ['$type', CASHBACK_GIFT_TX_TYPES] }, { $ifNull: ['$amount', 0] }, 0] }
-  ] };
+  // ⚠️ El `bonus` de una carga NO se suma acá: toda carga con bonus (manual y, desde
+  // #214, también hgcash) crea además su Transaction 'bonus' propia → sumarlo dos veces
+  // inflaba `regalado` (2026-09-30). Las pocas cargas hgcash con bono entre el #210 y el
+  // #214 sin fila propia las cubre el `bonus.granted` oficial (máximo tramo a tramo).
+  const giftExpr = { $cond: [{ $in: ['$type', CASHBACK_GIFT_TX_TYPES] }, { $ifNull: ['$amount', 0] }, 0] };
   const giftAgg = await Transaction.aggregate([
     { $match: {
       $or: [{ userId: String(userId) }, { username: String(username) }],
-      type: { $in: ['deposit', ...CASHBACK_GIFT_TX_TYPES] },
+      type: { $in: CASHBACK_GIFT_TX_TYPES },
       'metadata.source': { $ne: 'payout_refund' },
       timestamp: { $gte: giftFrom }
     } },
