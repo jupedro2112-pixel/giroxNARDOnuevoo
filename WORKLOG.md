@@ -4,7 +4,68 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-09-30**
+> **Última actualización: 2026-10-07**
+
+## Sesión 2026-10-07
+
+### 215. Réplica de `ESPEC-HGCASH-PANEL.md` (AUTOGIROXcompartido #320/#326): credenciales de hgcash desde el panel (cifradas, panel > SSM) + reenvío de los avisos de hgcash a otras páginas configurable — admin-sw v52
+- **Origen:** `~/Documents/AUTOGIROXcompartido/docs/ESPEC-HGCASH-PANEL.md` (2026-10-06),
+  aplicada bloque por bloque TAL CUAL. Acá no había NADA de esto aplicado: sólo el
+  fan-out viejo de una URL (`HGCASH_FANOUT_URL`, #94). Mismos nombres de funciones,
+  endpoints, Config keys e ids del panel que en el origen.
+- **#320 Credenciales desde el panel.** `hgcashService`: `getToken()` = override del panel
+  o `HGCASH_API_TOKEN` (SSM); nuevos `setTokenOverride`, `getTokenSource` (panel|ssm|none)
+  y `getAccounts(withToken)` para PROBAR un token antes de guardarlo. `server.js`: bloque
+  `_credKey/_credEncrypt/_credDecrypt` (AES-256-GCM, clave = sha256(JWT_SECRET +
+  ':hgcash-credentials:v1')), `Config['hgcashCredentials']` = {tokenEnc, secretEnc,
+  tokenLast4, secretLast4, updatedBy, updatedAt}; `_loadHgcashCredentials()` corre a los 8 s
+  del arranque y cada 60 s en CADA instancia (inyecta el token al servicio y guarda
+  `_hgcashPanelSecret`). El webhook `POST /api/hgcash/webhook` valida la firma contra
+  `_hgcashWebhookSecrets()` = [secreto del panel, `HGCASH_WEBHOOK_SECRET`] — con
+  CUALQUIERA de los dos alcanza (cambio de cuenta sin perder avisos); el rechazo loguea
+  ip/fwdBy/ua/id/monto (#277 del origen). Fail-closed en prod sigue (503 si no hay
+  ningún secreto). Endpoints solo admin general: `GET/POST/DELETE
+  /api/admin/hgcash/credentials` (el POST prueba el token contra `GET /accounts` de hgcash
+  y si rebota NO pisa nada; al cambiar el token limpia `Config['hgcash'].accountId` para
+  que se resuelva con la cuenta nueva; el DELETE vuelve a SSM). `GET /api/admin/hgcash/config`
+  → `secretConfigured` ahora = panel o SSM.
+- **#326 Reenvío configurable.** `_fanoutHgcashWebhook` reescrito: destinos de
+  `Config['hgcashFanout'].urls` (hasta 5, cache 30 s por instancia `_getHgcashFanout`);
+  si ese Config EXISTE manda el panel (lista vacía = no reenviar); si no existe vale
+  `HGCASH_FANOUT_URL` como antes (default autoreembolsos.com, 'off' apaga). Anti-círculo:
+  un aviso que llega con `X-Forwarded-By` no se vuelve a reenviar y nunca se manda a la
+  URL propia (`getPublicBaseUrl()` + `/api/hgcash/webhook`, comparada normalizada por
+  `_fanoutUrlKey`). `_normalizeFanoutUrl` exige https, dominio público (sin localhost/IP
+  privada/credenciales) y completa `/api/hgcash/webhook` si pegaron solo el dominio.
+  Stats por destino en memoria (`_hgcashFanoutStats`: ok/fail/lastAt/lastOk/lastError).
+  Endpoints solo admin general: `GET/POST/DELETE /api/admin/hgcash/fanout` (POST valida,
+  dedupe y rechaza la URL propia; DELETE borra el Config → vuelve a SSM).
+- **Panel (Comandos → Banco automático, dentro del form):** cards "🔐 Cuenta hgcash
+  conectada (token y secreto)" (`hgcashCredBox`: estado token/secreto en uso con últimos
+  4, URL del webhook para cargar en hgcash, "Probar y guardar", "Volver a usar AWS (SSM)";
+  aviso si lo guardado no se pudo descifrar) y "🔁 Reenviar los avisos de hgcash a otras
+  páginas" (`hgcashFanoutBox`: textarea una URL por línea, URL propia para copiar, estado
+  y último resultado por destino, guardar / volver a SSM). Se cargan desde
+  `loadHgcashConfig()` (`loadHgcashCredentials` / `loadHgcashFanout`). **admin-sw v52.**
+- **Trampas nuevas:** (1) si cambia `JWT_SECRET` lo guardado no se descifra → el server
+  cae a SSM, loguea ERROR y la card lo avisa (recargar token+secreto); (2) `Config` baja
+  las keys a minúsculas (`lowercase:true` en el schema) y Mongoose 8 aplica eso también
+  en los filtros, por eso `Config.set('hgcashFanout')` + `getConfig('hgcashFanout')` +
+  `Config.deleteOne({key})` coinciden — no cambiar el schema; (3) las stats del reenvío
+  son por instancia desde el arranque (con 2 instancias de EB cada una ve las suyas).
+- **Validado:** `node --check` OK (server.js, hgcashService.js, admin.js, admin-sw.js).
+  Sin test automático posible (hgcash y Mongo no están en local). **Back necesita
+  redeploy.** PROBAR (§8 de la espec): (1) panel → Banco automático → card 🔐 dice
+  "Token en uso: AWS (SSM)"; pegar un token inválido → "hgcash rechazó ese token" y no
+  cambia nada; pegar el válido → lista la cuenta, la card pasa a PANEL y el saldo hgcash
+  del panel se actualiza; (2) transferencia real con la cuenta nueva (secreto nuevo
+  cargado) → el webhook entra y la auto-carga acredita; durante el cambio los avisos con
+  el secreto viejo (SSM) también entran; (3) "Volver a usar AWS" → card vuelve a SSM;
+  (4) card 🔁: sin config muestra el valor de SSM; cargar la URL de la otra página →
+  guardar → con una transferencia real aparece "✅ último reenvío OK" y el movimiento
+  figura en la otra página; pegar la URL propia → rechazo "Esa es la dirección de ESTA
+  página"; (5) un aviso reenviado por otra página (trae X-Forwarded-By) no se vuelve a
+  reenviar (log sin `[hgcash-fanout]`).
 
 ## Sesión 2026-09-30
 

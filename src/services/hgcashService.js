@@ -5,8 +5,9 @@
  * CBU/alias. Lo usa el flujo de retiros: cuando un AGENTE confirma un retiro
  * self-service, se paga automáticamente al CBU del cliente vía la API de hgcash.
  *
- * Auth: Bearer `cash_<hex>` en `process.env.HGCASH_API_TOKEN` (cargado desde SSM
- * en el bootstrap, como el resto de los secrets). Si NO está el token, isEnabled()
+ * Auth: Bearer `cash_<hex>`. Desde #320 (2026-10-07) el token puede venir del PANEL
+ * (Config['hgcashCredentials'] cifrado, lo inyecta server.js con setTokenOverride) y
+ * `process.env.HGCASH_API_TOKEN` (SSM) queda de respaldo. Si NO hay token, isEnabled()
  * devuelve false y el pago automático queda inactivo (no rompe nada; se paga manual).
  *
  * Usa axios directo (mismo patrón que los clientes de JUGAYGANA) — sin dependencias nuevas.
@@ -16,7 +17,13 @@ const logger = require('../utils/logger');
 
 const BASE = process.env.HGCASH_API_URL || 'https://hg.cash/api/v1';
 
-function getToken() { return process.env.HGCASH_API_TOKEN || null; }
+// #320: el token se puede cargar desde el PANEL (Config cifrado, lo carga server.js en
+// memoria al arrancar y cada 60 s). El del panel MANDA; SSM (HGCASH_API_TOKEN) queda de
+// respaldo. Así un cambio de cuenta hgcash no depende de entrar a AWS.
+let _tokenOverride = null;
+function setTokenOverride(t) { _tokenOverride = (typeof t === 'string' && t.trim()) ? t.trim() : null; }
+function getTokenSource() { return _tokenOverride ? 'panel' : (process.env.HGCASH_API_TOKEN ? 'ssm' : 'none'); }
+function getToken() { return _tokenOverride || process.env.HGCASH_API_TOKEN || null; }
 
 /** true si hay token de API configurado (el pago automático está disponible). */
 function isEnabled() { return !!getToken(); }
@@ -46,11 +53,12 @@ async function lookupAlias(aliasOrCvu) {
 // verdad para resolver el accountId a debitar: si cambiás de cuenta/token, esto
 // devuelve la cuenta nueva (evita el 403 "No tienes acceso a esta cuenta" por usar
 // un accountId viejo cacheado). GET /accounts → { data: [{ id, currency, status, ... }] }.
-// @returns { ok, data: [accounts] } | { ok:false, error, httpStatus }
-async function getAccounts() {
-  if (!getToken()) return { ok: false, error: 'HGCASH_API_TOKEN no configurado' };
+// #320: `withToken` opcional → prueba un token NUEVO antes de guardarlo (no toca el vigente).
+async function getAccounts(withToken) {
+  const tok = (typeof withToken === 'string' && withToken.trim()) ? withToken.trim() : getToken();
+  if (!tok) return { ok: false, error: 'HGCASH_API_TOKEN no configurado' };
   try {
-    const r = await axios.get(`${BASE}/accounts`, { headers: _headers(), timeout: 15000 });
+    const r = await axios.get(`${BASE}/accounts`, { headers: { Authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, timeout: 15000 });
     const data = (r.data && Array.isArray(r.data.data)) ? r.data.data : (Array.isArray(r.data) ? r.data : []);
     return { ok: true, data };
   } catch (e) {
@@ -163,4 +171,4 @@ async function fetchReceiptPdf(transactionId) {
   }
 }
 
-module.exports = { isEnabled, lookupAlias, getAccounts, createCashOut, getTransactionIdForRequest, getTransactionStatus, getReceiptUrl, fetchReceiptPdf, getToken };
+module.exports = { isEnabled, lookupAlias, getAccounts, createCashOut, getTransactionIdForRequest, getTransactionStatus, getReceiptUrl, fetchReceiptPdf, getToken, setTokenOverride, getTokenSource };

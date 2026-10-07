@@ -124,6 +124,11 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   cualquier mensaje automático nuevo. **Ningún % de bono hardcodeado en textos**
   (owner 2026-09-17, varían por mes/día): va a Config + variable (ej. `{pct}` del bono
   por instalar la app, `Config['installBonusPct']`, editable en COMANDOS).
+- **hgcash desde el panel (2026-10-07):** token de API y secreto del webhook se cargan
+  en Comandos → Banco automático (cifrados con `JWT_SECRET` en `Config['hgcashCredentials']`,
+  **panel > SSM**; el webhook acepta la firma con cualquiera de los dos secretos). El
+  reenvío de avisos a otras páginas sale de `Config['hgcashFanout']` (si existe) o de
+  `HGCASH_FANOUT_URL`. Rotar `JWT_SECRET` ⇒ recargar las credenciales en el panel.
 - **Transaction** (cargas/retiros) es permanente (sin TTL). **Message** tiene TTL de 3
   días. La analítica de clientes se basa en Transaction.
 - **Montos en PESOS.** ⚠️ Ojo si mirás código o docs viejos: JUGAYGANA trabajaba en

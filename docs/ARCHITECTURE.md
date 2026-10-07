@@ -5,7 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-09-30** — lotes: tope del % en textos, `useHours` (bono
+> Última actualización: **2026-10-07** — hgcash desde el panel: credenciales cifradas
+> (panel > SSM, firma del webhook con cualquiera de los dos secretos) y reenvío de avisos
+> configurable (§5 AUTO-CARGA, §9). Antes: 2026-09-30 — lotes: tope del % en textos, `useHours` (bono
 > canjeado vence a las 24 h), resumen por lote (§2 NotifBatch). Antes: 2026-09-18 — bonos AUTOMÁTICOS en la carga con tope
 > (`resolveAutoBonus`, `src/utils/bonusCap.js`), registro manual sin bienvenida, ruleta
 > diaria con premios configurables (§2, §5, §8, §9). Antes: 2026-09-11 — reembolso ACUMULATIVO de por vida sobre plata
@@ -640,8 +642,25 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   índice único de HgcashCharge de nuestro lado y la idempotencia de 1girox del otro) →
   Transaction + mensaje + SLA. Fallo → se BORRA el HgcashCharge y es reintentable hasta
   3 veces (la reference estable impide que el reintento duplique la carga).
-  **Fan-out** (#94): reenvía el webhook crudo+firma a autoreembolsos.com
-  (`HGCASH_FANOUT_URL`, 'off' para apagar).
+  **Credenciales desde el PANEL (#215, réplica #320 de AUTOGIROXcompartido):** el
+  token de API y el secreto del webhook se pueden cargar en Comandos → Banco
+  automático → card "🔐 Cuenta hgcash conectada" (solo admin general,
+  `GET/POST/DELETE /api/admin/hgcash/credentials`). Se guardan CIFRADOS (AES-256-GCM,
+  clave derivada de `JWT_SECRET`) en `Config['hgcashCredentials']`; cada instancia los
+  carga en memoria a los 8 s del arranque y cada 60 s (`_loadHgcashCredentials` →
+  `hgcashPay.setTokenOverride` + `_hgcashPanelSecret`). **Panel > SSM**
+  (`HGCASH_API_TOKEN` / `HGCASH_WEBHOOK_SECRET` quedan de respaldo). El webhook acepta
+  la firma con CUALQUIERA de los secretos (`_hgcashWebhookSecrets()`), así un cambio de
+  cuenta no pierde avisos. El POST prueba el token contra `GET /accounts` de hgcash
+  antes de guardar y limpia `Config['hgcash'].accountId` (se resuelve con la cuenta
+  nueva). Si `JWT_SECRET` cambia, lo guardado no se descifra → cae a SSM y la card avisa.
+  **Fan-out** (#94 → #215/#326): reenvía el webhook crudo+firma a OTRAS páginas que
+  comparten la cuenta hgcash. Destinos en `Config['hgcashFanout'].urls` (hasta 5, card
+  "🔁 Reenviar los avisos…", `GET/POST/DELETE /api/admin/hgcash/fanout`, cache 30 s);
+  si ese Config existe manda el panel (vacío = no reenviar), si no vale
+  `HGCASH_FANOUT_URL` (default autoreembolsos.com, 'off' apaga). Anti-círculo: lo que
+  llega con `X-Forwarded-By` no se reenvía y nunca se manda a la URL propia. Stats por
+  destino en memoria por instancia (`_hgcashFanoutStats`), visibles en la card.
 - **Retiro self-service**: `POST /api/withdrawal/request` — exige phoneVerified, lock
   anti-doble, chequeo de saldo (UX), dedup 10min → crea PendingPayout
   (`deductAtPay:true`, SIN descontar) → mueve el chat a Pagos. El AGENTE confirma:
@@ -862,7 +881,8 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   prueba `giroxApiKey` (el panel valida que empiece con `pk_`). La respuesta del listado
   expone `hasJugayganaCreds` mapeado desde `hasGiroxKey`. El "probar login" ya no
   loguea: consulta un jugador inexistente — 404 = key válida, 401 = key rechazada.
-- `admin-sw.js` (v24, scope /adminprivado2026/): network-first no-store para el shell.
+- `public/admin-sw.js` (scope /adminprivado2026/; `CACHE_VERSION` se bumpea por release —
+  ver el valor actual en el archivo, v52 al 2026-10-07): network-first no-store para el shell.
 - Servido por handlers propios con cache en memoria (`readFileCached`) + ADMIN_HOST
   check opcional; el catch-all bloquea todo otro path bajo /adminprivado2026/.
 - Secciones "Automatización" y "Estrategia de bonos" están marcadas "No se usa" en el
@@ -966,6 +986,13 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   cuenta como regalo (sin "reembolso del reembolso") — no excluirlo. El índice
   único de `CashbackClaim` (`userId+dateKey+seq`) y el plegado condicionado al ancla
   son la idempotencia multi-instancia: no tocarlos.
+- **Credenciales hgcash: panel > SSM, cifradas con `JWT_SECRET`** (#215): rotar
+  `JWT_SECRET` deja ilegible `Config['hgcashCredentials']` (el server cae a SSM y loguea
+  ERROR; hay que recargar token+secreto en el panel). El webhook valida contra TODOS los
+  secretos disponibles (`_hgcashWebhookSecrets`) — no volver a leer
+  `process.env.HGCASH_WEBHOOK_SECRET` directo. `Config` baja las keys a minúsculas y
+  Mongoose las castea también en los filtros: `Config.set` / `getConfig` /
+  `Config.deleteOne` sobre la misma key coinciden; no cambiar ese `lowercase:true`.
 - **Message TTL 3 días; Transaction permanente.** Snapshot en ChatDelay por eso.
 - **ChatStatus se crea con actividad**, no al crear el usuario.
 - **Atribución de publicista** se fija al registrar; el login NO la cambia. El referido
