@@ -156,6 +156,8 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   `_createNotifBatchFromBody(body, user)`; cualquier validación/efecto nuevo del lote va en esa
   función (así lo heredan las campañas programadas). Las rutas del cronograma son
   `/api/admin/cronograma*` porque `/api/admin/campaigns` YA es de publicistas: no reusar ese path.
+  El compositor push (`/api/notifications/send-batch`) es un wrapper de `sendBatchPush` en
+  `notificationRoutes.js` (misma regla: lo nuevo del envío va en la función).
 
 ## Flujo de trabajo del asistente
 
