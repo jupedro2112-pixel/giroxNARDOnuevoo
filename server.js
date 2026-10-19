@@ -470,6 +470,12 @@ const giroxPublisherKeys = require('./src/services/giroxPublisherKeys');
 // (TTL corto a propósito: multi-instancia, y un cambio de key pega rápido).
 const _giroxKeyCache = new Map();
 const GIROX_KEY_CACHE_TTL_MS = 60 * 1000;
+// Rollover GLOBAL de bonos (#220): giroxService lo aplica a TODO bono/regalo cuando
+// está encendido (ver getGlobalBonusRollover más abajo — hoisted).
+girox.setRolloverResolver(async () => {
+  const g = await getGlobalBonusRollover();
+  return g.enabled ? g.effective : null;
+});
 girox.setKeyResolver(async (username) => {
   const now = Date.now();
   const hit = _giroxKeyCache.get(username);
@@ -7315,7 +7321,8 @@ app.post('/api/refunds/claim/weekly', authMiddleware, async (req, res) => {
 
       res.json({
         success: true,
-        message: `¡Reembolso semanal de $${refundAmount} acreditado!`,
+        message: `¡Reembolso semanal de $${refundAmount} acreditado!${depositResult.rolloverApplied > 0 ? ` Para retirarlo apostalo x${depositResult.rolloverApplied} en el casino.` : ''}`,
+        rolloverX: depositResult.rolloverApplied || 0, // #220
         amount: refundAmount,
         percentage: weeklyPct,
         netAmount: netLoss,
@@ -7481,7 +7488,8 @@ app.post('/api/refunds/claim/monthly', authMiddleware, async (req, res) => {
 
       res.json({
         success: true,
-        message: `¡Reembolso mensual de $${refundAmount} acreditado!`,
+        message: `¡Reembolso mensual de $${refundAmount} acreditado!${depositResult.rolloverApplied > 0 ? ` Para retirarlo apostalo x${depositResult.rolloverApplied} en el casino.` : ''}`,
+        rolloverX: depositResult.rolloverApplied || 0, // #220
         amount: refundAmount,
         percentage: monthlyPct,
         netAmount: netLoss,
@@ -7649,7 +7657,7 @@ async function _cashbackStateToday(userId, username, opts) {
     maxDailyArs: cfg.maxDailyArs, minArs: cfg.minArs
   });
   return {
-    enabled: true, pct: cfg.pct, rolloverX: cfg.rolloverX, minArs: cfg.minArs,
+    enabled: true, pct: cfg.pct, rolloverX: await applyGlobalRollover(cfg.rolloverX), minArs: cfg.minArs, // #220
     maxDailyArs: cfg.maxDailyArs, dateKey: today.dateStr,
     netLife: calc.lifeNet,          // neto de por vida (puede ser negativo: venía ganando)
     lossLife: calc.lossLife,        // pérdida REAL (neto − regalado, piso 0)
@@ -7686,7 +7694,7 @@ app.get('/api/cashback/status', authMiddleware, async (req, res) => {
       fresh = true;
     }
     const st = await _cashbackStateToday(req.user.userId, req.user.username, { fresh });
-    if (st.error) return res.json({ enabled: true, unavailable: true, pct: cfg.pct, minArs: cfg.minArs, rolloverX: cfg.rolloverX, maxDailyArs: cfg.maxDailyArs });
+    if (st.error) return res.json({ enabled: true, unavailable: true, pct: cfg.pct, minArs: cfg.minArs, rolloverX: await applyGlobalRollover(cfg.rolloverX), maxDailyArs: cfg.maxDailyArs });
     res.json(st);
   } catch (e) {
     logger.warn(`[cashback] status falló: ${e.message}`);
@@ -7791,6 +7799,24 @@ app.post('/api/cashback/claim', authMiddleware, authLimiter, async (req, res) =>
 });
 
 // Config del reembolso acumulativo (GET admin; POST solo admin general) — §4.7.
+// Rollover GLOBAL de bonos (#220) — lectura: staff del panel; escritura: solo admin general.
+app.get('/api/admin/bonus-rollover', authMiddleware, adminMiddleware, async (req, res) => {
+  try { res.json({ ...(await getGlobalBonusRollover()), canEdit: req.user.role === 'admin' }); }
+  catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/bonus-rollover', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    const b = req.body || {};
+    const x = Math.round(Number(b.x));
+    if (!BONUS_ROLLOVER_OPTIONS.includes(x)) return res.status(400).json({ error: `Rollover inválido. Opciones: ${BONUS_ROLLOVER_OPTIONS.map((n) => 'x' + n).join(', ')}` });
+    const enabled = b.enabled === true;
+    await setConfig('bonusRolloverGlobal', { enabled, x });
+    logger.info(`[bonus-rollover] ${req.user.username}: global ${enabled ? 'ON' : 'OFF'} x${x}`);
+    res.json({ ...(await getGlobalBonusRollover()), canEdit: true });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+
 app.get('/api/admin/instant-cashback', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
@@ -8012,7 +8038,8 @@ app.post('/api/vip/rakeback/claim', authMiddleware, async (req, res) => {
 
       res.json({
         success: true,
-        message: `¡Rakeback semanal de $${amount.toLocaleString('es-AR')} acreditado! (${pct}% de lo que apostaste)`,
+        message: `¡Rakeback semanal de $${amount.toLocaleString('es-AR')} acreditado! (${pct}% de lo que apostaste)${depositResult.rolloverApplied > 0 ? ` Para retirarlo apostalo x${depositResult.rolloverApplied} en el casino.` : ''}`,
+        rolloverX: depositResult.rolloverApplied || 0, // #220
         amount,
         pct,
         wagered
@@ -8359,7 +8386,55 @@ app.get('/api/movements', authMiddleware, async (req, res) => {
 // el panel pero retirable como siempre (el comportamiento histórico de los
 // bonos manuales del agente). Prioridad: GIROX_BONUS_MULTIPLIER (env/SSM) si la
 // plataforma lo permite; si no, 0 si está permitido; si no, el menor permitido.
+// ===== ROLLOVER GLOBAL DE BONOS (#220, owner 2026-10-19 — réplica #278 de PAUTANUEVAsantino) =====
+// Un solo multiplicador para TODOS los regalos/bonos (bono app, bonus del agente,
+// código de bienvenida, ruleta diaria, lotes, fueguito, reembolsos semanal/mensual/
+// acumulativo, rakeback, nivel VIP). Config['bonusRolloverGlobal'] = { enabled, x }.
+// Default APAGADO (cada flujo sigue con su rollover propio) hasta que el owner lo
+// prenda desde COMANDOS. Opciones: 0, 2, 3, 5, 10. Si la plataforma no permite el
+// elegido (bonus.multipliers), se usa el permitido más cercano hacia ARRIBA (y el
+// panel lo avisa). Excluidos a propósito: comisiones de referidos y devoluciones de
+// retiro rechazado (no son bonos). Sin cache de Config (multi-instancia); la config
+// de la plataforma sí está cacheada en giroxService.
+const BONUS_ROLLOVER_OPTIONS = [0, 2, 3, 5, 10];
+const BONUS_ROLLOVER_DEFAULT = { enabled: false, x: 3 };
+async function getGlobalBonusRollover() {
+  let enabled = BONUS_ROLLOVER_DEFAULT.enabled, x = BONUS_ROLLOVER_DEFAULT.x;
+  try {
+    const raw = await getConfig('bonusRolloverGlobal');
+    if (raw && typeof raw === 'object') {
+      enabled = raw.enabled === true;
+      const n = Math.round(Number(raw.x));
+      if (BONUS_ROLLOVER_OPTIONS.includes(n)) x = n;
+    }
+  } catch (_) {}
+  let allowed = null;
+  try {
+    const cfg = await girox.getPlatformConfig();
+    const rawA = cfg.success && cfg.config && cfg.config.bonus && cfg.config.bonus.multipliers;
+    if (Array.isArray(rawA) && rawA.length) {
+      allowed = rawA.map(Number).filter((n) => Number.isFinite(n) && n >= 0).sort((a, b) => a - b);
+      if (!allowed.length) allowed = null;
+    }
+  } catch (_) {}
+  let effective = x;
+  if (allowed && !allowed.includes(x)) {
+    const up = allowed.find((n) => n > x);
+    effective = up != null ? up : allowed[allowed.length - 1];
+  }
+  return { enabled, x, effective, allowed, snapped: effective !== x, options: BONUS_ROLLOVER_OPTIONS };
+}
+// Rollover a usar/mostrar en un flujo: el GLOBAL si está encendido, si no el propio.
+async function applyGlobalRollover(flowValue) {
+  try {
+    const g = await getGlobalBonusRollover();
+    if (g.enabled) return g.effective;
+  } catch (_) {}
+  return Math.max(0, Math.round(Number(flowValue) || 0));
+}
+
 async function getGiroxBonusMultiplier() {
+  try { const g = await getGlobalBonusRollover(); if (g.enabled) return g.effective; } catch (_) {} // #220
   let allowed = null;
   try {
     const cfg = await girox.getPlatformConfig();
@@ -11533,7 +11608,7 @@ app.post('/api/community-code/claim', authMiddleware, authLimiter, async (req, r
       // con el ROLLOVER elegido en el panel (bonus.multipliers permite 0 = sin
       // rollover) → en el panel de 1girox figura como Bono, no como Carga.
       // claim_required=true en la config del sitio → auto-claim más abajo.
-      const _welcomeRolloverX = await getWelcomeCodeRolloverX();
+      const _welcomeRolloverX = await applyGlobalRollover(await getWelcomeCodeRolloverX()); // #220
       const credit = await girox.creditUserBalance(
         user.username, amount, `vip-welcome-${user.id}`,
         { multiplier: _welcomeRolloverX, description: 'Bono sorpresa — código de bienvenida de la Comunidad' }
@@ -12066,7 +12141,7 @@ app.get('/api/fire/status', authMiddleware, async (req, res) => {
       nextReward: (FIRE_MILESTONES.find(m => m.day > currentStreak) || {}).reward || 0,
       // x del rollover con que se acreditan los premios (0 = libres). El front lo
       // usa para avisar "para retirarlo apostá X×" antes de que el cliente reclame.
-      rolloverMultiplier: await getFireRolloverMultiplier()
+      rolloverMultiplier: await applyGlobalRollover(await getFireRolloverMultiplier()) // #220
     });
   } catch (error) {
     console.error('Error obteniendo estado del fueguito:', error);
@@ -12240,7 +12315,7 @@ app.post('/api/fire/claim-reward', authMiddleware, async (req, res) => {
     // directo (bono 0). Si el jugador YA tiene un bono activo, el bono suelto lo
     // PISARÍA → cae al depósito con multiplier de antes (mismo candado, figura
     // como Carga). La reference es la MISMA en todas las ramas → idempotencia.
-    const _fireMult = await getFireRolloverMultiplier();
+    const _fireMult = await applyGlobalRollover(await getFireRolloverMultiplier()); // #220
     const bonusResult = await _creditFireReward(username, rewardAmount, rewardDesc, _fireRef, _fireMult);
 
     if (!bonusResult.success) {
@@ -16710,7 +16785,7 @@ app.post('/api/admin/payouts/:id/cancel', authMiddleware, withdrawerMiddleware, 
         if (r && r.success) { chipsOk = true; await mkRefundTx(chipsPart, 'chips', r.data); }
       }
       if (bonusPart > 0) {
-        const r = await girox.creditUserBalance(payout.username, bonusPart, `vip-payoutref-bonus-${payout.id}`);
+        const r = await girox.creditUserBalance(payout.username, bonusPart, `vip-payoutref-bonus-${payout.id}`, { ignoreGlobalRollover: true }); // devolución, no bono (#220)
         if (r && r.success) { bonusOk = true; await mkRefundTx(bonusPart, 'bonus', r.data); }
       }
     } catch (e) {
@@ -17347,6 +17422,16 @@ function _prizesPublic(prizes) {
     probPct: Math.round((Number(p.weight) || 0) / total * 1000) / 10
   }));
 }
+// Ídem para la PWA con el rollover EFECTIVO de los premios en $ (global #220 encendido
+// ⇒ todos los cash salen con ese x; la card de premios del panel sigue mostrando el propio).
+async function _prizesPublicEff(prizes) {
+  const list = _prizesPublic(prizes);
+  try {
+    const g = await getGlobalBonusRollover();
+    if (g.enabled) return list.map((p) => (p.type === 'cash' ? { ...p, rolloverX: g.effective } : p));
+  } catch (_) {}
+  return list;
+}
 function _pickWeightedPrize(prizes) {
   const total = prizes.reduce((s, p) => s + (Number(p.weight) || 0), 0);
   if (!(total > 0)) return prizes[prizes.length - 1];
@@ -17485,7 +17570,7 @@ app.get('/api/roulette/status', authMiddleware, async (req, res) => {
       minCargas: cfg.minCargas30d,
       dateKey,
       // Premios con su probabilidad real (transparencia: la PWA los lista).
-      prizes: _prizesPublic(cfg.prizes),
+      prizes: await _prizesPublicEff(cfg.prizes), // #220
       // % EXTRA ganado y todavía sin usar (se aplica solo en la próxima carga).
       pendingPct: (u && u.dailyRoulettePendingPct) || 0,
       pendingLabel: (u && u.dailyRoulettePendingLabel) || null,
@@ -17755,7 +17840,7 @@ app.post('/api/admin/roulette/test-spin', authMiddleware, adminMiddleware, async
         type: pick.type,
         prizeARS: pick.type === 'cash' ? (Number(pick.value) || 0) : 0,
         prizePct: pick.type === 'percent' ? (Number(pick.value) || 0) : 0,
-        rolloverX: pick.rolloverX || 0,
+        rolloverX: pick.type === 'cash' ? await applyGlobalRollover(pick.rolloverX) : 0, // #220
         prizeLabel: pick.label,
         emoji: pick.emoji,
         weight: pick.weight,
@@ -17858,6 +17943,9 @@ app.post('/api/roulette/spin', authMiddleware, async (req, res) => {
     }
 
     const initialStatus = pick.type === 'percent' ? 'percent_pending' : (prizeARS > 0 ? 'won' : 'no_prize');
+    // #220: rollover EFECTIVO del premio en $ (global si está encendido) — se guarda en el
+    // giro y es el que se acredita y se le dice al cliente.
+    const _rollEff = pick.type === 'cash' ? await applyGlobalRollover(pick.rolloverX) : 0;
     let spinDoc;
     try {
       spinDoc = await DailyRouletteSpin.create({
@@ -17870,7 +17958,7 @@ app.post('/api/roulette/spin', authMiddleware, async (req, res) => {
         prizeLabel: pick.label,
         prizeType: pick.type,
         prizePct: pick.type === 'percent' ? (Number(pick.value) || 0) : 0,
-        rolloverX: pick.type === 'cash' ? (Number(pick.rolloverX) || 0) : 0,
+        rolloverX: _rollEff,
         ipAddress: (req.ip || '').slice(0, 60),
         userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
         status: initialStatus,
@@ -17923,7 +18011,7 @@ app.post('/api/roulette/spin', authMiddleware, async (req, res) => {
     // premio ya se había acreditado y sólo se perdió la respuesta, el reintento NO
     // vuelve a pagarlo.
     // Premio en PLATA: bono con el rollover del premio (0 = regalo directo).
-    const _roll = Number(pick.rolloverX) || 0;
+    const _roll = _rollEff; // #220
     let credit;
     try {
       credit = await girox.creditGift(username, prizeARS, { description: `Ruleta diaria — ${pick.label}`, reference: `vip-roulette-${spinDoc.id}`, rolloverX: _roll });
@@ -19248,7 +19336,7 @@ async function _creditNotifBatchGift(uDoc, batch) {
   if (Number(pInfo.bonusLocked) > 0 || Number(pInfo.claimableTotal) > 0) {
     return { ok: false, blocked: true, reason: 'bono activo en el casino' };
   }
-  const rollover = Math.max(0, Number(batch.rolloverX) || 0);
+  const rollover = await applyGlobalRollover(batch.rolloverX); // #220
   const _ref = `vip-nbatch-${batch.id}-${uDoc.id}`.slice(0, 100);
   const credit = await girox.creditUserBalance(
     uDoc.username, batch.amount, _ref,
@@ -19393,7 +19481,7 @@ async function _processOneNotifBatch(batchId) {
             }
           }
           if (notificar) {
-            const rollover = Math.max(0, Number(batch.rolloverX) || 0);
+            const rollover = await applyGlobalRollover(batch.rolloverX); // #220
             const rollTxt = rollover > 0
               ? ` (bono con rollover x${rollover}: apostá ${rollover}× el monto y después podés retirar)`
               : '';
@@ -19602,7 +19690,7 @@ async function _tryClaimNotifBatchCode(reqUser, attempt) {
       { $set: { 'recipients.$.creditedAt': new Date(), 'recipients.$.creditTxId': res2.txId, 'recipients.$.creditError': null } }
     ).catch(() => {});
 
-    const rollover = Math.max(0, Number(batch.rolloverX) || 0);
+    const rollover = await applyGlobalRollover(batch.rolloverX); // #220
     const rollTxt = rollover > 0
       ? ` (bono con rollover x${rollover}: apostá ${rollover}× el monto y después podés retirar)`
       : '';

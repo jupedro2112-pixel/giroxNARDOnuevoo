@@ -107,6 +107,13 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   multiplier (si el jugador ya tiene bono activo cae a depósito con multiplier — no
   pisarle el bono). La **devolución de retiro rechazado** sigue como depósito (no es
   regalo). La ruleta ahora escribe Transaction type 'roulette'. Detalle: ARCHITECTURE §4.5.
+- **Rollover GLOBAL de bonos (2026-10-19, #220):** `Config['bonusRolloverGlobal']`
+  `{enabled, x}` (card "🎯 Rollover GLOBAL" en COMANDOS, default APAGADO). Encendido,
+  `giroxService` lo aplica solo a TODO bono/regalo (incl. reembolsos, rakeback y nivel
+  VIP, que salen como bono 0) vía `setRolloverResolver`; los rollovers de cada card se
+  ignoran. Plata que NO es bono (comisiones de referidos, devolución de retiro) lleva
+  `ignoreGlobalRollover:true`. Para mostrar/guardar el valor: `applyGlobalRollover(x)`
+  o `r.rolloverApplied`. Detalle: ARCHITECTURE §4.5 y §9.
 - **Bonos AUTOMÁTICOS en la carga con TOPE (2026-09-18):** todo bono en % pendiente
   (app, código de bienvenida, ruleta diaria, lote) lo aplica `resolveAutoBonus` en la
   carga manual y en hgcash — X% hasta `Config['bonusCap'].capArs` ($20.000) y `restPct`

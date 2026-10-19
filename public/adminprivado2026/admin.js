@@ -5696,6 +5696,8 @@ async function loadCommands() {
         loadCBUConfig();
         // % del bono por instalar la app (variable {pct} de los /sys_install_bonus*)
         loadInstallBonusPct();
+        // Rollover GLOBAL de bonos (#220)
+        loadBonusRolloverCfg();
     } catch (error) {
         console.error('Error loading commands:', error);
     }
@@ -5764,6 +5766,82 @@ async function saveInstallBonusPct() {
 }
 window.saveInstallBonusPct = saveInstallBonusPct;
 window.loadInstallBonusPct = loadInstallBonusPct;
+
+// ====== Rollover GLOBAL de bonos (COMANDOS, #220 — réplica #278 de PAUTANUEVAsantino) ======
+// Botones x0/x2/x3/x5/x10. Los que la plataforma NO permite (bonus.multipliers de
+// 1girox) se ven apagados con ⚠️; si el elegido no está permitido, el server usa el
+// permitido más cercano hacia arriba (`effective`) y el hint lo avisa.
+let _brSelected = 3;
+let _brAllowed = null;
+let _brCanEdit = false;
+function _brRender(cfg) {
+    const box = document.getElementById('brOptions');
+    const hint = document.getElementById('brHint');
+    if (!box) return;
+    const allowed = Array.isArray(cfg.allowed) ? cfg.allowed.map(Number) : null;
+    _brSelected = Number(cfg.x);
+    box.innerHTML = (cfg.options || [0, 2, 3, 5, 10]).map(function(n) {
+        const ok = !allowed || allowed.includes(n);
+        const sel = n === _brSelected;
+        return '<button type="button" class="' + (sel ? 'btn-primary' : 'btn-secondary') + '" ' +
+            'onclick="brPick(' + n + ')" ' + (_brCanEdit ? '' : 'disabled ') +
+            'style="min-width:64px;padding:8px 14px;border-radius:8px;font-weight:700;' + (ok ? '' : 'opacity:.45;') + '" ' +
+            'title="' + (ok ? '' : 'La plataforma no permite x' + n + ' — si lo elegís se usa el permitido más cercano hacia arriba') + '">' +
+            (n === 0 ? 'x0 (sin)' : 'x' + n) + (ok ? '' : ' ⚠️') + '</button>';
+    }).join('');
+    if (hint) {
+        let t = cfg.enabled ? ('Activo: todos los bonos salen con rollover <b>x' + cfg.effective + '</b>.') : 'Apagado: cada flujo usa su propio rollover (ruleta, fueguito, código, lotes, reembolso acumulativo; reembolsos semanal/mensual, rakeback y nivel VIP sin rollover).';
+        if (cfg.snapped) t += ' ⚠️ Elegiste x' + cfg.x + ' pero 1girox no lo permite en tu cuenta → se está usando <b>x' + cfg.effective + '</b>. Pedile a soporte de 1girox que habilite x' + cfg.x + '.';
+        if (allowed) t += ' <span style="color:#777">Permitidos por la plataforma: ' + allowed.map(function(n) { return 'x' + n; }).join(', ') + '.</span>';
+        if (!_brCanEdit) t += ' <span style="color:#777">(solo el admin general lo cambia)</span>';
+        hint.innerHTML = t;
+    }
+}
+function brPick(n) {
+    if (!_brCanEdit) return;
+    const en = document.getElementById('brEnabled');
+    let eff = n;
+    if (_brAllowed && !_brAllowed.includes(n)) { const up = _brAllowed.find(function(a) { return a > n; }); eff = up != null ? up : _brAllowed[_brAllowed.length - 1]; }
+    _brRender({ x: n, enabled: !!(en && en.checked), allowed: _brAllowed, options: [0, 2, 3, 5, 10], effective: eff, snapped: eff !== n });
+}
+async function loadBonusRolloverCfg() {
+    const form = document.getElementById('bonusRolloverForm');
+    if (!form) return;
+    try {
+        const r = await authFetch('/api/admin/bonus-rollover');
+        if (!r.ok) { form.style.display = 'none'; return; }
+        const cfg = await r.json();
+        form.style.display = '';
+        _brCanEdit = !!cfg.canEdit;
+        _brAllowed = Array.isArray(cfg.allowed) ? cfg.allowed.map(Number) : null;
+        const en = document.getElementById('brEnabled');
+        if (en) { en.checked = cfg.enabled === true; en.disabled = !_brCanEdit; en.onchange = function() { brPick(_brSelected); }; }
+        const btn = document.getElementById('brSaveBtn');
+        if (btn) btn.style.display = _brCanEdit ? '' : 'none';
+        _brRender(cfg);
+    } catch (e) { form.style.display = 'none'; }
+}
+async function saveBonusRollover() {
+    const en = document.getElementById('brEnabled');
+    const enabled = !!(en && en.checked);
+    if (!confirm(enabled
+        ? ('¿Activar el rollover global x' + _brSelected + '?\n\nDesde ahora TODOS los bonos y regalos (reembolsos incluidos) salen con ese rollover; los rollovers de cada card se ignoran.')
+        : '¿Apagar el rollover global?\n\nCada flujo vuelve a usar su propio rollover (los reembolsos semanal/mensual, el rakeback y el nivel VIP quedan sin rollover).')) return;
+    try {
+        const r = await authFetch('/api/admin/bonus-rollover', {
+            method: 'POST',
+            body: JSON.stringify({ enabled, x: _brSelected })
+        });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        _brAllowed = Array.isArray(j.allowed) ? j.allowed.map(Number) : null;
+        _brRender(j);
+        showToast(j.enabled ? ('Rollover global x' + j.effective + ' activado') : 'Rollover global apagado', j.snapped ? 'warning' : 'success');
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+window.brPick = brPick;
+window.saveBonusRollover = saveBonusRollover;
+window.loadBonusRolloverCfg = loadBonusRolloverCfg;
 
 function renderCommands(commands) {
     const container = document.getElementById('commandsList');

@@ -627,6 +627,29 @@ document.addEventListener('change', function (ev) {
                                 <span id="bonusCapMsg" style="font-size:12px;color:#aaa;"></span>
                             </div>
                         </div>
+                        <!-- ROLLOVER GLOBAL de bonos (#220, réplica #278 de PAUTANUEVAsantino; solo admin general edita) -->
+                        <div class="cbu-form" id="bonusRolloverForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">🎯 Rollover GLOBAL de bonos</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 10px;">
+                                Un solo rollover para <b>TODOS</b> los bonos: bono por instalar la app, bonus del agente, código de
+                                bienvenida, ruleta diaria, lotes, fueguito, reembolsos (semanal, mensual y acumulativo), rakeback y nivel VIP.
+                                Mientras esté <b>activado</b>, los rollovers individuales de cada card <b>se ignoran</b>.
+                                <b>x0</b> = sin rollover (retirable al instante). NO aplica a comisiones de referidos ni a devoluciones de retiro.
+                            </p>
+                            <div style="margin:0 0 12px;">
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;">
+                                    <input type="checkbox" id="brEnabled" style="width:auto;"> Rollover global ACTIVADO (pisa los individuales)
+                                </label>
+                            </div>
+                            <div style="margin:0 0 10px;">
+                                <label style="display:block;margin:0 0 6px;">Multiplicador</label>
+                                <div id="brOptions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+                                <small id="brHint" style="color:#aaa;font-size:11px;display:block;margin-top:6px;"></small>
+                            </div>
+                            <button type="button" class="btn-primary btn-small" id="brSaveBtn" onclick="saveBonusRollover()">
+                                <span class="icon icon-save"></span> Guardar rollover global
+                            </button>
+                        </div>
                         <div class="panel-subheader">
                             <h3>Comandos Personalizados</h3>
                             <button class="btn-primary btn-small" onclick="showCreateCommandModal()">

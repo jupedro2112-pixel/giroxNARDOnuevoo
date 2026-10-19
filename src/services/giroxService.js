@@ -248,6 +248,24 @@ async function _acquireSlot(laneKey) {
 // sites. null / error del resolver → key master (comportamiento de siempre).
 let _keyResolver = null;
 function setKeyResolver(fn) { _keyResolver = typeof fn === 'function' ? fn : null; }
+
+// ROLLOVER GLOBAL de bonos (#220, owner 2026-10-19 — réplica del #278 de
+// PAUTANUEVAsantino). server.js inyecta un resolver que devuelve el multiplicador
+// global EFECTIVO (número) o null si el modo global está apagado. Se aplica en
+// creditGift, en creditUserBalance (con multiplier explícito Y en el regalo
+// directo) y en el bonus_multiplier de los depósitos con bono — salvo que el
+// caller pase `ignoreGlobalRollover:true` (comisiones de referidos y devoluciones
+// de retiro rechazado: no son bonos, es plata del cliente/referidor).
+let _rolloverResolver = null;
+function setRolloverResolver(fn) { _rolloverResolver = typeof fn === 'function' ? fn : null; }
+async function _globalRollover() {
+  if (!_rolloverResolver) return null;
+  try {
+    const v = await _rolloverResolver();
+    const n = Number(v);
+    return (v == null || !Number.isFinite(n) || n < 0) ? null : Math.round(n);
+  } catch (_) { return null; }
+}
 async function _resolveKeyFor(username) {
   if (!_keyResolver || !username) return null;
   try {
@@ -866,6 +884,13 @@ async function depositToUser(username, amount, description = '', reference = nul
     if (wagering.bonusPercent != null) body.bonus_percent = Number(wagering.bonusPercent);
     if (wagering.bonusAmount != null) body.bonus_amount = Number(wagering.bonusAmount);
     if (wagering.bonusMultiplier != null) body.bonus_multiplier = Number(wagering.bonusMultiplier);
+    // #220: rollover GLOBAL sobre el bono de la carga (bono app / código de
+    // bienvenida / ruleta % / lote % / bonus del agente). Solo si el depósito lleva
+    // bono nuestro; una carga sin bono no se toca.
+    if ((body.bonus_amount > 0 || body.bonus_percent > 0) && !wagering.ignoreGlobalRollover) {
+      const g = await _globalRollover();
+      if (g != null) body.bonus_multiplier = g;
+    }
   }
 
   let r = await _request({
@@ -995,9 +1020,11 @@ async function creditUserBalance(username, amount, reference = null, opts = {}) 
   // lo usan el botón Bonificación del panel, el welcome code cash y los lotes, donde
   // un bonus_out_of_range tiene que verse como error (no convertirse en carga).
   if (opts && opts.multiplier != null) {
+    let mult = Number(opts.multiplier);
+    if (!opts.ignoreGlobalRollover) { const g = await _globalRollover(); if (g != null) mult = g; } // #220
     const body = {
       amount: amt,
-      multiplier: Number(opts.multiplier),
+      multiplier: mult,
       reference: _buildReference('bonus', reference)
     };
     // El endpoint /bonus no documenta `description`, pero se manda igual para que el
@@ -1015,12 +1042,25 @@ async function creditUserBalance(username, amount, reference = null, opts = {}) 
     _invalidatePlayer(username);
     const out = _moneyResult(r.data);
     out.creditedAs = 'bonus';
+    out.rolloverApplied = mult;
     return out;
   }
 
   // Regalo directo = bono 0 (default). La reference es la MISMA en las dos ramas.
   const ref = _buildReference('bonus', reference);
   const description = (opts && opts.description) || '';
+
+  // #220: con el rollover GLOBAL encendido (>0) el regalo directo TAMBIÉN sale con
+  // rollover (reembolsos, rakeback, nivel VIP, premios x0…): va por creditGift
+  // (precheck + guard de bono activo + fallback a depósito con multiplier, MISMA
+  // reference). Con global x0 o apagado sigue siendo bono 0 retirable.
+  // `ignoreGlobalRollover` lo evita (comisiones de referidos, devoluciones).
+  if (!(opts && opts.ignoreGlobalRollover)) {
+    const g = await _globalRollover();
+    if (g != null && g > 0) {
+      return creditGift(username, amt, { reference, description, rolloverX: g, ignoreGlobalRollover: true });
+    }
+  }
 
   if (_giftAsBonusEnabled()) {
     const pre = await _giftPrecheck(amt);
@@ -1083,10 +1123,16 @@ const GIFT_BONUS_GUARD_MIN_ARS = 50; // resto ≤ $50 de bono viejo: se pisa (mi
 async function creditGift(username, amount, opts = {}) {
   const amt = _normalizeAmount(amount);
   if (amt === null) return { success: false, error: 'Monto inválido', code: 'invalid_amount' };
-  const roll = Math.max(0, Math.round(Number(opts.rolloverX) || 0));
+  let roll = Math.max(0, Math.round(Number(opts.rolloverX) || 0));
+  if (!opts.ignoreGlobalRollover) { const g = await _globalRollover(); if (g != null) roll = g; } // #220
   const description = opts.description || '';
   const reference = opts.reference || null;
-  if (roll === 0) return creditUserBalance(username, amt, reference, { description });
+  // ignoreGlobalRollover: el global YA se resolvió acá (roll) — no volver a aplicarlo.
+  if (roll === 0) {
+    const r0 = await creditUserBalance(username, amt, reference, { description, ignoreGlobalRollover: true });
+    if (r0 && r0.success) r0.rolloverApplied = 0;
+    return r0;
+  }
 
   let viaBonus = true;
   let why = null;
@@ -1118,8 +1164,8 @@ async function creditGift(username, amount, opts = {}) {
   }
 
   if (viaBonus) {
-    const r = await creditUserBalance(username, amt, reference, { multiplier: roll, description });
-    if (r && r.success) { r.creditedAs = 'bonus'; r.claimRequired = true; return r; }
+    const r = await creditUserBalance(username, amt, reference, { multiplier: roll, description, ignoreGlobalRollover: true });
+    if (r && r.success) { r.creditedAs = 'bonus'; r.claimRequired = true; r.rolloverApplied = roll; return r; }
     const definitivo = r && (['feature_disabled', 'bonus_out_of_range', 'validation_error', 'invalid_multiplier', 'player_not_found'].includes(r.code) || r.httpStatus === 422);
     if (!definitivo) return r; // transitorio: no cambiar de vía
     why = `la plataforma rechazó el bono (${r.code || r.error})`;
@@ -1127,7 +1173,7 @@ async function creditGift(username, amount, opts = {}) {
 
   logger.warn(`[girox] regalo a ${username} $${amt} (x${roll}) va por DEPÓSITO con rollover (figura como Carga) — ${why || 's/motivo'}`);
   const r = await depositToUser(username, amt, description, reference, { multiplier: roll });
-  if (r && r.success) { r.creditedAs = 'deposit'; r.fallbackReason = why; }
+  if (r && r.success) { r.creditedAs = 'deposit'; r.fallbackReason = why; r.rolloverApplied = roll; }
   return r;
 }
 
@@ -1548,6 +1594,7 @@ module.exports = {
   getPublisherKeyOverridesCount: function () { return _publisherKeyConfigs().length; },
   // ruteo por dueño del jugador (server.js inyecta el resolver username→apiKey)
   setKeyResolver,
+  setRolloverResolver,
   // jugadores
   createPlatformUser,
   getUserInfoByName,

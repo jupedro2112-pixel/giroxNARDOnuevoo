@@ -4,7 +4,60 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-10-16**
+> **Última actualización: 2026-10-19**
+
+## Sesión 2026-10-19
+
+### 220. 🎯 ROLLOVER GLOBAL de bonos editable desde COMANDOS (x0 / x2 / x3 / x5 / x10) — réplica #278 de PAUTANUEVAsantino — admin-sw v57
+- **Owner:** "quiero que se pueda modificar el rollover general que se da por bono, ruleta
+  diaria, reembolsos, etc. Porque ahora no se puede modificar" + captura de la card del gemelo.
+  Acá va en **COMANDOS** (debajo de "Bonos automáticos en la carga"), no en Configuración.
+- **Diseño (igual al gemelo, adaptado al cliente de ESTE repo):** un resolver inyectado en
+  `giroxService` (`setRolloverResolver`, como el keyResolver) devuelve el multiplicador global
+  EFECTIVO o `null` si está apagado, y se aplica en los 3 puntos por donde pasa TODO bono:
+  (1) `creditGift` (`rolloverX` del flujo → global); (2) `creditUserBalance` con `multiplier`
+  explícito (→ global) **y en el regalo directo (bono 0)**: con global > 0 el regalo pasa
+  por `creditGift` (precheck + guard de bono activo + fallback a depósito con multiplier,
+  MISMA reference) — así reembolsos semanal/mensual, rakeback y nivel VIP, que acá salen
+  como bono 0, también reciben el global; (3) `bonus_multiplier` de `depositToUser` cuando
+  la carga lleva bono nuestro (bono app, código, ruleta %, lote %, bonus del agente).
+  `ignoreGlobalRollover:true` lo evita: **comisiones de referidos** (`referralPayoutService`)
+  y **devolución de retiro rechazado** (`vip-payoutref-bonus-*`) — no son bonos. El
+  resultado trae `rolloverApplied` (lo que salió de verdad).
+- **Config:** `Config['bonusRolloverGlobal'] = { enabled, x }`. **Default APAGADO** (a
+  diferencia del gemelo, que arranca ON x3): deployar no cambia nada hasta que el owner
+  lo prenda desde la card. `getGlobalBonusRollover()` (server.js) valida `x` contra
+  `bonus.multipliers` de GET /config: si no está permitido usa el permitido más cercano
+  hacia ARRIBA (`effective`, flag `snapped`, el panel lo avisa). ⚠️ En la config del owner
+  (2026-08-05) la lista era `[0,2,5,10,20,40]` → x3 ⇒ efectivo x5 hasta que soporte de
+  1girox habilite x3 (la captura del gemelo ya mostraba x3 permitido en esa cuenta).
+  `applyGlobalRollover(valorDelFlujo)` para los puntos donde el valor se muestra/registra;
+  `getGiroxBonusMultiplier()` devuelve el global si está encendido.
+- **Coherencia de lo que se le dice al cliente:** status y claim del reembolso acumulativo
+  (`_cashbackStateToday.rolloverX`), código de bienvenida cash, fueguito (status de la PWA
+  y acreditación), ruleta diaria (premios del status vía `_prizesPublicEff`, el giro guarda
+  `rolloverX` efectivo en `DailyRouletteSpin` y es el que se acredita, simulación del panel),
+  lotes con fichas (crédito + los dos mensajes "apostá N×"), y las respuestas del reembolso
+  semanal/mensual y del rakeback ahora dicen "Para retirarlo apostalo xN" (+ `rolloverX`)
+  leyendo `rolloverApplied`. **No hecho (pendiente si el owner lo pide):** la variable
+  `{rollover}` en los `/sys_*` de carga con bonus / bono manual / nivel VIP (#281 del gemelo).
+- **Endpoints:** `GET /api/admin/bonus-rollover` (staff del panel; `canEdit` = admin general)
+  y `POST` `{enabled, x}` (solo admin general; 400 si x ∉ {0,2,3,5,10}).
+- **Panel (admin-sw v57):** card "🎯 Rollover GLOBAL de bonos" en COMANDOS
+  (`bonusRolloverForm`): switch "activado (pisa los individuales)", botones x0 (sin)/x2/x3/x5/
+  x10 (los no permitidos apagados con ⚠️), hint con el efectivo/aviso/lista permitida,
+  confirm al guardar. Se carga desde `loadCommands()` → `loadBonusRolloverCfg()`. Para
+  depositor/withdrawer se ve en solo lectura. Las cards individuales (fueguito, código,
+  ruleta, lotes, reembolso acumulativo) siguen editables pero se ignoran con el global ON.
+- **Validado:** `node --check` OK (server.js, giroxService, referralPayoutService, admin.js,
+  admin-sw); HTML balanceado; alcance de `_rollEff` en el handler del giro verificado. Sin
+  runtime. **Back + panel necesitan redeploy.** PROBAR: (1) COMANDOS → card: aparece
+  apagada, lista "Permitidos por la plataforma"; (2) prender x3 → si la cuenta no lo permite
+  el hint dice "se está usando x5"; (3) carga manual con bonus → en 1girox el bono con
+  multiplier N; (4) ruleta diaria premio $ → bono xN y la PWA dice "apostalo xN"; (5)
+  reembolso semanal → sale como bono xN (o depósito con rollover si tenía bono activo) y la
+  respuesta dice "Para retirarlo apostalo xN"; (6) comisión de referidos y devolución de
+  retiro → sin rollover; (7) apagar → todo vuelve a lo de antes sin migración.
 
 ## Sesión 2026-10-16
 

@@ -5,7 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-07** — hgcash desde el panel: credenciales cifradas
+> Última actualización: **2026-10-19** — rollover GLOBAL de bonos editable desde COMANDOS
+> (`Config['bonusRolloverGlobal']`, resolver en giroxService, §4.5, §8, §9; WORKLOG #220).
+> Antes: 2026-10-07 — hgcash desde el panel: credenciales cifradas
 > (panel > SSM, firma del webhook: solo el secreto del panel si hay uno (#216)) y reenvío de avisos
 > configurable (§5 AUTO-CARGA, §9). Antes: 2026-09-30 — lotes: tope del % en textos, `useHours` (bono
 > canjeado vence a las 24 h), resumen por lote (§2 NotifBatch). Antes: 2026-09-18 — bonos AUTOMÁTICOS en la carga con tope
@@ -465,6 +467,22 @@ reintento manda la misma reference y la plataforma responde `duplicate:true`.
   lotes): `/bonus` ESTRICTO sin fallback (un rechazo se ve como error). ⚠️ Ojo
   con "bono sobre bono": un bono con rollover a quien ya tiene uno activo PISA
   el anterior y le debita lo que le quedaba.
+- **ROLLOVER GLOBAL de bonos (#220, 2026-10-19, réplica #278 de PAUTANUEVAsantino):**
+  `Config['bonusRolloverGlobal'] = {enabled, x}` (default **APAGADO**, x3; opciones
+  0/2/3/5/10; `GET/POST /api/admin/bonus-rollover`; card "🎯 Rollover GLOBAL de bonos"
+  en COMANDOS). `getGlobalBonusRollover()` (server.js) valida `x` contra
+  `bonus.multipliers` de la plataforma: no permitido ⇒ el siguiente permitido hacia
+  arriba (`effective`/`snapped`). server.js inyecta `girox.setRolloverResolver` (como el
+  keyResolver) y giroxService lo aplica en: `creditGift` (pisa `rolloverX`),
+  `creditUserBalance` con `multiplier` (pisa) **y en el regalo directo** (con global
+  > 0 el bono 0 pasa por `creditGift` con ese x — por eso reembolsos, rakeback y nivel
+  VIP también lo reciben), y `bonus_multiplier` de `depositToUser` cuando la carga lleva
+  bono nuestro. **`ignoreGlobalRollover:true` lo evita**: comisiones de referidos y
+  devolución de retiro rechazado (no son bonos). Los resultados traen `rolloverApplied`.
+  `applyGlobalRollover(x)` en server.js para lo que se muestra/registra (status cashback,
+  fueguito, ruleta `_prizesPublicEff` + `DailyRouletteSpin.rolloverX`, lotes, código,
+  respuestas de reembolso/rakeback). Apagado ⇒ cada flujo con su rollover propio, sin
+  migración. `getGiroxBonusMultiplier()` devuelve el global si está encendido.
 - `depositToUser` acepta `wagering` opcional (`multiplier`, `bonus_percent`,
   `bonus_amount`, `bonus_multiplier`). Caso raro documentado: la carga se acredita pero
   el bono falla (`wagering.bonus.status === 'failed'`) → se marca `bonusFailed` y se
@@ -944,6 +962,11 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
 - **Bonos en % NUNCA se aplican a mano** (2026-09-18): todo bono pendiente en % entra por
   `resolveAutoBonus` en la carga (manual y hgcash) con el tope de `bonusCap`. Una fuente
   nueva de bono en % ⇒ sumarla ahí (claim atómico + revert), no un banner para el agente.
+- **Rollover de un regalo nuevo** (2026-10-19): no hace falta leer el global en el flujo —
+  `creditGift`/`creditUserBalance`/`depositToUser` ya lo aplican. Sólo si el valor se
+  MUESTRA o se GUARDA (mensaje "apostá N×", Transaction, status) pasarlo por
+  `applyGlobalRollover(valorPropio)` o leer `r.rolloverApplied`. Si lo que se acredita NO
+  es un bono (plata del cliente/referidor) pasar `ignoreGlobalRollover:true`.
 - **Endpoints muertos**: se eliminan con comentario-lápida y rollback `git revert`.
 - **Validación local**: sólo `node --check` (no hay node_modules en Tails).
 
@@ -1008,6 +1031,12 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
 - **Bono automático = una sola fuente por carga y con tope**: `resolveAutoBonus` reserva
   atómico y `revert()` si falla; el bonus tipeado por el agente se pisa cuando hay bono
   pendiente (nota interna). No volver a poner "avisale al agente" en los textos.
+- **Rollover GLOBAL encendido ⇒ el rollover de cada card se ignora** (#220): un flujo
+  nuevo que acredite plata que NO es bono (comisiones, devoluciones) tiene que pasar
+  `ignoreGlobalRollover:true` o saldrá con rollover. Y al revés: no "arreglar" un flujo
+  leyendo `process.env`/Config propio por encima del cliente — el resolver de
+  giroxService es la única fuente. Con global ON y x no permitido por la plataforma se usa
+  el permitido siguiente (`effective`), nunca el crudo (la API rechaza `invalid_multiplier`).
 - **NADA de RULETA por push** (owner 2026-08-30): la ruleta diaria no está activa.
   `notificationService.isRouletteText()` bloquea en las 5 funciones de envío FCM
   cualquier push cuyo título/cuerpo mencione ruleta/roulette/giro gratis/girá (o
