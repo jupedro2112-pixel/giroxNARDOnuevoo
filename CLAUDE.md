@@ -123,7 +123,12 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   `Config['dailyRoulette']` (panel), % pendiente en `User.dailyRoulettePendingPct`.
 - **Roles:** `user`, `admin` (todo), `depositor` (solo cargas), `withdrawer` (solo
   retiros), `publisher_admin` (solo crea usuarios de su publicista — lockdown via
-  `PUBLISHER_ADMIN_ALLOWED_PATHS`).
+  `PUBLISHER_ADMIN_ALLOWED_PATHS`). **Dueño (2026-10-20, #221)** = admin general con
+  `User.isOwner:true`: lo ÚNICO que ve solo él es PUBLICIDAD (campañas, publicistas,
+  dashboard, influencers y el 📣 publicista al lado de cada cliente). Endpoint nuevo de
+  publicidad ⇒ `ownerMiddleware`; respuesta con datos de publicista ⇒ `stripPublicity`.
+  Se marca desde COMANDOS → "👑 Dueños" (sin dueños marcados, todo admin general ve
+  Publicidad y puede marcar al primero). Detalle: ARCHITECTURE §3 y §9.
 - **Auth:** JWT por header Authorization O por cookie httpOnly `admin_api_session`
   (el panel admin usa cookie).
 - **Mensajes automáticos al usuario** son editables desde la sección COMANDOS

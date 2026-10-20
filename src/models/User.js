@@ -81,6 +81,11 @@ const userSchema = new mongoose.Schema({
     default: 'user',
     index: true
   },
+  // DUEÑO (#221, 2026-10-20): marca sobre cuentas role='admin'. Mientras exista al
+  // menos un dueño, SOLO los dueños ven todo lo de PUBLICIDAD (publicistas,
+  // influencers, campañas, dashboard) y gestionan a otros dueños. Sin ningún dueño
+  // marcado el panel se comporta como antes (todo admin general ve Publicidad).
+  isOwner: { type: Boolean, default: false },
   // Para cuentas con role='publisher_admin': código de la Campaign a la que
   // están atadas. Todo usuario que crean queda atribuido a un código de su
   // lista. Ignorado en cualquier otro rol.

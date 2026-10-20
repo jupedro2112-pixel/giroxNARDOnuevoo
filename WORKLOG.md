@@ -4,7 +4,59 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-10-19**
+> **Última actualización: 2026-10-20**
+
+## Sesión 2026-10-20
+
+### 221. 👑 PUBLICIDAD solo para DUEÑOS (marca `isOwner` sobre admin general, gestionada desde COMANDOS, sin SSM) — admin-sw v58
+- **Owner:** que TODO lo de publicidad (Publicidad, Cuentas Publicistas, Dashboard Publicistas,
+  influencers) lo vean solo él y sus socios; los encargados (que son admin general) no deben
+  entrar ni ver el nombre del publicista al lado de cada cliente ("para ellos un usuario sin
+  publicista"). Pidió poder agregar dueños **desde el panel**, no por AWS SSM ("muy tosco").
+- **Decisión de diseño:** NO se creó un rol nuevo. Hay 71 chequeos `role === 'admin'` en el
+  back y 16 en el panel: un rol `dueño` distinto obligaba a tocarlos todos (y con uno que se
+  escape, el dueño pierde una función). En cambio el dueño **sigue siendo admin general** con
+  la marca `User.isOwner:true`; sólo lo de publicidad se gatea por la marca.
+- **Arranque sin SSM:** mientras NO exista ningún dueño marcado, el panel se comporta como
+  antes (todo admin general ve Publicidad) y **cualquier admin general puede marcar al
+  primero**. Desde que existe uno: Publicidad se cierra para los no dueños y solo un dueño
+  marca/quita dueños. Nunca se puede quitar al ÚLTIMO dueño. ⚠️ La ventana de riesgo es
+  "entre el deploy y que el owner se marque": él deploya y se marca en el momento.
+- **Backend:** `User.isOwner` (Boolean). `authMiddleware` lo trae en `AUTH_USER_FIELDS` y
+  setea `req.user.isOwner` FRESCO en cada request (no viaja en el JWT: marcar/desmarcar pega al
+  instante). Helpers (server.js, junto a los middlewares): `ownersConfigured()` (cache 15 s por
+  instancia, `_invalidateOwnersCache()` al cambiar), `canSeePublicity(reqUser)` = dueño, o
+  admin general sin dueños configurados; **`ownerMiddleware`** (403 `OWNER_ONLY`) aplicado a
+  los 27 endpoints de publicidad: `/api/admin/campaigns*`, `/api/admin/publisher-admins*`,
+  `/api/admin/publishers/*` (dashboard, users, ranking, daily, analysis, influencers,
+  recover), `/api/admin/influencer-stories*`, `/api/admin/influencer-users`,
+  `/api/admin/users/:userId/change-influencer`. Los endpoints del rol `publisher_admin`
+  (`/api/admin/publisher-admin/*`) NO cambian. `stripPublicity(obj)` vacía
+  `acquisitionCampaign/CampaignName/Publisher/Influencer/Utm`, `publisher`, `campaign`:
+  se aplica en `GET /api/admin/conversations` (badge 📣 de la lista) y en `GET /api/users/:id`
+  (cabecera del chat / ficha) cuando quien pide es staff sin permiso; `GET /api/admin/datos2`
+  deja fuera las filas por campaña (quedan AGENTE / ORGÁNICO). `/api/admin/me` y el login
+  mandan `isOwner`, `canSeePublicity`, `ownersConfigured`.
+- **Endpoints de gestión:** `GET /api/admin/owners` (admin general: lista de admins generales
+  activos con su marca, `canManage`, `me`), `POST /api/admin/owners/:userId` (marcar; dueño,
+  o cualquier admin general si no hay ninguno; solo cuentas role admin activas),
+  `DELETE /api/admin/owners/:userId` (solo dueño; rechaza si es el único).
+- **Panel (admin-sw v58):** card "👑 Dueños (ven Publicidad)" en COMANDOS (`ownersForm`,
+  `loadOwnersCard` desde `loadCommands`): aviso amarillo si todavía no hay dueño, lista de
+  admins generales con checkbox (habilitado solo si `canManage`), confirm al cambiar; si cambia
+  mi propia marca se recarga `/api/admin/me` y `setupRoleBasedUI()`. `_canSeePublicity()` lee
+  `currentAdmin.canSeePublicity` (respuesta vieja sin el campo ⇒ como antes); oculta los 3 ítems
+  del sidebar (Publicidad, Cuentas Publicistas, Dashboard Publicistas) y `switchSection` los
+  rechaza. Los loaders de publicidad solo corren al entrar a esas secciones, así que un admin
+  sin permiso no dispara 403 al arrancar.
+- **Validado:** `node --check` OK (server.js, User.js, admin.js, admin-sw); HTML balanceado;
+  `ownerMiddleware` definido (L~3003) antes de su primer uso (TDZ OK). Sin runtime. **Back +
+  panel necesitan redeploy.** PROBAR: (1) deploy → COMANDOS → card 👑 con aviso "no hay dueño";
+  marcar `ignite1000` → el sidebar sigue mostrando Publicidad; (2) entrar con un encargado
+  (admin general) → sin Publicidad/Cuentas Publicistas/Dashboard en el sidebar, la lista de
+  chats sin 📣 y la cabecera del chat sin "(📣 …)", Datos 2.0 sin filas de campaña, la card 👑 en
+  solo lectura; (3) ese encargado pegando `/api/admin/campaigns` a mano → 403; (4) como dueño
+  marcar a un socio y luego intentar desmarcarse siendo el único → rechazo.
 
 ## Sesión 2026-10-19
 

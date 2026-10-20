@@ -5,7 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-19** — rollover GLOBAL de bonos editable desde COMANDOS
+> Última actualización: **2026-10-20** — PUBLICIDAD solo para DUEÑOS (`User.isOwner`,
+> `ownerMiddleware`, `stripPublicity`, card 👑 en COMANDOS; §3, §9; WORKLOG #221).
+> Antes: 2026-10-19 — rollover GLOBAL de bonos editable desde COMANDOS
 > (`Config['bonusRolloverGlobal']`, resolver en giroxService, §4.5, §8, §9; WORKLOG #220).
 > Antes: 2026-10-07 — hgcash desde el panel: credenciales cifradas
 > (panel > SSM, firma del webhook: solo el secreto del panel si hay uno (#216)) y reenvío de avisos
@@ -265,6 +267,18 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `depositorMiddleware` (admin/depositor/comunidad), `withdrawerMiddleware`
   (admin/withdrawer), `publisherAdminMiddleware`. Acciones sensibles re-chequean
   `req.user.role === 'admin'` explícito (patrón obligatorio — ver #80).
+- **DUEÑO (#221, 2026-10-20):** no es un rol, es la marca `User.isOwner:true` sobre un
+  admin general (`req.user.isOwner` se lee fresco en authMiddleware). TODO lo de
+  PUBLICIDAD (campañas/publicistas, cuentas publicistas, dashboard de publicistas,
+  influencers, `change-influencer`) lleva `ownerMiddleware` (403 `OWNER_ONLY`) y el
+  nombre del publicista se vacía con `stripPublicity` en conversaciones y ficha para el
+  staff sin permiso; Datos 2.0 omite las filas por campaña. `canSeePublicity(reqUser)` =
+  dueño, o admin general **mientras no haya ningún dueño marcado** (arranque sin SSM:
+  cualquier admin general marca al primero desde COMANDOS → card "👑 Dueños"; después
+  solo un dueño gestiona dueños y nunca se quita al último). Endpoints
+  `GET/POST/DELETE /api/admin/owners[/:userId]`. `/api/admin/me` y el login mandan
+  `isOwner / canSeePublicity / ownersConfigured`; el panel oculta los 3 ítems del sidebar
+  y `switchSection` los rechaza.
 - **`src/middlewares/auth.js` es OTRO sistema de auth** (access 15m + refresh 7d,
   blacklist EN MEMORIA no compartida entre instancias) usado SOLO por las rutas de
   referidos. Lazy getters de JWT_SECRET (SSM carga después del require).
@@ -1026,6 +1040,12 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   (`?ref=`) tiene prioridad sobre publicista en el front.
 - **publisher_admin**: endpoint nuevo para ese rol ⇒ sumarlo a
   `PUBLISHER_ADMIN_ALLOWED_PATHS`.
+- **Publicidad = solo dueños (#221):** endpoint nuevo que liste/edite campañas,
+  publicistas o influencers ⇒ `authMiddleware, adminMiddleware, ownerMiddleware`. Respuesta
+  nueva que lleve `acquisitionCampaign/Publisher/Influencer` o `publisher` al panel ⇒
+  pasarla por `stripPublicity` si `!(await canSeePublicity(req.user))`. Sección nueva del
+  panel de publicidad ⇒ sumarla a la lista de `switchSection` y ocultar su nav con
+  `_canSeePublicity()`. No confundir con el rol `publisher_admin` (vista propia, intacta).
 - **`adminMiddleware` deja pasar 4 roles** — todo endpoint sensible re-chequea
   `role==='admin'` explícito (patrón #80; los CRÍTICOS ya están cerrados).
 - **Bono automático = una sola fuente por carga y con tope**: `resolveAutoBonus` reserva

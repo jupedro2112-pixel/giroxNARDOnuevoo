@@ -2859,7 +2859,7 @@ const authMiddleware = async (req, res, next) => {
     // Solo los campos que este middleware usa (corre en CADA request; hidratar
     // el doc completo con fcmTokens/tagHistory/etc. era costo puro).
     // ⚠️ Si un chequeo futuro necesita otro campo del user: agregarlo acá.
-    const AUTH_USER_FIELDS = 'id username role isActive isBlocked blockReason tokenVersion mustChangePassword';
+    const AUTH_USER_FIELDS = 'id username role isActive isBlocked blockReason tokenVersion mustChangePassword isOwner';
     let user = await User.findOne({ id: decoded.userId }).select(AUTH_USER_FIELDS);
 
     if (!user) {
@@ -2895,6 +2895,9 @@ const authMiddleware = async (req, res, next) => {
     }
     
     req.user = decoded;
+    // Dueño (#221): leído FRESCO de la DB en cada request (no viaja en el JWT:
+    // marcar/desmarcar a alguien pega al instante sin relogin).
+    req.user.isOwner = user.role === 'admin' && user.isOwner === true;
 
     // Lockdown del rol publisher_admin: sólo puede tocar las rutas listadas en
     // PUBLISHER_ADMIN_ALLOWED_PATHS. Cualquier otra ruta devuelve 403, así no
@@ -2971,6 +2974,46 @@ const withdrawerMiddleware = (req, res, next) => {
   }
   next();
 };
+
+// ===== DUEÑOS y PUBLICIDAD (#221, owner 2026-10-20) =====
+// Todo lo relacionado a PUBLICIDAD (campañas/publicistas, cuentas publicistas,
+// dashboard de publicistas, influencers, nombre del publicista al lado de cada
+// cliente) lo ve SOLO el dueño (User.isOwner sobre role='admin'). Los encargados
+// siguen siendo admin general para todo lo demás. Arranque sin SSM: mientras NO
+// haya ningún dueño marcado, todo admin general ve Publicidad y puede marcar al
+// primero (el owner deploya y se marca en el momento); desde que existe uno, solo
+// los dueños gestionan dueños y Publicidad se cierra para el resto.
+let _ownersConfiguredCache = { v: null, ts: 0 };
+async function ownersConfigured() {
+  const now = Date.now();
+  if (_ownersConfiguredCache.v != null && (now - _ownersConfiguredCache.ts) < 15000) return _ownersConfiguredCache.v;
+  let v = false;
+  try { v = !!(await User.exists({ role: 'admin', isOwner: true })); } catch (_) {}
+  _ownersConfiguredCache = { v, ts: now };
+  return v;
+}
+function _invalidateOwnersCache() { _ownersConfiguredCache = { v: null, ts: 0 }; }
+// ¿Este request puede ver Publicidad? Dueño, o admin general mientras no haya dueños.
+async function canSeePublicity(reqUser) {
+  if (!reqUser || reqUser.role !== 'admin') return false;
+  if (reqUser.isOwner === true) return true;
+  return !(await ownersConfigured());
+}
+// Middleware para los endpoints de Publicidad (va DESPUÉS de authMiddleware).
+const ownerMiddleware = async (req, res, next) => {
+  try {
+    if (await canSeePublicity(req.user)) return next();
+  } catch (_) {}
+  return res.status(403).json({ error: 'Solo el dueño puede ver esto.', code: 'OWNER_ONLY' });
+};
+// Quita de un objeto de usuario/conversación todo lo que identifica al
+// publicista (para los admins que no son dueños el cliente se ve "sin publicista").
+const PUBLICITY_FIELDS = ['acquisitionCampaign', 'acquisitionCampaignName', 'acquisitionPublisher', 'acquisitionInfluencer', 'acquisitionUtm', 'publisher', 'campaign', 'campaignName'];
+function stripPublicity(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  for (const k of PUBLICITY_FIELDS) if (k in obj) obj[k] = null;
+  return obj;
+}
 
 // Sólo cuentas con role='publisher_admin' pueden tocar los endpoints
 // /api/admin/publisher-admin/*. El admin general usa otros endpoints (CRUD
@@ -4263,6 +4306,10 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         balance: userObj.balance,
         jugayganaLinked: !!userObj.jugayganaUserId,
         needsPasswordChange: needsPasswordChange,
+        // Dueño (#221) — solo tiene sentido para el panel (roles staff).
+        isOwner: userObj.role === 'admin' && userObj.isOwner === true,
+        canSeePublicity: isAdminRole(userObj.role) ? await canSeePublicity({ role: userObj.role, isOwner: userObj.isOwner === true }) : false,
+        ownersConfigured: isAdminRole(userObj.role) ? await ownersConfigured() : false,
         // Leemos del doc vivo `user` (no del snapshot `userObj`) para reflejar
         // la auto-limpieza recién hecha. Sólo queda true si un admin reseteó
         // manualmente la contraseña a una nueva (distinta de "asd123").
@@ -4436,7 +4483,11 @@ app.get('/api/admin/me', async (req, res) => {
         // Sólo se llena para role='publisher_admin'. El front lo usa para mostrar
         // qué publicista(s) representa la cuenta y para filtrar el mini-dashboard.
         publisherCampaignCode: user.publisherCampaignCode || null,
-        publisherCampaignCodes: user.role === 'publisher_admin' ? _publisherCodesOf(user) : []
+        publisherCampaignCodes: user.role === 'publisher_admin' ? _publisherCodesOf(user) : [],
+        // Dueño (#221): el panel oculta Publicidad si no puede verla.
+        isOwner: user.role === 'admin' && user.isOwner === true,
+        canSeePublicity: await canSeePublicity({ role: user.role, isOwner: user.isOwner === true }),
+        ownersConfigured: await ownersConfigured()
       },
       token: freshToken
     });
@@ -7799,6 +7850,58 @@ app.post('/api/cashback/claim', authMiddleware, authLimiter, async (req, res) =>
 });
 
 // Config del reembolso acumulativo (GET admin; POST solo admin general) — §4.7.
+// ===== DUEÑOS (#221) =====
+// GET: lista de admins generales con su marca. Gestionar (POST/DELETE) puede un
+// dueño; y, mientras NO exista ninguno, cualquier admin general (para marcar al
+// primero sin pasar por AWS). Nunca se puede quitar al ÚLTIMO dueño.
+async function _ownersPayload(reqUser) {
+  const admins = await User.find({ role: 'admin', isActive: { $ne: false } })
+    .select('id username isOwner createdAt lastLogin').sort({ isOwner: -1, username: 1 }).lean();
+  const configured = admins.some((a) => a.isOwner === true);
+  return {
+    ownersConfigured: configured,
+    canManage: reqUser.role === 'admin' && (reqUser.isOwner === true || !configured),
+    me: { id: reqUser.userId, isOwner: reqUser.isOwner === true },
+    admins: admins.map((a) => ({ id: a.id, username: a.username, isOwner: a.isOwner === true, lastLogin: a.lastLogin || null }))
+  };
+}
+app.get('/api/admin/owners', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    res.json(await _ownersPayload(req.user));
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/owners/:userId', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    const configured = await ownersConfigured();
+    if (configured && req.user.isOwner !== true) return res.status(403).json({ error: 'Solo un dueño puede marcar a otro dueño.', code: 'OWNER_ONLY' });
+    const target = await User.findOne({ id: req.params.userId }).select('id username role isActive isOwner').lean();
+    if (!target) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    if (target.role !== 'admin') return res.status(400).json({ error: 'Solo una cuenta de ADMIN GENERAL puede ser dueño.' });
+    if (target.isActive === false) return res.status(400).json({ error: 'La cuenta está desactivada.' });
+    await User.updateOne({ id: target.id }, { $set: { isOwner: true } });
+    _invalidateOwnersCache();
+    logger.info(`[owners] ${req.user.username} marcó como DUEÑO a ${target.username}${configured ? '' : ' (primer dueño: Publicidad queda cerrada para los demás admins)'}`);
+    res.json({ success: true, ...(await _ownersPayload({ ...req.user, isOwner: req.user.isOwner || req.user.userId === target.id })) });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.delete('/api/admin/owners/:userId', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin general' });
+    if (req.user.isOwner !== true) return res.status(403).json({ error: 'Solo un dueño puede quitar a otro dueño.', code: 'OWNER_ONLY' });
+    const target = await User.findOne({ id: req.params.userId }).select('id username isOwner').lean();
+    if (!target) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    if (target.isOwner !== true) return res.json({ success: true, ...(await _ownersPayload(req.user)) });
+    const others = await User.countDocuments({ role: 'admin', isOwner: true, isActive: { $ne: false }, id: { $ne: target.id } });
+    if (others === 0) return res.status(400).json({ error: 'No se puede quitar al ÚNICO dueño: marcá a otro primero.' });
+    await User.updateOne({ id: target.id }, { $set: { isOwner: false } });
+    _invalidateOwnersCache();
+    logger.info(`[owners] ${req.user.username} quitó la marca de DUEÑO a ${target.username}`);
+    res.json({ success: true, ...(await _ownersPayload({ ...req.user, isOwner: req.user.userId !== target.id })) });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+
 // Rollover GLOBAL de bonos (#220) — lectura: staff del panel; escritura: solo admin general.
 app.get('/api/admin/bonus-rollover', authMiddleware, adminMiddleware, async (req, res) => {
   try { res.json({ ...(await getGlobalBonusRollover()), canEdit: req.user.role === 'admin' }); }
@@ -12538,7 +12641,7 @@ app.post('/api/admin/fire-milestones', authMiddleware, adminMiddleware, async (r
 // viaja en esta respuesta. Sólo exponemos hasJugayganaCreds:bool para que el panel
 // sepa si la campaña ya tiene su propia key configurada.
 // (El nombre del flag se conserva por compatibilidad con el panel, que ya lo lee.)
-app.get('/api/admin/campaigns', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/campaigns', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const campaigns = await Campaign.find().sort({ createdAt: -1 }).lean();
     // Stats resumidas: clicks y registros (las pesadas se piden por campaña al abrir detalle).
@@ -12629,7 +12732,7 @@ async function _parsePublisherKeys(rawKey, campaignCode) {
 // coma (pool) para repartir la carga entre ellas.
 // El campo del body sigue llamándose `jugayganaPassword` por compatibilidad con el
 // panel, que todavía manda ese nombre; internamente se guarda en `giroxApiKey`.
-app.post('/api/admin/campaigns', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/campaigns', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const { code, publisher, name, commissionType, commissionValue, notes,
             jugayganaUsername, jugayganaPassword, giroxApiKey } = req.body || {};
@@ -12715,7 +12818,7 @@ app.post('/api/admin/campaigns', authMiddleware, adminMiddleware, async (req, re
 // Para la cuenta del publicista: la API key sólo se actualiza si viene un valor no
 // vacío (vacío/ausente = mantener la actual, así el panel puede guardar sin re-tipear
 // la key). Para borrarla, mandar `clearJugayganaCreds: true`.
-app.put('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, async (req, res) => {
+app.put('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const normalizedCode = String(req.params.code).toUpperCase().trim();
     const { publisher, name, commissionType, commissionValue, isActive, notes,
@@ -12837,7 +12940,7 @@ app.put('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, async (re
 // publisher_admin intente crear un usuario con ella (si estuviera mal, el alta
 // fallaría en background y el jugador quedaría sin cuenta en la plataforma).
 // La ruta conserva el nombre viejo porque el panel ya la llama así.
-app.post('/api/admin/campaigns/:code/test-jugaygana-creds', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/campaigns/:code/test-jugaygana-creds', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const normalizedCode = String(req.params.code).toUpperCase().trim();
     const c = await Campaign.findOne({ code: normalizedCode })
@@ -12861,7 +12964,7 @@ app.post('/api/admin/campaigns/:code/test-jugaygana-creds', authMiddleware, admi
 // Estado del POOL de keys de la campaña (2026-08-18): cuántas keys tiene y cuáles
 // VEN a los jugadores. Prueba cada key contra un jugador real de la campaña.
 // Para que el admin confirme que las N keys cargadas quedaron bien.
-app.get('/api/admin/campaigns/:code/pool-status', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/campaigns/:code/pool-status', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
     const code = String(req.params.code).toUpperCase().trim();
@@ -12890,7 +12993,7 @@ app.get('/api/admin/campaigns/:code/pool-status', authMiddleware, adminMiddlewar
 // POST /api/admin/campaigns/:code/pool-remove — quita UNA key del pool por índice
 // (1-based, como lo muestra pool-status). Re-deriva primary + extras. Si se quita
 // la última, la campaña queda sin key propia (vuelve a la master).
-app.post('/api/admin/campaigns/:code/pool-remove', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/campaigns/:code/pool-remove', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
     const code = String(req.params.code).toUpperCase().trim();
@@ -12918,7 +13021,7 @@ app.post('/api/admin/campaigns/:code/pool-remove', authMiddleware, adminMiddlewa
 });
 
 // "Eliminar" = soft delete: marca isActive=false. No borramos para preservar atribuciones.
-app.delete('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, async (req, res) => {
+app.delete('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const normalizedCode = String(req.params.code).toUpperCase().trim();
     const updated = await Campaign.findOneAndUpdate(
@@ -12938,7 +13041,7 @@ app.delete('/api/admin/campaigns/:code', authMiddleware, adminMiddleware, async 
 // la DB y sus historias de influencer. Los usuarios ya captados se conservan, pero
 // quedan sin referencia al publicista (acquisitionCampaign apunta a algo borrado).
 // Solo admin general. Pensado para limpiar campañas de prueba o cargadas por error.
-app.delete('/api/admin/campaigns/:code/permanent', authMiddleware, adminMiddleware, async (req, res) => {
+app.delete('/api/admin/campaigns/:code/permanent', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Solo el admin general puede borrar campañas definitivamente' });
@@ -12970,7 +13073,7 @@ app.delete('/api/admin/campaigns/:code/permanent', authMiddleware, adminMiddlewa
 });
 
 // Stats detalladas de una campaña + comisión calculada.
-app.get('/api/admin/campaigns/:code/stats', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/campaigns/:code/stats', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const normalizedCode = String(req.params.code).toUpperCase().trim();
     const campaign = await Campaign.findOne({ code: normalizedCode }).lean();
@@ -12986,7 +13089,7 @@ app.get('/api/admin/campaigns/:code/stats', authMiddleware, adminMiddleware, asy
 });
 
 // Lista los últimos N usuarios atribuidos a una campaña (para debugging / control).
-app.get('/api/admin/campaigns/:code/users', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/campaigns/:code/users', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const normalizedCode = String(req.params.code).toUpperCase().trim();
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
@@ -13554,7 +13657,7 @@ async function _resolveCampaignCodesInput({ campaignCodes, campaignCode }) {
 
 // POST /api/admin/publisher-admins — crear una cuenta publisher_admin asociada
 // a una Campaign existente y activa.
-app.post('/api/admin/publisher-admins', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/publisher-admins', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Sólo el administrador general puede crear publisher_admins' });
@@ -13626,7 +13729,7 @@ app.post('/api/admin/publisher-admins', authMiddleware, adminMiddleware, async (
 
 // GET /api/admin/publisher-admins — listar todas las cuentas publisher_admin
 // con info de la campaña asociada y stats básicas (cuántos usuarios crearon).
-app.get('/api/admin/publisher-admins', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publisher-admins', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const list = await User.find({ role: 'publisher_admin' })
       .select('id username publisherCampaignCode publisherCampaignCodes isActive createdAt lastLogin email phone')
@@ -13681,7 +13784,7 @@ app.get('/api/admin/publisher-admins', authMiddleware, adminMiddleware, async (r
 // PUT /api/admin/publisher-admins/:id — modificar una cuenta publisher_admin.
 // Permite: cambiar la campaña asociada, activar/desactivar, resetear contraseña.
 // NO permite cambiar el role (un publisher_admin no se "promueve" a admin acá).
-app.put('/api/admin/publisher-admins/:id', authMiddleware, adminMiddleware, async (req, res) => {
+app.put('/api/admin/publisher-admins/:id', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Sólo el administrador general puede modificar publisher_admins' });
@@ -13740,7 +13843,7 @@ app.put('/api/admin/publisher-admins/:id', authMiddleware, adminMiddleware, asyn
 // GET /api/admin/publishers/dashboard?from=&to=
 // Devuelve una fila por publicista con totales (users, deposits, withdrawals, netRevenue).
 // Las fechas opcionales filtran por User.createdAt y Transaction.timestamp.
-app.get('/api/admin/publishers/dashboard', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/dashboard', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const { from, to } = req.query;
     const dateFilter = {};
@@ -13850,7 +13953,7 @@ app.get('/api/admin/publishers/dashboard', authMiddleware, adminMiddleware, asyn
 // GET /api/admin/publishers/:publisher/users?from=&to=
 // Drill-down: lista los usuarios atribuidos a un publicista específico, con
 // detalle de cargas/retiros individuales.
-app.get('/api/admin/publishers/:publisher/users', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/:publisher/users', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const publisher = String(req.params.publisher).trim();
     if (!publisher) return res.status(400).json({ error: 'publisher requerido' });
@@ -13929,7 +14032,7 @@ app.get('/api/admin/publishers/:publisher/users', authMiddleware, adminMiddlewar
 // Ranking de todos los publicistas por score de efectividad (mejor → peor).
 // IMPORTANTE: declarado ANTES de las rutas /:publisher/* — "ranking" es un
 // único segmento, así que no colisiona, pero lo dejamos arriba por claridad.
-app.get('/api/admin/publishers/ranking', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/ranking', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const ranking = await publisherAnalytics.getRanking();
     res.json({ ranking });
@@ -13942,7 +14045,7 @@ app.get('/api/admin/publishers/ranking', authMiddleware, adminMiddleware, async 
 // GET /api/admin/publishers/:publisher/daily?from=&to=
 // Breakdown diario: primera carga (FTD) para ROAS, total de cargas, y recargas
 // del mismo día de clientes nuevos. Fechas en hora Argentina (YYYY-MM-DD).
-app.get('/api/admin/publishers/:publisher/daily', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/:publisher/daily', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const publisher = String(req.params.publisher).trim();
     if (!publisher) return res.status(400).json({ error: 'publisher requerido' });
@@ -13960,7 +14063,7 @@ app.get('/api/admin/publishers/:publisher/daily', authMiddleware, adminMiddlewar
 // GET /api/admin/publishers/:publisher/analysis
 // Análisis detallado de un publicista: métricas + segmentos (activos / en riesgo
 // / perdidos / nunca cargaron) + clientes valiosos (ticket alto, fieles).
-app.get('/api/admin/publishers/:publisher/analysis', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/:publisher/analysis', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const publisher = String(req.params.publisher).trim();
     if (!publisher) return res.status(400).json({ error: 'publisher requerido' });
@@ -13977,7 +14080,7 @@ app.get('/api/admin/publishers/:publisher/analysis', authMiddleware, adminMiddle
 // Desglose de las métricas del publicista por influencer (sub-atribución que
 // pone el publisher_admin al crear usuarios). Mismas métricas que el análisis
 // general pero agrupadas por User.acquisitionInfluencer.
-app.get('/api/admin/publishers/:publisher/influencers', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/publishers/:publisher/influencers', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const publisher = String(req.params.publisher).trim();
     if (!publisher) return res.status(400).json({ error: 'publisher requerido' });
@@ -14000,7 +14103,7 @@ app.get('/api/admin/publishers/:publisher/influencers', authMiddleware, adminMid
 // GET /api/admin/influencer-stories?campaign=CODE&influencer=NAME
 // Lista las historias del influencer + métricas por historia (registros, clientes,
 // cargas, neto, CPA, ROAS) y totales. Devuelve también el bucket "antes de la 1ra".
-app.get('/api/admin/influencer-stories', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/influencer-stories', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const campaign = String(req.query.campaign || '').trim();
     const influencer = String(req.query.influencer || '').trim();
@@ -14020,7 +14123,7 @@ app.get('/api/admin/influencer-stories', authMiddleware, adminMiddleware, async 
 // Ranking de influencers de la campaña, de mejor a peor, por score combinado
 // (ROAS + retención de fieles + ticket promedio + costo por click). El front
 // puede reordenar por cualquier columna; este es el orden por defecto (score).
-app.get('/api/admin/influencer-stories/ranking', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/influencer-stories/ranking', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const campaign = String(req.query.campaign || '').trim();
     if (!campaign) return res.status(400).json({ error: 'campaign es requerido' });
@@ -14035,7 +14138,7 @@ app.get('/api/admin/influencer-stories/ranking', authMiddleware, adminMiddleware
 
 // POST /api/admin/influencer-stories
 // body: { campaign, influencer, postedAt (ISO), cost, label? }
-app.post('/api/admin/influencer-stories', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/influencer-stories', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const { campaign, influencer, postedAt, cost, label } = req.body || {};
     const code = String(campaign || '').toUpperCase().trim();
@@ -14068,7 +14171,7 @@ app.post('/api/admin/influencer-stories', authMiddleware, adminMiddleware, async
 });
 
 // PUT /api/admin/influencer-stories/:id  → body: { postedAt?, cost?, label? }
-app.put('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware, async (req, res) => {
+app.put('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const { postedAt, cost, label } = req.body || {};
     const update = {};
@@ -14096,7 +14199,7 @@ app.put('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware, as
 });
 
 // DELETE /api/admin/influencer-stories/:id
-app.delete('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware, async (req, res) => {
+app.delete('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const r = await InfluencerStory.deleteOne({ id: req.params.id });
     if (r.deletedCount === 0) return res.status(404).json({ error: 'Historia no encontrada' });
@@ -14110,7 +14213,7 @@ app.delete('/api/admin/influencer-stories/:id', authMiddleware, adminMiddleware,
 // GET /api/admin/influencer-users?campaign=CODE&influencer=NAME&page=
 // Lista paginada de los usuarios atribuidos a ese influencer con sus stats de
 // cargas/retiros, para revisar y corregir asignaciones equivocadas.
-app.get('/api/admin/influencer-users', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/admin/influencer-users', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     const campaign = String(req.query.campaign || '').trim();
     const influencer = String(req.query.influencer || '').trim();
@@ -14133,7 +14236,7 @@ app.get('/api/admin/influencer-users', authMiddleware, adminMiddleware, async (r
 // Como toda la analítica por influencer/historia se calcula EN VIVO desde
 // User.acquisitionInfluencer, con cambiar este campo las cargas/retiros/conteos
 // se recalculan solos bajo el influencer correcto. Sólo admin general.
-app.post('/api/admin/users/:userId/change-influencer', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/users/:userId/change-influencer', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Sólo el administrador general puede reasignar influencers' });
@@ -14174,7 +14277,7 @@ app.post('/api/admin/users/:userId/change-influencer', authMiddleware, adminMidd
 // Manda un push de recuperación a un segmento de un publicista. Recalcula los
 // usernames del segmento server-side (no confía en una lista del cliente).
 // Sólo el admin general (no depositor/withdrawer) puede disparar push masivo.
-app.post('/api/admin/publishers/:publisher/recover', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/admin/publishers/:publisher/recover', authMiddleware, adminMiddleware, ownerMiddleware, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Sólo el administrador general puede enviar push de recuperación' });
@@ -14788,7 +14891,9 @@ app.get('/api/admin/datos2', authMiddleware, adminMiddleware, async (req, res) =
     const campDocs = campCodes.length ? await Campaign.find({ code: { $in: campCodes } })
       .select('code publisher name').lean() : [];
     const campInfo = new Map(campDocs.map((c) => [c.code, c]));
+    const _seePub = await canSeePublicity(req.user); // #221
     const campanias = [...porCampania.entries()]
+      .filter(([key]) => _seePub || key.startsWith('__'))
       .map(([key, acc]) => ({
         code: key === '__agente__' ? 'CREADOS POR AGENTE' : (key === '__organico__' ? 'ORGÁNICO / DIRECTO' : key),
         publisher: (campInfo.get(key) || {}).publisher || null,
@@ -15907,6 +16012,8 @@ app.get('/api/admin/conversations', authMiddleware, adminMiddleware, async (req,
     ];
     
     let conversations = await ChatStatus.aggregate(pipeline);
+    // #221: para los admins que no son dueños, el cliente se ve SIN publicista.
+    if (!(await canSeePublicity(req.user))) conversations.forEach(stripPublicity);
     const hasMore = isClosed && conversations.length > 100;
     if (hasMore) conversations = conversations.slice(0, 100);
 
@@ -15942,6 +16049,10 @@ app.get('/api/users/:userId', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
     
+    // #221: un admin que no es dueño no ve de qué publicista vino el cliente.
+    if (adminRoles.includes(req.user.role) && req.user.userId !== userId && !(await canSeePublicity(req.user))) {
+      stripPublicity(user);
+    }
     // Si el usuario llegó por un link de pauta, resolver el nombre del
     // publicista para que el panel lo muestre al lado del nombre en el chat.
     if (user.acquisitionCampaign) {

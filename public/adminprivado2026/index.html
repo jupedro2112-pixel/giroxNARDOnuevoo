@@ -650,6 +650,17 @@ document.addEventListener('change', function (ev) {
                                 <span class="icon icon-save"></span> Guardar rollover global
                             </button>
                         </div>
+                        <!-- DUEÑOS: quiénes ven PUBLICIDAD (#221; solo admin general ve la card) -->
+                        <div class="cbu-form" id="ownersForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">👑 Dueños (ven Publicidad)</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 10px;">
+                                Todo lo de <b>PUBLICIDAD</b> (Publicidad, Cuentas Publicistas, Dashboard Publicistas, influencers y el
+                                nombre del publicista al lado de cada cliente) lo ven <b>solo los dueños</b>. Los demás admin generales
+                                siguen igual para todo lo demás, pero ven a cada cliente como <i>sin publicista</i>.
+                            </p>
+                            <div id="ownersHint" style="font-size:12px;color:#ffb84d;margin:0 0 8px;"></div>
+                            <div id="ownersList" style="display:flex;flex-direction:column;gap:6px;"></div>
+                        </div>
                         <div class="panel-subheader">
                             <h3>Comandos Personalizados</h3>
                             <button class="btn-primary btn-small" onclick="showCreateCommandModal()">

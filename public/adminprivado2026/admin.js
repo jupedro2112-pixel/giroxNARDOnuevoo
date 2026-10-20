@@ -653,14 +653,20 @@ function setupRoleBasedUI() {
         smsNavItem.style.display = role === 'admin' ? '' : 'none';
     }
 
-    // Cuentas Publicistas y Dashboard Publicistas: sólo admin general
+    // Publicidad, Cuentas Publicistas y Dashboard Publicistas: sólo el DUEÑO (#221).
+    // Mientras no haya ningún dueño marcado, todo admin general (como antes).
+    const _seePub = _canSeePublicity();
+    const campNavItem = document.querySelector('.nav-item[data-section="campaigns"]');
+    if (campNavItem) {
+        campNavItem.style.display = _seePub ? '' : 'none';
+    }
     const paNavItem = document.querySelector('.nav-item-publisher-admins');
     if (paNavItem) {
-        paNavItem.style.display = role === 'admin' ? '' : 'none';
+        paNavItem.style.display = _seePub ? '' : 'none';
     }
     const dashNavItem = document.querySelector('.nav-item-publishers-dashboard');
     if (dashNavItem) {
-        dashNavItem.style.display = role === 'admin' ? '' : 'none';
+        dashNavItem.style.display = _seePub ? '' : 'none';
     }
 
     // Demoras de respuesta (SLA): sólo admin general
@@ -4911,6 +4917,11 @@ function switchSection(section) {
         showToast('No tienes permiso para acceder a esta sección', 'error');
         return;
     }
+    // Publicidad: solo el dueño (#221)
+    if (['campaigns', 'publisherAdmins', 'publishersDashboard'].includes(section) && !_canSeePublicity()) {
+        showToast('Solo el dueño puede ver Publicidad', 'error');
+        return;
+    }
     
     // Update nav
     elements.navItems.forEach(item => {
@@ -5698,6 +5709,8 @@ async function loadCommands() {
         loadInstallBonusPct();
         // Rollover GLOBAL de bonos (#220)
         loadBonusRolloverCfg();
+        // Dueños que ven Publicidad (#221)
+        loadOwnersCard();
     } catch (error) {
         console.error('Error loading commands:', error);
     }
@@ -5766,6 +5779,70 @@ async function saveInstallBonusPct() {
 }
 window.saveInstallBonusPct = saveInstallBonusPct;
 window.loadInstallBonusPct = loadInstallBonusPct;
+
+// ====== DUEÑOS que ven Publicidad (#221) ======
+// El backend manda `canSeePublicity` en /api/admin/me y en el login: dueño, o
+// admin general mientras no haya ningún dueño marcado. Lo de Publicidad se
+// bloquea igual del lado del servidor (403): esto es solo para no mostrarlo.
+function _canSeePublicity() {
+    if (!currentAdmin || currentAdmin.role !== 'admin') return false;
+    if (currentAdmin.canSeePublicity != null) return currentAdmin.canSeePublicity === true;
+    return true; // respuesta vieja sin el campo: comportamiento anterior
+}
+async function loadOwnersCard() {
+    const form = document.getElementById('ownersForm');
+    if (!form) return;
+    if (!currentAdmin || currentAdmin.role !== 'admin') { form.style.display = 'none'; return; }
+    try {
+        const r = await authFetch('/api/admin/owners');
+        if (!r.ok) { form.style.display = 'none'; return; }
+        _renderOwners(await r.json());
+        form.style.display = '';
+    } catch (e) { form.style.display = 'none'; }
+}
+function _renderOwners(j) {
+    const list = document.getElementById('ownersList');
+    const hint = document.getElementById('ownersHint');
+    if (!list) return;
+    const canManage = j.canManage === true;
+    if (hint) {
+        if (!j.ownersConfigured) hint.innerHTML = '⚠️ <b>Todavía no hay ningún dueño marcado:</b> hoy TODOS los admin generales ven Publicidad. Marcá tu cuenta ahora (después solo un dueño puede marcar a otro).';
+        else if (canManage) hint.innerHTML = 'Sos dueño. Podés marcar o quitar dueños (nunca puede quedar ninguno).';
+        else hint.innerHTML = '<span style="color:#888;">Solo un dueño puede cambiar esta lista.</span>';
+    }
+    list.innerHTML = (j.admins || []).map(function(a) {
+        const me = currentAdmin && a.id === currentAdmin.id;
+        return '<label style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:rgba(255,255,255,0.04);border-radius:8px;cursor:' + (canManage ? 'pointer' : 'default') + ';">' +
+            '<input type="checkbox" style="width:auto;" ' + (a.isOwner ? 'checked ' : '') + (canManage ? '' : 'disabled ') +
+            'onchange="toggleOwner(\'' + a.id + '\', this.checked, this)">' +
+            '<span style="font-weight:700;">' + (a.isOwner ? '👑 ' : '') + escapeHtml(a.username) + (me ? ' <span style="color:#888;font-weight:400;">(vos)</span>' : '') + '</span>' +
+            '<span style="margin-left:auto;font-size:11px;color:#888;">' + (a.isOwner ? 'dueño · ve Publicidad' : 'admin general · sin Publicidad') + '</span>' +
+            '</label>';
+    }).join('') || '<div style="color:#888;font-size:12px;">No hay cuentas de admin general.</div>';
+}
+async function toggleOwner(userId, makeOwner, cb) {
+    const me = currentAdmin && userId === currentAdmin.id;
+    const msg = makeOwner
+        ? (me ? '¿Marcarte como DUEÑO?\n\nDesde ahora Publicidad la ven SOLO los dueños; los demás admin generales dejan de verla y ven a cada cliente sin publicista.' : '¿Marcar esta cuenta como DUEÑO? Va a ver todo lo de Publicidad y podrá marcar otros dueños.')
+        : (me ? '¿Quitarte la marca de DUEÑO? Vas a dejar de ver Publicidad.' : '¿Quitar la marca de DUEÑO a esta cuenta? Deja de ver Publicidad.');
+    if (!confirm(msg)) { if (cb) cb.checked = !makeOwner; return; }
+    try {
+        const r = await authFetch('/api/admin/owners/' + encodeURIComponent(userId), { method: makeOwner ? 'POST' : 'DELETE' });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); if (cb) cb.checked = !makeOwner; return; }
+        _renderOwners(j);
+        showToast(makeOwner ? 'Dueño marcado' : 'Marca de dueño quitada', 'success');
+        if (me) {
+            // Mi propia marca cambió → refrescar sesión para que el sidebar refleje Publicidad.
+            try { const m = await authFetch('/api/admin/me'); if (m.ok) { const d = await m.json(); currentAdmin = d.user; setupRoleBasedUI(); } } catch (_) {}
+        } else if (currentAdmin) {
+            // Si recién marqué al primer dueño (que no soy yo), yo dejo de ver Publicidad.
+            if (!j.me || !j.me.isOwner) { currentAdmin.canSeePublicity = false; setupRoleBasedUI(); }
+        }
+    } catch (e) { showToast('Error de conexión', 'error'); if (cb) cb.checked = !makeOwner; }
+}
+window.toggleOwner = toggleOwner;
+window.loadOwnersCard = loadOwnersCard;
 
 // ====== Rollover GLOBAL de bonos (COMANDOS, #220 — réplica #278 de PAUTANUEVAsantino) ======
 // Botones x0/x2/x3/x5/x10. Los que la plataforma NO permite (bonus.multipliers de
