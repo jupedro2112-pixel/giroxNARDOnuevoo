@@ -15598,9 +15598,19 @@ app.get('/api/admin/fraud/alerts', authMiddleware, adminMiddleware, _fraudGate, 
     // 5 min de memoria (las stats del juego usan el cupo de 1girox que comparten cargas y retiros); 'fresh' fuerza, pero no más de 1 por minuto.
     if (_fraudCache.data && _fraudCache.days === days && Date.now() - _fraudCache.at < (req.query.fresh ? 60 * 1000 : 5 * 60 * 1000)) return res.json(Object.assign({ cached: true }, _fraudCache.data));
     // Cuánto apostó / ganó cada uno (Partner API, batch; sólo para quienes retiran, máx. 100). netwin positivo = perdió.
-    const stats = async (usernames, from, to) => { const out = new Map(); const r = await girox.getPlayersStatsBatch(usernames, from, to, 'fraude'); if (r && r.success) for (const [k, v] of Object.entries(r.players || {})) out.set(k, v); return out; };
+    // #226: las stats de juego de 1girox tardaban (20 s × 4 intentos ≈ 100 s) ⇒ nginx cortaba a los 60 s con un 504 en HTML y el panel
+    // mostraba "JSON.parse: unexpected character". Ahora: UNA pasada sin reintentos y tope total de 15 s; si no llega, el radar corre
+    // igual sin las reglas de juego (el servicio lo soporta) y el panel avisa.
+    const playStats = { ok: false, note: null };
+    const stats = async (usernames, from, to) => {
+      const out = new Map();
+      const call = (async () => { try { const r = await girox.getPlayersStatsBatch(usernames, from, to, 'fraude', { retryable: false }); if (r && r.success) { for (const [k, v] of Object.entries(r.players || {})) out.set(k, v); return 'ok'; } return 'error: ' + ((r && (r.error || r.code)) || 'sin respuesta'); } catch (e) { return 'error: ' + e.message; } })();
+      const res = await Promise.race([call, new Promise((resolve) => setTimeout(() => resolve('timeout'), 15000))]);
+      if (res === 'ok') playStats.ok = true; else playStats.note = res === 'timeout' ? '1girox tardó más de 15 s en responder las estadísticas de juego' : res;
+      return out;
+    };
     const data = await fraudRadar.scan({ User, Transaction, PendingPayout, BankMovement, stats }, { days });
-    data.rules = fraudRadar.RULES; data.generatedAt = new Date().toISOString();
+    data.rules = fraudRadar.RULES; data.generatedAt = new Date().toISOString(); data.playStats = playStats;
     _fraudCache = { at: Date.now(), days, data };
     res.json(data);
   } catch (e) { logger.error('[fraude] alerts: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }

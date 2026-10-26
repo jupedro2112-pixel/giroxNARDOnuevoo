@@ -8,6 +8,17 @@
 
 ## Sesión 2026-10-26
 
+### 226. FIX Alertas de estafa: "No se pudo cargar: JSON.parse: unexpected character" (504 de nginx por las stats de 1girox)
+- **Qué pasaba (primera prueba en producción, 2026-10-26):** `GET /api/admin/fraud/alerts` pedía las estadísticas de juego a 1girox
+  (`getPlayersStatsBatch`, 56 jugadores, 30 días) y la Partner API no respondía: timeout de 20 s + reintentos 2/5/15 s ≈ 100 s.
+  nginx corta a los 60 s y devuelve un 504 en HTML ⇒ el panel intentaba parsear JSON y mostraba ese error. El radar en sí andaba.
+- **Fix:** `getPlayersStatsBatch(..., opts)` acepta `retryable:false` (una sola pasada); la ruta de alertas la llama así y además la
+  acota con `Promise.race` a **15 s**: si 1girox no llega, el escaneo sigue SIN las reglas de juego ("retira casi sin jugar" y
+  "abuso de bonos" se evalúan sin lo apostado; el servicio ya lo soportaba) y la respuesta trae `playStats {ok, note}`. El panel
+  muestra un aviso amarillo con el motivo y 🔄 para reintentar, y si igual llegara un 502/504 lo dice en castellano en vez del
+  JSON.parse. admin-sw bumpeado. Mismo fix en las 5 páginas sobre 1girox (CARGASGIROX, AUTOGIROXcompartido, giroxNARDOnuevoo,
+  PAUTANUEVAsantino, SANTINOGANAMOS); las de JUGAYGANA no piden stats.
+
 ### 222. RÉPLICA DE PICA ROJA (PICAROJA30) — tanda 1: interruptores en COMANDOS, registro abierto / sólo con invitación, sistema de notificaciones anterior APAGADO y al fondo del menú — SW v117
 - **Owner:** replicar de `PICAROJA30` seis cosas (Datos IA, Centro de avisos, Alertas de estafa, notificaciones
   programadas nuevas, registro activado/desactivado, historias) en este repo igual que en CARGASGIROX (#208–#211 de

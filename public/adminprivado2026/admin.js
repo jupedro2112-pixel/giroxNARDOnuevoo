@@ -6122,7 +6122,8 @@ async function loadFraud(fresh) {
     box.innerHTML = 'Revisando clientes…';
     const days = (document.getElementById('frDays') || {}).value || 30;
     try {
-        const r = await authFetch('/api/admin/fraud/alerts?days=' + days + (fresh ? '&fresh=1' : '')); const j = await r.json();
+        const r = await authFetch('/api/admin/fraud/alerts?days=' + days + (fresh ? '&fresh=1' : ''));
+        let j; try { j = await r.json(); } catch (_) { throw new Error(r.status === 504 || r.status === 502 ? 'el servidor tardó demasiado (' + r.status + '). Probá de nuevo en un minuto.' : 'respuesta inválida (' + r.status + ')'); } // #226
         if (!r.ok) throw new Error(j.error || 'error');
         _frData = j; renderFraud();
     } catch (e) { box.innerHTML = '<span style="color:#f87171">No se pudo cargar: ' + escapeHtml(e.message) + '</span>'; }
@@ -6137,7 +6138,7 @@ function renderFraud() {
     else if (lv === 'blocked') list = list.filter((a) => a.isBlocked);
     const all = _frData.alerts || [];
     const sm = document.getElementById('frSummary');
-    if (sm) sm.innerHTML = '🔎 ' + (_frData.scanned || 0) + ' clientes revisados · <b style="color:#f87171">' + all.filter((a) => a.level === 'alto' && !a.isBlocked).length + ' riesgo alto</b> · <b style="color:#f59e0b">' + all.filter((a) => a.level === 'medio' && !a.isBlocked).length + ' medio</b> · ' + all.filter((a) => a.isBlocked).length + ' ya bloqueados' + (_frData.cached ? ' <span style="color:#666">(hace instantes)</span>' : '');
+    if (sm) sm.innerHTML = (_frData.playStats && !_frData.playStats.ok ? '<div style="color:#fbbf24;font-size:.78rem;margin-bottom:.3rem">⚠️ Sin estadísticas de juego de 1girox en esta pasada (' + escapeHtml((_frData.playStats && _frData.playStats.note) || 'sin datos') + '): las reglas "retira casi sin jugar" y "abuso de bonos" se evaluaron sin lo apostado. Tocá 🔄 para reintentar.</div>' : '') + '🔎 ' + (_frData.scanned || 0) + ' clientes revisados · <b style="color:#f87171">' + all.filter((a) => a.level === 'alto' && !a.isBlocked).length + ' riesgo alto</b> · <b style="color:#f59e0b">' + all.filter((a) => a.level === 'medio' && !a.isBlocked).length + ' medio</b> · ' + all.filter((a) => a.isBlocked).length + ' ya bloqueados' + (_frData.cached ? ' <span style="color:#666">(hace instantes)</span>' : '');
     if (!list.length) { box.innerHTML = '<div class="card" style="color:#22c55e">✅ No hay alertas con este filtro.</div>'; return; }
     box.innerHTML = list.map((a) => {
         const col = a.isBlocked ? '#6b7280' : (a.level === 'alto' ? '#ef4444' : '#f59e0b');
