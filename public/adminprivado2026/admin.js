@@ -4952,6 +4952,8 @@ function switchSection(section) {
     }
     if (section === 'commands') loadCommands();
     if (section === 'fraud') { if (!_featureOnOrToast('fraudRadar', 'Alertas de estafa')) return; loadFraud(); } // #223
+    if (section === 'stories') { if (!_featureOnOrToast('stories', 'Historias')) return; loadAppStories(); } // #224
+    if (section === 'cronohist') { if (!_featureOnOrToast('stories', 'Historias')) return; loadStoriesAuto(); } // #224
     if (section === 'datosIa') { if (!_featureOnOrToast('datosIa', 'Datos IA')) return; datosIaGate('Datos IA').then(function (ok) { if (ok) diaInit(); }); } // #223 (clave propia)
     if (section === 'datos') loadDatos();
     if (section === 'datos2') loadDatos2();
@@ -6197,6 +6199,261 @@ async function fraudReview(userId, status) {
     try { const r = await authFetch('/api/admin/fraud/review/' + encodeURIComponent(userId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, note }) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error'); showToast(status === 'legit' ? '✅ Marcado como legítimo (no se vuelve a mostrar)' : '👁 En observación', 'success'); loadFraud(true); } catch (e) { showToast('No se pudo: ' + e.message, 'error'); }
 }
 window.loadFraud = loadFraud; window.renderFraud = renderFraud; window.openFraudCase = openFraudCase; window.closeFraudCase = closeFraudCase; window.fraudBlock = fraudBlock; window.fraudUnblock = fraudUnblock; window.fraudReview = fraudReview;
+
+// ============================================================
+// #224 HISTORIAS manuales (réplica #361/#742/#772 de PICA ROJA): publicar / listar / extender / pausar / borrar (solo admin general).
+// Nombres con "AppStory" porque deleteStory/… ya existen acá para las historias de INFLUENCERS (otra cosa).
+// ============================================================
+let _stFileDataUrl = '';
+document.addEventListener('change', function (e) {
+    if (!e.target || e.target.id !== 'stFile') return;
+    const f = e.target.files && e.target.files[0];
+    _stFileDataUrl = '';
+    const pv = document.getElementById('stPreview'), img = document.getElementById('stPreviewImg');
+    if (!f) { if (pv) pv.style.display = 'none'; return; }
+    const max = f.type === 'video/mp4' ? 8 : 4;
+    if (f.size > max * 1024 * 1024) { showToast('El archivo pesa más de ' + max + ' MB', 'error'); e.target.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = function () {
+        _stFileDataUrl = String(reader.result || '');
+        if (pv && img) { if (f.type.indexOf('image/') === 0) { img.src = _stFileDataUrl; pv.style.display = ''; } else pv.style.display = 'none'; }
+    };
+    reader.readAsDataURL(f);
+});
+
+function _stLoadImg(src) { return new Promise(function (res, rej) { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = function () { res(i); }; i.onerror = rej; i.src = src; }); }
+function _stWrap(ctx, text, maxW) { const words = String(text || '').split(/\s+/); const lines = []; let cur = ''; words.forEach(function (w) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; }); if (cur) lines.push(cur); return lines; }
+function _stRound(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+async function stMakeArt() {
+    const g = function (id) { return (document.getElementById(id) || {}).value || ''; };
+    const kicker = (g('stArtKicker') || 'LA NOVEDAD LLEGÓ').toUpperCase(), title = g('stArtTitle') || 'El futuro está acá', pill = (g('stArtPill') || 'CARGAS AUTOMÁTICAS').toUpperCase(), body = g('stArtBody') || 'Transferís, mandás la foto y se acredita solo.';
+    const dark = g('stArtBg') === 'dark';
+    const W = 1080, H = 1920, c = document.createElement('canvas'); c.width = W; c.height = H; const ctx = c.getContext('2d');
+    const F = '"Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+    // fondo
+    const bg = ctx.createLinearGradient(0, 0, 0, H); if (dark) { bg.addColorStop(0, '#1a0a0c'); bg.addColorStop(1, '#070707'); } else { bg.addColorStop(0, '#ffffff'); bg.addColorStop(1, '#f1f1f1'); }
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    // foto opcional arriba (recortada, cover), con bordes redondeados
+    let y = 200; const fileEl = document.getElementById('stArtPhoto'); const f = fileEl && fileEl.files && fileEl.files[0];
+    if (f) {
+        try {
+            const url = URL.createObjectURL(f); const img = await _stLoadImg(url);
+            const ph = 820, px = 60, pw = W - 120; const r = Math.max(pw / img.width, ph / img.height); const dw = img.width * r, dh = img.height * r;
+            ctx.save(); _stRound(ctx, px, 120, pw, ph, 44); ctx.clip(); ctx.drawImage(img, px + (pw - dw) / 2, 120 + (ph - dh) / 2, dw, dh); ctx.restore();
+            URL.revokeObjectURL(url); y = 120 + ph + 70;
+        } catch (e) { showToast('No se pudo leer la foto; se arma sin foto', 'error'); }
+    }
+    // tarjeta
+    const cardX = 60, cardW = W - 120, cardY = f ? y : 260, cardH = f ? H - cardY - 260 : 1100;
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + (dark ? '.6' : '.12') + ')'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 18;
+    ctx.fillStyle = dark ? '#161616' : '#ffffff'; _stRound(ctx, cardX, cardY, cardW, cardH, 56); ctx.fill(); ctx.restore();
+    let cy = cardY + 80;
+    // logo con recuadro
+    try {
+        const logo = await _stLoadImg('/icons/icon-192x192.png'); const L = f ? 150 : 220;
+        ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 10; ctx.fillStyle = '#111'; _stRound(ctx, W / 2 - L / 2 - 10, cy - 10, L + 20, L + 20, 44); ctx.fill(); ctx.restore();
+        ctx.save(); _stRound(ctx, W / 2 - L / 2, cy, L, L, 36); ctx.clip(); ctx.drawImage(logo, W / 2 - L / 2, cy, L, L); ctx.restore(); cy += L + 60;
+    } catch (e) { cy += 20; }
+    ctx.textAlign = 'center';
+    ctx.fillStyle = dark ? '#bdbdbd' : '#6f6f6f'; ctx.font = '800 34px ' + F; ctx.letterSpacing = '8px'; ctx.fillText(kicker, W / 2, cy); ctx.letterSpacing = '0px'; cy += 70;
+    ctx.fillStyle = dark ? '#ffffff' : '#111111'; ctx.font = '900 ' + (f ? 86 : 104) + 'px ' + F;
+    const tl = _stWrap(ctx, title, cardW - 140).slice(0, 3); tl.forEach(function (ln) { ctx.fillText(ln, W / 2, cy + (f ? 70 : 86)); cy += (f ? 96 : 112); }); cy += 50;
+    ctx.font = '900 40px ' + F; const pw2 = Math.min(cardW - 120, ctx.measureText(pill).width + 110);
+    ctx.fillStyle = '#d4af37'; _stRound(ctx, W / 2 - pw2 / 2, cy, pw2, 92, 46); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillText(pill, W / 2, cy + 62); cy += 150;
+    ctx.fillStyle = dark ? '#cfcfcf' : '#444'; ctx.font = '600 40px ' + F;
+    _stWrap(ctx, body, cardW - 160).slice(0, 4).forEach(function (ln) { ctx.fillText(ln, W / 2, cy); cy += 56; });
+    // sello de marca al pie de la tarjeta
+    try {
+        const logo2 = await _stLoadImg('/icons/icon-192x192.png'); const by = cardY + cardH - 110;
+        ctx.fillStyle = dark ? '#222' : '#f1f1f1'; _stRound(ctx, W / 2 - 230, by - 44, 460, 88, 44); ctx.fill();
+        ctx.save(); ctx.beginPath(); ctx.arc(W / 2 - 170, by, 32, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(logo2, W / 2 - 202, by - 32, 64, 64); ctx.restore();
+        ctx.textAlign = 'left'; ctx.fillStyle = dark ? '#fff' : '#111'; ctx.font = '900 30px ' + F; ctx.letterSpacing = '3px'; ctx.fillText('CARGAS 1GIROX', W / 2 - 120, by - 2); ctx.letterSpacing = '0px';
+        ctx.fillStyle = dark ? '#aaa' : '#666'; ctx.font = '600 22px ' + F; ctx.fillText('oficial · cargas automáticas', W / 2 - 120, by + 30);
+    } catch (e) {}
+    const dataUrl = c.toDataURL('image/jpeg', 0.9);
+    _stFileDataUrl = dataUrl;
+    const pv = document.getElementById('stPreview'), img = document.getElementById('stPreviewImg'); if (pv && img) { img.src = dataUrl; pv.style.display = ''; }
+    const fe = document.getElementById('stFile'); if (fe) fe.value = '';
+    showToast('🎨 Foto armada: revisá la vista previa y tocá Publicar', 'success');
+}
+
+async function loadAppStories() {
+    const box = document.getElementById('storiesList');
+    if (!box) return;
+    try {
+        const r = await authFetch('/api/admin/stories');
+        if (!r.ok) { box.innerHTML = '<div style="color:#ff8080;padding:14px;">' + (r.status === 403 ? 'Solo el admin general.' : (r.status === 404 ? 'Historias está apagado (COMANDOS → Funciones).' : 'Error cargando.')) + '</div>'; return; }
+        const j = await r.json();
+        const cfg = j.config || {};
+        const dh = document.getElementById('stDefHours'), dd = document.getElementById('stDefDuration');
+        if (dh && !dh.value) dh.value = cfg.defaultHours || 24;
+        if (dd && !dd.value) dd.value = cfg.defaultDurationSec || 6;
+        const h = document.getElementById('stHours'), d = document.getElementById('stDuration');
+        if (h) h.placeholder = cfg.defaultHours || 24;
+        if (d) d.placeholder = cfg.defaultDurationSec || 6;
+        const items = j.items || [];
+        if (!items.length) { box.innerHTML = '<div style="color:#aaa;text-align:center;padding:24px;">Todavía no hay historias. Publicá la primera arriba.</div>'; return; }
+        const rx = (s) => { const r = s.reactions || {}; const t = (Number(r.fire) || 0) + (Number(r.heart) || 0) + (Number(r.laugh) || 0) + (Number(r.like) || 0); return t ? ' · ' + t + ' reacciones' : ''; };
+        box.innerHTML = '<h3 style="margin:0 0 8px;">📋 Historias (' + items.length + ')</h3>' + items.map(function (s) {
+            const live = s.isActive && !s.expired;
+            const st = live ? '<span style="color:#00ff88;font-weight:800;">● ACTIVA · vence en ' + s.hoursLeft + ' h</span>' : (!s.isActive ? '<span style="color:#ffaa44;font-weight:800;">⏸ Desactivada</span>' : '<span style="color:#ff8080;font-weight:800;">✖ Vencida</span>');
+            const thumb = s.mediaType === 'image' && s.mediaUrl ? '<img src="' + escapeHtml(s.mediaUrl) + '" alt="" style="width:54px;height:96px;object-fit:cover;border-radius:8px;background:#000;">'
+                : (s.mediaType === 'video' ? '<div style="width:54px;height:96px;border-radius:8px;background:#222;display:flex;align-items:center;justify-content:center;font-size:22px;">🎬</div>'
+                : '<div style="width:54px;height:96px;border-radius:8px;background:' + escapeHtml(s.bgColor || '#06070d') + ';display:flex;align-items:center;justify-content:center;font-size:18px;">Aa</div>');
+            return '<div style="display:flex;gap:12px;align-items:center;padding:10px;margin-bottom:8px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;background:rgba(255,255,255,0.03);">'
+                + thumb
+                + '<div style="flex:1;min-width:0;font-size:12px;line-height:1.5;">'
+                + '<div><b>' + escapeHtml(s.title || 'CARGAS 1GIROX') + '</b>' + (s.autoKind ? ' <span style="color:#8fd3a8;font-size:10.5px;">· automática</span>' : '') + ' · ' + st + '</div>'
+                + '<div style="color:#ddd;">' + escapeHtml(s.text || '(sin texto)') + '</div>'
+                + (s.bonusPct ? '<div style="color:#ffd54f;font-weight:800;">🎁 Bono +' + s.bonusPct + '% · ' + (s.bonusActive ? 'vigente hasta ' + new Date(s.bonusUntil).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : 'bono vencido') + ' · ' + (s.bonusClaims || 0) + ' reclamos · ' + (s.bonusUses || 0) + ' usados en cargas' + (s.notifyAll ? ' · 🔔 push a todos' : '') + '</div>' : '')
+                + '<div style="color:#888;font-size:11px;">Publicada ' + new Date(s.publishedAt).toLocaleString('es-AR') + ' · ' + s.hours + ' h · ' + (s.views || 0) + ' vistas · 👆 ' + (s.clicks || 0) + ' toques' + rx(s) + (s.repeatWeekly ? ' · 🔁 semanal' : '') + (s.createdBy ? ' · ' + escapeHtml(s.createdBy) : '') + '</div>'
+                + '</div>'
+                + '<div style="display:flex;flex-direction:column;gap:6px;">'
+                + '<button class="btn btn-secondary btn-sm" onclick="extendAppStory(\'' + s.id + '\')" title="Vuelve a contar las horas desde ahora">⏱ Extender</button>'
+                + (s.isActive ? '<button class="btn btn-secondary btn-sm" onclick="toggleAppStory(\'' + s.id + '\', false)">⏸ Pausar</button>' : '<button class="btn btn-secondary btn-sm" onclick="toggleAppStory(\'' + s.id + '\', true)">▶ Activar</button>')
+                + '<button class="btn btn-secondary btn-sm" style="color:#ff8080;" onclick="deleteAppStory(\'' + s.id + '\')">🗑 Borrar</button>'
+                + '</div></div>';
+        }).join('');
+    } catch (e) { box.innerHTML = '<div style="color:#ff8080;padding:14px;">Error: ' + escapeHtml(e.message) + '</div>'; }
+}
+async function publishQuickBonusStory() {
+    const pct = Math.round(Number((document.getElementById('qsPct') || {}).value) || 0), hours = Math.round(Number((document.getElementById('qsHours') || {}).value) || 0);
+    const msg = document.getElementById('qsMsg'), btn = document.getElementById('qsBtn');
+    if (!(pct >= 5 && pct <= 200) || !(hours >= 1 && hours <= 72)) { showToast('% entre 5 y 200 y horas entre 1 y 72', 'error'); return; }
+    if (!confirm('¿Publicar la historia "+' + pct + '% en tu próxima carga" por ' + hours + ' h' + ((document.getElementById('qsNotify') || {}).checked ? ' y avisar a TODOS por notificación' : '') + '?')) return;
+    if (btn) btn.disabled = true; if (msg) msg.textContent = 'Publicando…';
+    try {
+        const body = { autoImage: true, bonusPct: pct, bonusHours: hours, hours: hours, durationSec: 8, title: 'BONO +' + pct + '%', text: 'Reclamá ahora y tu próxima carga tiene +' + pct + '% extra. Vale por ' + hours + ' h.', notifyAll: !!(document.getElementById('qsNotify') || {}).checked, pushTitle: '🎁 +' + pct + '% extra en tu próxima carga', pushBody: 'Sólo por ' + hours + ' h: abrí la historia y tocá "Reclamar ahora".' };
+        const r = await authFetch('/api/admin/stories', { method: 'POST', body: JSON.stringify(body) }); const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo publicar', 'error'); if (msg) msg.textContent = '❌ ' + (j.error || ''); return; }
+        showToast('⚡ Historia de bono publicada', 'success'); if (msg) msg.textContent = '✅ publicada'; loadAppStories();
+    } catch (_) { showToast('Error de conexión', 'error'); } finally { if (btn) btn.disabled = false; }
+}
+async function publishAppStory() {
+    const msg = document.getElementById('stMsg'), btn = document.getElementById('stPublishBtn');
+    const v = function (id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    const body = { bonusPct: Number(v('stBonusPct')) || 0, bonusHours: Number(v('stBonusHours')) || 1, notifyAll: !!(document.getElementById('stNotifyAll') || {}).checked, pushTitle: v('stPushTitle'), pushBody: v('stPushBody'), repeatWeekly: !!(document.getElementById('stRepeat') || {}).checked,
+        title: v('stTitle'), text: v('stText'), mediaDataUrl: _stFileDataUrl || '', mediaUrl: v('stMediaUrl'), hours: Number(v('stHours')) || undefined, durationSec: Number(v('stDuration')) || undefined, linkUrl: v('stLink'), linkLabel: v('stLinkLabel'), bgColor: v('stBg') || '#06070d' };
+    if (!body.text && !body.mediaDataUrl && !body.mediaUrl) { showToast('Poné un texto o una imagen/video', 'error'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Publicando…'; }
+    try {
+        const r = await authFetch('/api/admin/stories', { method: 'POST', body: JSON.stringify(body) });
+        const j = await r.json();
+        if (!r.ok) { if (msg) { msg.style.color = '#ff8080'; msg.textContent = j.error || 'No se pudo publicar'; } showToast(j.error || 'No se pudo publicar', 'error'); return; }
+        if (msg) { msg.style.color = '#00c853'; msg.textContent = '✅ Publicada · visible ' + j.story.hours + ' h' + (j.story.bonusPct ? ' · 🎁 bono +' + j.story.bonusPct + '% por ' + j.story.bonusHours + ' h' : '') + (j.story.notifyAll ? ' · 🔔 push enviado a todos' : ''); }
+        showToast('Historia publicada', 'success');
+        ['stTitle', 'stText', 'stMediaUrl', 'stHours', 'stLink', 'stLinkLabel', 'stBonusPct', 'stBonusHours', 'stPushTitle', 'stPushBody'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
+        try { const na = document.getElementById('stNotifyAll'); if (na) na.checked = false; } catch (_) {}
+        const f = document.getElementById('stFile'); if (f) f.value = ''; _stFileDataUrl = '';
+        const pv = document.getElementById('stPreview'); if (pv) pv.style.display = 'none';
+        loadAppStories();
+    } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '📽️ Publicar historia'; } }
+}
+async function saveAppStoriesConfig() {
+    const msg = document.getElementById('stCfgMsg');
+    const body = { defaultHours: Number((document.getElementById('stDefHours') || {}).value), defaultDurationSec: Number((document.getElementById('stDefDuration') || {}).value) };
+    try {
+        const r = await authFetch('/api/admin/stories/config', { method: 'POST', body: JSON.stringify(body) });
+        const j = await r.json();
+        if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        if (msg) { msg.style.color = '#00c853'; msg.textContent = '✅ Guardado'; }
+        loadAppStories();
+    } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+async function extendAppStory(id) {
+    const h = prompt('¿Cuántas horas más tiene que verse (desde ahora)?', (document.getElementById('stDefHours') || {}).value || '24');
+    if (h == null) return;
+    const r = await authFetch('/api/admin/stories/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ hours: Number(h) }) });
+    const j = await r.json();
+    if (!r.ok) { showToast(j.error || 'No se pudo', 'error'); return; }
+    showToast('Historia extendida', 'success'); loadAppStories();
+}
+async function toggleAppStory(id, on) {
+    const r = await authFetch('/api/admin/stories/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ isActive: !!on }) });
+    if (!r.ok) { showToast('No se pudo', 'error'); return; }
+    loadAppStories();
+}
+async function deleteAppStory(id) {
+    if (!confirm('¿Borrar esta historia? No se puede deshacer.')) return;
+    const r = await authFetch('/api/admin/stories/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!r.ok) { showToast('No se pudo borrar', 'error'); return; }
+    showToast('Historia borrada', 'success'); loadAppStories();
+}
+window.loadAppStories = loadAppStories; window.publishQuickBonusStory = publishQuickBonusStory; window.publishAppStory = publishAppStory; window.saveAppStoriesConfig = saveAppStoriesConfig; window.extendAppStory = extendAppStory; window.toggleAppStory = toggleAppStory; window.deleteAppStory = deleteAppStory; window.stMakeArt = stMakeArt;
+
+// ═══ #224 HISTORIAS AUTOMÁTICAS (réplica #827/#909/#911 de PICA ROJA) — hoy, próximos días y respuesta a las historias con bono ═══
+async function loadStoriesAuto() {
+    const box = document.getElementById('stAutoBody'); if (!box) return;
+    try {
+        const r = await authFetch('/api/admin/stories-autopilot'); const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'error');
+        const num = (n) => Number(n || 0).toLocaleString('es-AR');
+        const KIND = { servicio: ['🧭', '#6366f1'], deporte: ['⚽', '#16a34a'], slot: ['🎰', '#db2777'], bono: ['🎁', '#dc2626'] };
+        const dayLbl = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit', timeZone: 'UTC' });
+        let h = '';
+        h += '<div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;padding:.4rem .5rem;border:1px solid rgba(255,255,255,.1);border-radius:10px;margin-bottom:.5rem">' +
+            '<span>⚽ Partidos del día: <b style="color:' + (j.matchesOn ? '#22c55e' : '#f87171') + '">' + (j.matchesOn ? 'ENCENDIDOS (salen a las 00:05)' : 'apagados') + '</b></span>' +
+            '<button type="button" class="btn btn-secondary btn-sm" onclick="storiesAutoMatches(' + (j.matchesOn ? 'false' : 'true') + ')">' + (j.matchesOn ? '⏸ Apagar partidos' : '▶ Encender partidos') + '</button>' +
+            '<span style="color:#888;font-size:.74rem">Apagados, salen sólo las 5 historias de servicio (explican la app). Nunca se repiten con las del día anterior.</span>' +
+            '<button type="button" class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="storiesAutoRepublish()" title="Apaga las historias vigentes y publica las 5 de hoy ahora mismo">🔄 Borrar y publicar las de hoy</button></div>';
+        const dg = j.diag || null;
+        if (dg && dg.lastTickAt) {
+            const mins = Math.round((Date.now() - new Date(dg.lastTickAt).getTime()) / 60000);
+            h += '<div style="font-size:.76rem;color:' + (mins > 20 ? '#f87171' : '#8fd3a8') + ';margin-bottom:.4rem">🛠 Motor: última pasada hace ' + mins + ' min · publicadas hoy: <b>' + num(j.publishedToday) + '</b>' +
+                (dg.lastError ? ' · <span style="color:#f87171">error: ' + escapeHtml(dg.lastError) + '</span>' : '') +
+                ((dg.skipped || []).length ? ' · <span style="color:#fbbf24">salteadas: ' + dg.skipped.map((x) => escapeHtml((x.title || x.slot) + ' (' + x.why + ')')).join(' · ') + '</span>' : '') + '</div>';
+        } else h += '<div style="font-size:.76rem;color:#f87171;margin-bottom:.4rem">🛠 Motor: todavía no registró ninguna pasada (arranca 2 min después del deploy, si Historias está prendido en COMANDOS).</div>';
+        (j.days || []).forEach((d, di) => {
+            h += '<details' + (di <= 1 ? ' open' : '') + ' style="border-bottom:1px solid rgba(255,255,255,.08);padding:.3rem 0"><summary style="cursor:pointer"><b style="text-transform:capitalize">' + (di === 0 ? 'Hoy · ' : (di === 1 ? 'Mañana · ' : '')) + escapeHtml(dayLbl(d.day)) + '</b> · ' +
+                d.items.map((it) => (KIND[it.kind] || ['•'])[0]).join(' ') + (d.matchesKnown ? '' : ' <span style="color:#888;font-size:.74rem">(los partidos se definen ese día)</span>') + '</summary>' +
+                '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.4rem;margin:.4rem 0">' +
+                d.items.map((it) => { const k = KIND[it.kind] || ['•', '#888'];
+                    return '<div class="sa-item" style="border-left:3px solid ' + k[1] + '"><b>' + escapeHtml(it.time) + '</b> ' + k[0] + ' <b>' + escapeHtml(it.title) + '</b>' +
+                        '<span class="sa-sub" style="white-space:pre-wrap">' + escapeHtml(it.text) + '</span>' +
+                        (it.label ? '<span class="sa-sub">Botón: ' + escapeHtml(it.label) + '</span>' : '') +
+                        (it.removed ? '<span class="sa-sub" style="color:#f87171">🚫 borrada (no se muestra)</span>'
+                            : (it.published ? '<span class="sa-sub" style="color:#22c55e">✅ publicada · 👁 ' + num(it.views) + ' vistas · 👆 ' + num(it.clicks) + (it.bonusPct ? ' · 🎁 ' + num(it.claims) + ' reclamaron · ' + num(it.uses) + ' cargaron' : '') + '</span>' : '<span class="sa-sub">🕒 programada</span>') +
+                              '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:4px;color:#f87171" onclick="storiesAutoRemove(\'' + d.day + '\',\'' + it.slot + '\')">🗑️ Borrar</button>') + '</div>'; }).join('') +
+                '</div></details>';
+        });
+        const bs = j.bonusStories || [];
+        h += '<div style="font-weight:700;margin:.7rem 0 .3rem">🎁 Historias con bono: cómo respondió la gente</div>';
+        h += bs.length ? '<div style="overflow:auto"><table class="cron-tbl"><thead><tr><th>Publicada</th><th>Bono</th><th>Push enviada</th><th>Vieron</th><th>Reclamaron</th><th>Usaron el bono</th><th>$ cargado</th><th>Bono entregado</th></tr></thead><tbody>' +
+            bs.map((b) => { const ps = b.pushStats || {}; const sent = Number(ps.sent != null ? ps.sent : (ps.success != null ? ps.success : (ps.successCount != null ? ps.successCount : (ps.total != null ? ps.total : 0)))) || 0;
+                return '<tr><td>' + new Date(b.publishedAt).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + '</td><td>+' + b.bonusPct + '% · ' + b.bonusHours + ' h</td><td>' + (sent ? num(sent) : '—') + '</td><td>' + num(b.views) + '</td><td>' + num(b.bonusClaims) + '</td><td>' + num(b.bonusUses) + '</td><td>$' + num(b.bonusDepositTotal) + '</td><td>$' + num(b.bonusUsedTotal) + '</td></tr>'; }).join('') + '</tbody></table></div>'
+            : '<div style="color:#888">Todavía no salió ninguna (la primera sale el miércoles a las 19:00).</div>';
+        h += '<div style="color:#888;font-size:.72rem;margin-top:.4rem">Partidos: ' + escapeHtml((j.sources || {}).matches || '') + ' · Slot de la semana: ' + escapeHtml((j.sources || {}).slots || '') + '. El botón de las historias abre el casino con la sesión iniciada.</div>';
+        box.innerHTML = h;
+    } catch (e) { box.innerHTML = '<span style="color:#f87171">No se pudo cargar: ' + escapeHtml(e.message) + '</span>'; }
+}
+async function storiesAutoRemove(day, slot) {
+    if (!confirm('¿Borrar esta historia? Si ya está publicada, deja de verse en la app al instante; si está programada, ese horario no sale. Las demás siguen automáticas.')) return;
+    try {
+        const r = await authFetch('/api/admin/stories-autopilot/remove', { method: 'POST', body: JSON.stringify({ day, slot }) }); const j = await r.json();
+        if (!r.ok || !j.success) { showToast(j.error || 'No se pudo borrar', 'error'); return; }
+        showToast('Historia borrada', 'success'); loadStoriesAuto();
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+async function storiesAutoMatches(on) {
+    if (!confirm(on ? '¿Encender los partidos del día? Cada día a las 00:05 sale una historia por partido destacado (ESPN), además de las 5 de servicio.' : '¿Apagar los partidos? Quedan sólo las 5 historias de servicio por día.')) return;
+    try {
+        const r = await authFetch('/api/admin/stories-autopilot/matches', { method: 'POST', body: JSON.stringify({ on: !!on }) }); const j = await r.json();
+        if (!r.ok || !j.success) { showToast(j.error || 'No se pudo cambiar', 'error'); return; }
+        showToast(on ? 'Partidos encendidos' : 'Partidos apagados', 'success'); loadStoriesAuto();
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+async function storiesAutoRepublish() {
+    if (!confirm('¿Borrar las historias que están publicadas y publicar las 5 de hoy AHORA?\n\nLas manuales vigentes se apagan; las automáticas de hoy y ayer se borran y se republican con el plan de hoy (sin esperar a cada horario).')) return;
+    try {
+        const r = await authFetch('/api/admin/stories-autopilot/republish-today', { method: 'POST', body: '{}' }); const j = await r.json();
+        if (!r.ok || !j.success) { showToast(j.error || 'No se pudo', 'error'); return; }
+        showToast('✅ ' + j.published + ' historias publicadas · ' + j.off + ' apagadas' + ((j.skipped || []).length ? ' · ' + j.skipped.length + ' salteadas' : '') + (j.error ? ' · error: ' + j.error : ''), j.published ? 'success' : 'error');
+        loadStoriesAuto();
+    } catch (e) { showToast('Error de conexión', 'error'); }
+}
+window.loadStoriesAuto = loadStoriesAuto; window.storiesAutoRemove = storiesAutoRemove; window.storiesAutoMatches = storiesAutoMatches; window.storiesAutoRepublish = storiesAutoRepublish;
+
 
 
 // ====== % del bono por instalar la app (COMANDOS, solo admin general edita) ======

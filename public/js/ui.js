@@ -101,6 +101,9 @@ VIP.ui = (function () {
         startBalancePolling();
         sendWelcomeMessages();
 
+        // #224: historias del header (si la función está apagada, el server responde off:true y el botón no se ve)
+        try { if (VIP.stories && VIP.stories.load) VIP.stories.load(); } catch (e) {}
+
         // Cartel del bono por instalar la app (se muestra si no lo reclamó aún).
         if (VIP.installBonus && typeof VIP.installBonus.init === 'function') {
             VIP.installBonus.init();

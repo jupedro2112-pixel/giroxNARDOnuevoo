@@ -450,6 +450,7 @@ function setupEventListeners() {
         // Publisher welcome — bind de los botones del modal de bienvenida de 2 pasos
         if (VIP.publisherWelcome && typeof VIP.publisherWelcome.init === 'function') {
             VIP.publisherWelcome.init();
+            try { if (VIP.stories) VIP.stories.init(); } catch (e) {} // #224 historias (visor + aviso del SW)
         }
 
         // Cambio de contraseña — entrada temporal (fallback cuando el SMS no llega)

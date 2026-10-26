@@ -34,7 +34,8 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v118'; // v118: medidor de uso de la app (activity.js, ping cada 60 s sólo con Datos IA prendido) + datos del teléfono (#223)
+const CACHE_VERSION = 'v119'; // v119: HISTORIAS (botón en el header, anillo en el ingreso, visor, bono +X% reclamable, push que abre la historia) — se ven sólo con la función prendida (#224)
+// v118: medidor de uso de la app (activity.js, ping cada 60 s sólo con Datos IA prendido) + datos del teléfono (#223)
 // v117: registro sólo con invitación (aviso en la pantalla de ingreso, se esconde Registrarse sin link de referido/publicidad) + interruptores de funciones (#222)
 // v116: // v116: Información del Servicio y mini-tarjeta muestran el % vigente del bono por instalar la app (chau 100% fijo)
 // v115: // v115: ruleta diaria con premios en % y tabla de probabilidades + bonos pendientes se aplican solos en la carga + sin bono de bienvenida para registros manuales
@@ -172,16 +173,20 @@ self.addEventListener('notificationclick', function(event) {
 
   if (event.action === 'close') return;
 
+  // #224: si la notificación trae una URL (ej. /?story=<id>), la app abierta la recibe por mensaje y abre esa historia; si no
+  // hay ventana, se abre esa URL. Sin URL sigue como siempre (/).
+  const _url = (event.notification && event.notification.data && event.notification.data.url) || '/';
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then(function(clientList) {
         for (const client of clientList) {
           if (client.url.includes(self.location.origin) && 'focus' in client) {
+            try { client.postMessage({ type: 'vip-open', url: _url }); } catch (e) {}
             return client.focus();
           }
         }
         if (clients.openWindow) {
-          return clients.openWindow('/');
+          return clients.openWindow(_url);
         }
       })
   );

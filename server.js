@@ -9045,6 +9045,8 @@ app.post('/api/admin/deposit', authMiddleware, depositorMiddleware, async (req, 
           adminUsername: req.user?.username,
           adminRole: req.user?.role || 'admin',
           transactionId: bonusJgResult.data?.transfer_id,
+          // #224: origen del bono automático (como ya hacía hgcash): 'story_bonus', 'daily_roulette', 'install_bonus', 'promo_bonus'…
+          metadata: _auto.claimed ? { source: _auto.source, autoBonus: { pct: _auto.pct, rule: _auto.rule } } : undefined,
           timestamp: new Date()
         });
       }
@@ -11354,6 +11356,7 @@ async function resolveAutoBonus(user, amount, usedBy) {
   let c = await claimInstallBonusPercent(user, usedBy);
   if (!c.claimed) c = await claimWelcomeCodePercent(user, usedBy);
   if (!c.claimed) c = await claimDailyRoulettePercent(user, usedBy);
+  if (!c.claimed) c = await claimStoryBonusPercent(user, usedBy, amount); // #224 bono reclamado desde una HISTORIA
   if (!c.claimed) c = await claimPromoBonusPercent(user, usedBy, amount);
   if (!c.claimed) return none;
   const cfg = await getBonusCapConfig();
@@ -15895,6 +15898,464 @@ app.post('/api/admin/datos-ia/calibration', async (req, res) => {
     await Config.set('projectionCalibration', { factor, updatedAt: new Date().toISOString(), by: req.user.username, basedOn: b.factor ? 'manual' : 'promedio de revisiones' }, req.user.username);
     res.json({ success: true, factor });
   } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+
+// ============================================================
+// #224 HISTORIAS (réplica #361/#742/#827/#909/#931/#971 de PICA ROJA) — manuales + automáticas
+// ============================================================
+// Lo que publica el admin (imagen/video/texto, botón, bono "+X% en tu próxima carga" con push a todos) y lo que publica el
+// motor solo (5 historias de SERVICIO por día a las 00:05–00:09 que rotan sin repetir, partidos del día con llave aparte,
+// el slot de la semana los lunes y el bono semanal los miércoles 19:00). El cliente las ve en el botón "Historias" del
+// header y en la pantalla de ingreso (anillo). Interruptor `featureFlags.stories` (COMANDOS → Funciones): apagado ⇒
+// 404 FEATURE_OFF en todo, `/api/stories/active` responde { items:[], off:true } (la app esconde el botón) y el motor no
+// publica nada. `Story.autoKey` único ⇒ multi-instancia sin duplicar. Marca: CARGAS 1GIROX (acá no hay misiones ni bono
+// fijo de 1ª carga ⇒ esos temas no salen). No se trajeron las migraciones #845/#911/#931 (borraban historias) ni Render.
+// El bono "+X%" reclamado desde una historia entra por el pipeline de bonos automáticos de ESTA página
+// (`resolveAutoBonus` → `claimStoryBonusPercent`, después de la ruleta y antes del lote), con el mismo tope y rollover global.
+const Story = require('./src/models/Story');
+const storyAuto = require('./src/services/storyAutopilot');
+const storyImage = require('./src/services/storyImage');
+const _storiesGate = async (req, res, next) => {
+  try { if (!(await featureFlags.isOn('stories'))) return res.status(404).json({ error: 'Historias está apagado (COMANDOS → Funciones).', code: 'FEATURE_OFF' }); next(); }
+  catch (_) { res.status(500).json({ error: 'Error del servidor' }); }
+};
+const STORIES_CFG_KEY = 'storiesConfig';
+async function getStoriesConfig() {
+  let c = null; try { c = await getConfig(STORIES_CFG_KEY, null); } catch (_) {}
+  const h = Number(c && c.defaultHours), d = Number(c && c.defaultDurationSec);
+  return { defaultHours: Number.isFinite(h) && h >= 1 && h <= 720 ? Math.round(h) : 24, defaultDurationSec: Number.isFinite(d) && d >= 2 && d <= 60 ? Math.round(d) : 6 };
+}
+function _storyPublic(s) {
+  let mediaUrl = s.mediaUrl || '';
+  if (!mediaUrl && s.mediaMime) mediaUrl = '/api/stories/' + encodeURIComponent(s.id) + '/media?v=' + new Date(s.publishedAt || s.createdAt).getTime();
+  if (/^\/images\//.test(mediaUrl) && mediaUrl.indexOf('?') === -1) mediaUrl += '?v=' + new Date(s.publishedAt || s.createdAt).getTime();
+  return {
+    id: s.id, title: s.title || '', text: s.text || '', mediaType: s.mediaType || 'none', mediaUrl, bgColor: s.bgColor || '#06070d',
+    linkUrl: s.linkUrl || '', linkLabel: s.linkLabel || '', durationSec: s.durationSec || 6, hours: s.hours,
+    publishedAt: s.publishedAt, expiresAt: s.expiresAt, isActive: !!s.isActive, views: s.views || 0, clicks: s.clicks || 0, reactions: s.reactions || null, createdBy: s.createdBy || null,
+    repeatWeekly: !!s.repeatWeekly, autoKind: s.autoKind || null,
+    bonusPct: Number(s.bonusPct) || 0, bonusHours: Number(s.bonusHours) || 1, bonusUntil: s.bonusUntil || null, notifyAll: !!s.notifyAll, bonusClaims: Number(s.bonusClaims) || 0,
+    bonusUses: Number(s.bonusUses) || 0, bonusUsedTotal: Number(s.bonusUsedTotal) || 0, bonusDepositTotal: Number(s.bonusDepositTotal) || 0,
+    bonusActive: !!(Number(s.bonusPct) > 0 && s.bonusUntil && new Date(s.bonusUntil).getTime() > Date.now() && s.isActive && new Date(s.expiresAt).getTime() > Date.now()),
+    hoursLeft: Math.max(0, Math.round((new Date(s.expiresAt).getTime() - Date.now()) / 36e5 * 10) / 10),
+    expired: new Date(s.expiresAt).getTime() <= Date.now()
+  };
+}
+// Historias PÚBLICAS para la pantalla de ingreso (sin sesión). Mismo contenido que /active.
+app.get('/api/stories/public', _storiesGate, async (req, res) => {
+  try {
+    const items = await Story.find({ isActive: true, expiresAt: { $gt: new Date() }, audienceUserId: null }).sort({ publishedAt: 1 }).limit(12).lean();
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({ items: items.map(_storyPublic) });
+  } catch (e) { logger.warn(`[stories] public: ${e.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/stories/active', authMiddleware, async (req, res) => {
+  try {
+    if (!(await featureFlags.isOn('stories'))) return res.json({ items: [], off: true });
+    const items = await Story.find({ isActive: true, expiresAt: { $gt: new Date() }, $or: [{ audienceUserId: null }, { audienceUserId: String(req.user.userId) }] }).sort({ publishedAt: 1 }).limit(30).lean();
+    res.json({ items: items.map(_storyPublic) });
+  } catch (e) { logger.warn(`[stories] active: ${e.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/stories/:id/view', authMiddleware, _storiesGate, async (req, res) => {
+  try { await Story.updateOne({ id: String(req.params.id) }, { $inc: { views: 1 } }); res.json({ ok: true }); } catch (_) { res.json({ ok: false }); }
+});
+// Interacción: toque en el botón (uno por cliente) y reacción (una por cliente, atómica por reactedBy).
+const STORY_REACTIONS = ['fire', 'heart', 'laugh', 'like'];
+app.post('/api/stories/:id/click', authMiddleware, _storiesGate, async (req, res) => {
+  try { await Story.updateOne({ id: String(req.params.id), clickedBy: { $ne: String(req.user.userId) } }, { $inc: { clicks: 1 }, $addToSet: { clickedBy: String(req.user.userId) } }); res.json({ ok: true }); } catch (_) { res.json({ ok: false }); }
+});
+app.post('/api/stories/:id/react', authMiddleware, _storiesGate, async (req, res) => {
+  try {
+    const r = String((req.body || {}).reaction || ''); if (!STORY_REACTIONS.includes(r)) return res.status(400).json({ ok: false, error: 'Reacción inválida' });
+    const id = String(req.params.id), uid = String(req.user.userId);
+    await Story.updateOne({ id, reactedBy: { $ne: uid } }, { $inc: { ['reactions.' + r]: 1 }, $addToSet: { reactedBy: uid } });
+    const s = await Story.findOne({ id }).select('reactions').lean();
+    res.json({ ok: true, reactions: (s && s.reactions) || {} });
+  } catch (_) { res.json({ ok: false }); }
+});
+// Foto de una historia automática (SVG 1080×1920 armado por storyImage). Sin scripts ni recursos externos.
+app.get('/api/stories/:id/auto.svg', _storiesGate, async (req, res) => {
+  try {
+    const s = await Story.findOne({ id: String(req.params.id) }).select('+autoImg').lean();
+    if (!s || !s.autoImg) return res.status(404).end();
+    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.set('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(storyImage.renderSvg(s.autoImg));
+  } catch (e) { res.status(500).end(); }
+});
+app.get('/api/stories/:id/media', _storiesGate, async (req, res) => {
+  try {
+    const s = await Story.findOne({ id: String(req.params.id) }).select('+mediaData mediaMime').lean();
+    if (!s || !s.mediaData) return res.status(404).end();
+    const m = /^data:([\w/+.-]+);base64,(.+)$/s.exec(s.mediaData);
+    if (!m) return res.status(404).end();
+    res.set('Content-Type', s.mediaMime || m[1]);
+    if (/svg/i.test(s.mediaMime || m[1])) res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+    res.set('Cache-Control', 'public, max-age=86400, immutable');
+    res.send(Buffer.from(m[2], 'base64'));
+  } catch (e) { res.status(500).end(); }
+});
+function _storiesAdminOnly(req, res) {
+  if (req.user.role !== 'admin') { res.status(403).json({ error: 'Solo el admin general puede manejar las historias.' }); return false; }
+  return true;
+}
+// El cliente toca "Reclamar ahora" en la historia → bono pendiente para su PRÓXIMA carga (vence con el bono de la historia).
+// Lo aplica el server en la carga (manual y hgcash) vía resolveAutoBonus → claimStoryBonusPercent, como la ruleta diaria.
+app.post('/api/stories/:id/claim-bonus', authMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== 'user') return res.status(403).json({ error: 'Solo clientes' });
+    const s = await Story.findOne({ id: String(req.params.id) }).lean();
+    if (s && s.audienceUserId && s.audienceUserId !== String(req.user.userId)) return res.status(404).json({ error: 'Historia no encontrada' });
+    const pub = s ? _storyPublic(s) : null;
+    if (!pub || !pub.bonusActive) return res.status(400).json({ error: 'Este bono ya no está vigente.', code: 'NOT_ACTIVE' });
+    const user = await User.findOne({ id: req.user.userId }).select('id username storyBonus fraudFlags isBlocked').lean();
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+    if (user.isBlocked || (user.fraudFlags || []).length) return res.status(403).json({ error: 'Tu cuenta no puede usar este bono. Escribinos por el chat.' });
+    const cur = user.storyBonus || {};
+    if (cur.storyId === s.id && Number(cur.pct) > 0 && cur.expiresAt && new Date(cur.expiresAt).getTime() > Date.now()) return res.json({ success: true, already: true, pct: cur.pct, expiresAt: cur.expiresAt });
+    const label = `historia: +${pub.bonusPct}% en tu próxima carga`;
+    await User.updateOne({ id: user.id }, { $set: { storyBonus: { storyId: s.id, pct: pub.bonusPct, label, claimedAt: new Date(), expiresAt: s.bonusUntil } } });
+    await Story.updateOne({ id: s.id }, { $inc: { bonusClaims: 1 } }).catch(() => {});
+    try { await _emitAdminOnlyChatNote(user.id, user.username, `🎁 Reclamó desde la historia "${s.title || String(s.text || '').slice(0, 30)}": +${pub.bonusPct}% en su próxima carga (vence ${new Date(s.bonusUntil).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}). Lo aplica el server solo al cargar.`); } catch (_) {}
+    res.json({ success: true, pct: pub.bonusPct, expiresAt: s.bonusUntil });
+  } catch (e) { logger.warn(`[stories] claim-bonus: ${e.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/stories/bonus', authMiddleware, async (req, res) => {
+  try {
+    const u = await User.findOne({ id: req.user.userId }).select('storyBonus').lean();
+    const sb = (u && u.storyBonus) || {};
+    const active = Number(sb.pct) > 0 && sb.expiresAt && new Date(sb.expiresAt).getTime() > Date.now();
+    res.json({ pct: active ? Number(sb.pct) : 0, expiresAt: active ? sb.expiresAt : null, storyId: active ? sb.storyId : null });
+  } catch (_) { res.json({ pct: 0, expiresAt: null, storyId: null }); }
+});
+// Reserva el bono de historia pendiente para una carga (lo llama resolveAutoBonus, misma mecánica que claimDailyRoulettePercent):
+// pone storyBonus.pct en 0 de forma atómica; `settle(bonusArs)` anota el uso en la historia + nota interna; `revert()` lo devuelve
+// si la carga o el bono adjunto fallan. El Transaction 'bonus' lo escribe el flujo de carga con metadata.source = 'story_bonus'.
+async function claimStoryBonusPercent(user, usedBy, amount) {
+  try {
+    const now = new Date();
+    const prev = await User.findOneAndUpdate(
+      { id: user.id, 'storyBonus.pct': { $gt: 0 }, 'storyBonus.expiresAt': { $gt: now } },
+      { $set: { 'storyBonus.pct': 0 } }, { new: false }
+    ).select('id username storyBonus').lean();
+    const sb = prev && prev.storyBonus; if (!sb || !(sb.pct > 0)) return { pct: 0, claimed: false };
+    const pct = Number(sb.pct) || 0; const a = Number(amount) || 0;
+    let settled = null; // lo anotado en la historia (para deshacerlo si la carga o el bono adjunto fallan)
+    return { pct, claimed: true, source: 'story_bonus', label: sb.label || `historia: +${pct}% en tu próxima carga`,
+      // Resumen por historia (usos, bono salido, cargas). La nota interna "bono automático aplicado" la deja el flujo de carga.
+      settle: async (bonusArs) => {
+        settled = { b: Math.round(Number(bonusArs) || 0) };
+        try { await Story.updateOne({ id: sb.storyId }, { $inc: { bonusUses: 1, bonusUsedTotal: settled.b, bonusDepositTotal: Math.round(a) } }); } catch (_) {}
+        logger.info(`[stories] ${prev.username} — +${pct}% de historia consumido por ${usedBy || 'auto'} ($${settled.b})`);
+      },
+      revert: async () => {
+        try { await User.updateOne({ id: user.id, 'storyBonus.pct': 0, 'storyBonus.storyId': sb.storyId }, { $set: { 'storyBonus.pct': pct } }); } catch (_) {}
+        if (settled) { try { await Story.updateOne({ id: sb.storyId }, { $inc: { bonusUses: -1, bonusUsedTotal: -settled.b, bonusDepositTotal: -Math.round(a) } }); } catch (_) {} settled = null; }
+      } };
+  } catch (e) { logger.warn(`[auto-bonus] claim historia falló: ${e.message}`); return { pct: 0, claimed: false }; }
+}
+app.get('/api/admin/stories', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const [items, cfg] = await Promise.all([Story.find({ audienceUserId: null }).sort({ publishedAt: -1 }).limit(200).lean(), getStoriesConfig()]);
+    res.json({ items: items.map(_storyPublic), config: cfg });
+  } catch (e) { logger.warn(`[stories] admin list: ${e.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/stories/config', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const h = Number(req.body && req.body.defaultHours), d = Number(req.body && req.body.defaultDurationSec);
+    if (!Number.isFinite(h) || h < 1 || h > 720) return res.status(400).json({ error: 'Horas por defecto: entre 1 y 720.' });
+    if (!Number.isFinite(d) || d < 2 || d > 60) return res.status(400).json({ error: 'Duración por historia: entre 2 y 60 segundos.' });
+    await Config.set(STORIES_CFG_KEY, { defaultHours: Math.round(h), defaultDurationSec: Math.round(d) }, req.user.username);
+    res.json({ success: true, config: await getStoriesConfig() });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+const STORY_APP_LINK_RE = /^(https?:\/\/|\/|app:(referidos|cargar|retirar|ruleta|reembolso|verificar|soporte|instalar|vip|juegos|deportes|casino)$|app:play:\/)/i;
+app.post('/api/admin/stories', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const b = req.body || {};
+    const cfg = await getStoriesConfig();
+    const hours = Number(b.hours) >= 1 && Number(b.hours) <= 720 ? Math.round(Number(b.hours)) : cfg.defaultHours;
+    const durationSec = Number(b.durationSec) >= 2 && Number(b.durationSec) <= 60 ? Math.round(Number(b.durationSec)) : cfg.defaultDurationSec;
+    const text = String(b.text || '').trim().slice(0, 300);
+    const title = String(b.title || '').trim().slice(0, 60);
+    let mediaType = 'none', mediaUrl = '', mediaData = '', mediaMime = '';
+    const dataUrl = typeof b.mediaDataUrl === 'string' ? b.mediaDataUrl : '';
+    // Historia de BONO en 1 toque: `autoImage:true` genera acá la imagen (SVG, sólo números) con el % y la vigencia.
+    const _autoPct = Math.max(1, Math.min(200, Math.round(Number(b.bonusPct) || 0)));
+    if (b.autoImage === true && _autoPct > 0) {
+      const hrs = Math.max(1, Math.min(72, Math.round(Number(b.bonusHours) || 1)));
+      const F = 'font-family="Arial, Helvetica, sans-serif"';
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">' +
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a0033"/><stop offset="1" stop-color="#2d0052"/></linearGradient></defs>' +
+        '<rect width="1080" height="1920" fill="url(#g)"/>' +
+        `<text x="540" y="150" text-anchor="middle" ${F} font-weight="700" font-size="44" fill="#d4af37" letter-spacing="6">CARGAS 1GIROX · OFICIAL</text>` +
+        `<text x="540" y="250" text-anchor="middle" ${F} font-weight="900" font-size="76" fill="#fff">BONO ACTIVO</text>` +
+        '<rect x="70" y="330" width="940" height="1170" rx="60" fill="#fff"/>' +
+        `<text x="540" y="700" text-anchor="middle" ${F} font-weight="900" font-size="300" fill="#b8860b">+${_autoPct}%</text>` +
+        `<text x="540" y="840" text-anchor="middle" ${F} font-weight="900" font-size="80" fill="#111">EXTRA EN TU</text>` +
+        `<text x="540" y="940" text-anchor="middle" ${F} font-weight="900" font-size="80" fill="#111">PRÓXIMA CARGA</text>` +
+        '<rect x="170" y="1000" width="740" height="110" rx="55" fill="#0a7a3e"/>' +
+        `<text x="540" y="1073" text-anchor="middle" ${F} font-weight="700" font-size="48" fill="#fff">Tocá RECLAMAR AHORA</text>` +
+        `<text x="540" y="1190" text-anchor="middle" ${F} font-size="40" fill="#5a5a5a">y cargá: el ${_autoPct}% se suma solo</text>` +
+        `<text x="540" y="1260" text-anchor="middle" ${F} font-size="36" fill="#787878">Vale por ${hrs} hora${hrs === 1 ? '' : 's'} · con el tope y rollover</text>` +
+        `<text x="540" y="1640" text-anchor="middle" ${F} font-weight="700" font-size="52" fill="#fff">Cuantas más cargas, más extra.</text>` +
+        `<text x="540" y="1740" text-anchor="middle" ${F} font-size="40" fill="#d4af37">vipcargas.com</text></svg>`;
+      mediaType = 'image'; mediaMime = 'image/svg+xml'; mediaData = 'data:image/svg+xml;base64,' + Buffer.from(svg, 'utf8').toString('base64');
+    }
+    if (dataUrl && mediaType === 'none') {
+      const m = /^data:(image\/(png|jpeg|jpg|webp|gif)|video\/mp4);base64,/.exec(dataUrl);
+      if (!m) return res.status(400).json({ error: 'Archivo no soportado: imagen (png/jpg/webp/gif) o video mp4.' });
+      const bytes = Math.floor((dataUrl.length - dataUrl.indexOf(',') - 1) * 3 / 4);
+      const isVideo = m[1] === 'video/mp4';
+      if (bytes > (isVideo ? 8 : 4) * 1024 * 1024) return res.status(400).json({ error: isVideo ? 'El video pesa más de 8 MB.' : 'La imagen pesa más de 4 MB.' });
+      mediaType = isVideo ? 'video' : 'image'; mediaData = dataUrl; mediaMime = m[1];
+    } else if (mediaType === 'none' && typeof b.mediaUrl === 'string' && b.mediaUrl.trim()) {
+      const u = b.mediaUrl.trim().slice(0, 500);
+      if (!/^(\/[\w\-./]+|https:\/\/[^\s"'<>]+)$/i.test(u)) return res.status(400).json({ error: 'URL de la imagen inválida (ruta /images/… o https).' });
+      mediaUrl = u; mediaType = /\.mp4(\?|$)/i.test(u) ? 'video' : 'image';
+    }
+    if (mediaType === 'none' && !text) return res.status(400).json({ error: 'Poné un texto o una imagen/video.' });
+    const linkUrl = String(b.linkUrl || '').trim().slice(0, 500);
+    if (linkUrl && !STORY_APP_LINK_RE.test(linkUrl)) return res.status(400).json({ error: 'El link tiene que empezar con https:// o /, o ser app:referidos / app:cargar / app:retirar / app:ruleta / app:reembolso / app:verificar / app:soporte / app:instalar / app:vip / app:casino.' });
+    const bgColor = /^#[0-9a-f]{3,8}$/i.test(String(b.bgColor || '')) ? String(b.bgColor) : '#06070d';
+    const now = new Date();
+    const bonusPct = Math.max(0, Math.min(200, Math.round(Number(b.bonusPct) || 0)));
+    const bonusHours = Math.max(1, Math.min(72, Math.round(Number(b.bonusHours) || 1)));
+    const notifyAll = b.notifyAll === true;
+    const doc = await Story.create({
+      id: uuidv4(), title, text, mediaType, mediaUrl, mediaData, mediaMime, bgColor,
+      linkUrl, linkLabel: String(b.linkLabel || '').trim().slice(0, 40), durationSec, hours,
+      publishedAt: now, expiresAt: new Date(now.getTime() + hours * 36e5), isActive: true, createdBy: req.user.username,
+      repeatWeekly: b.repeatWeekly === true,
+      bonusPct, bonusHours, bonusUntil: bonusPct > 0 ? new Date(now.getTime() + bonusHours * 36e5) : null, notifyAll
+    });
+    logger.info(`[stories] publicada por ${req.user.username}: "${title || text.slice(0, 40)}" (${mediaType}, ${hours} h${bonusPct ? `, bono ${bonusPct}% por ${bonusHours} h` : ''}${notifyAll ? ', push a todos' : ''})`);
+    if (notifyAll) {
+      const pTitle = String(b.pushTitle || '').trim().slice(0, 80) || (bonusPct > 0 ? `🎁 +${bonusPct}% extra en tu próxima carga` : (title || '📣 Novedad en CARGAS 1GIROX'));
+      const pBody = String(b.pushBody || '').trim().slice(0, 160) || (bonusPct > 0 ? `Tocá la historia y reclamalo: vale por ${bonusHours} h.` : (text.slice(0, 120) || 'Mirá la historia nueva en la app.'));
+      setTimeout(() => {
+        Promise.resolve(sendNotificationToAllUsers(User, pTitle, pBody, { url: '/?story=' + doc.id, storyId: doc.id, tag: 'story-' + doc.id, type: 'story' }))
+          .then((r) => { Story.updateOne({ id: doc.id }, { $set: { pushStats: r || null } }).catch(() => {}); logger.info(`[stories] push a todos: ${JSON.stringify(r || {}).slice(0, 160)}`); })
+          .catch((e) => logger.warn(`[stories] push falló: ${e.message}`));
+      }, 50);
+    }
+    res.json({ success: true, story: _storyPublic(doc.toObject ? doc.toObject() : doc) });
+  } catch (e) { logger.warn(`[stories] publicar: ${e.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.patch('/api/admin/stories/:id', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const b = req.body || {}; const set = {};
+    if (b.isActive != null) set.isActive = !!b.isActive;
+    if (b.text != null) set.text = String(b.text).trim().slice(0, 300);
+    if (b.title != null) set.title = String(b.title).trim().slice(0, 60);
+    if (b.linkUrl != null) { const lu = String(b.linkUrl).trim().slice(0, 500); if (lu && !STORY_APP_LINK_RE.test(lu)) return res.status(400).json({ error: 'Link inválido.' }); set.linkUrl = lu; }
+    if (b.linkLabel != null) set.linkLabel = String(b.linkLabel).trim().slice(0, 40);
+    if (b.hours != null) {
+      const h = Number(b.hours); if (!Number.isFinite(h) || h < 1 || h > 720) return res.status(400).json({ error: 'Horas: entre 1 y 720.' });
+      set.hours = Math.round(h); set.expiresAt = new Date(Date.now() + Math.round(h) * 36e5); set.isActive = true; // "Extender": desde AHORA
+    }
+    const doc = await Story.findOneAndUpdate({ id: String(req.params.id) }, { $set: set }, { new: true }).lean();
+    if (!doc) return res.status(404).json({ error: 'Historia no encontrada' });
+    res.json({ success: true, story: _storyPublic(doc) });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.delete('/api/admin/stories/:id', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try { if (!_storiesAdminOnly(req, res)) return; const r = await Story.deleteOne({ id: String(req.params.id) }); res.json({ success: true, deleted: r.deletedCount || 0 }); }
+  catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+// ---- Motor de HISTORIAS AUTOMÁTICAS ----
+const STORY_AUTO_BONUS = { pct: 100, hours: 3 }; // bono semanal (miércoles 19:00, push a todos)
+async function _storyAutoCtx(dayKey) {
+  const dow = new Date(dayKey + 'T12:00:00Z').getUTCDay();
+  let favorite = null;
+  if (dow === 1) { // slot de la semana: se calcula UNA vez el lunes y se guarda
+    const snap = await getConfig('storyGamesSnapshot', null);
+    if (snap && snap.dayKey === dayKey && snap.favorite) favorite = snap.favorite;
+    else {
+      try { favorite = await storyAuto.favoriteSlot(snap && snap.counts); } catch (_) { favorite = null; }
+      if (favorite) { const counts = favorite.snapshot; delete favorite.snapshot; await Config.set('storyGamesSnapshot', { dayKey, counts, favorite }, 'historias-auto'); }
+    }
+  }
+  let rolloverX = 3; try { const r = await getGlobalBonusRollover(); if (r && r.enabled && r.effective > 0) rolloverX = r.effective; } catch (_) {}
+  return { firstPct: 0 /* acá no hay bono fijo de 1ª carga */, dow, favorite, weeklyBonus: STORY_AUTO_BONUS, bonusDays: [3], rolloverX };
+}
+// Los PARTIDOS del día salen sólo con la llave Config['storyAutoMatches'] (panel → Cronograma historias → ⚽ Partidos). Apagada (default) = sólo servicio.
+async function _storyAutoMatchesOn() { const v = await getConfig('storyAutoMatches', false); return v === true || v === 'true' || v === 1 || v === '1'; }
+const _storyDiag = { lastTickAt: null, lastError: null, lastPublished: [], skipped: [] };
+async function _storyDiagSave() { try { await Config.set('storyAutoDiag', Object.assign({}, _storyDiag, { host: require('os').hostname() }), 'historias-auto'); } catch (_) {} }
+async function _storyAutoPlan(dayKey, opts) {
+  let matches = [];
+  if (!(opts && opts.noMatches) && await _storyAutoMatchesOn()) { try { matches = await storyAuto.topMatches(dayKey); } catch (e) { _storyDiag.lastError = 'partidos (ESPN): ' + e.message; } }
+  return storyAuto.planDay(dayKey, matches, await _storyAutoCtx(dayKey));
+}
+const STORY_IMG_VER = '210'; // subirlo cuando cambia el dibujo ⇒ los teléfonos piden la foto nueva
+const _storyImgUrl = (id) => `/api/stories/${id}/auto.svg?v=${STORY_IMG_VER}`;
+async function _storyAutoImgSpec(it) {
+  if (!it || !it.img) return null;
+  const spec = JSON.parse(JSON.stringify(it.img));
+  if (spec.match && spec.matchLogos) {
+    const [h, a] = await Promise.all([storyImage.fetchImageData(spec.matchLogos.home), storyImage.fetchImageData(spec.matchLogos.away)]);
+    spec.match.homeImg = h || ''; spec.match.awayImg = a || '';
+  }
+  delete spec.matchLogos;
+  if (Array.isArray(spec.photos)) {
+    const out = [];
+    for (const ph of spec.photos.slice(0, 3)) { const d = /^\/images\//.test(String(ph || '')) ? storyImage.localImageData(ph) : await storyImage.fetchImageData(ph); if (d) out.push(d); }
+    spec.photos = out; if (!out.length) { delete spec.photos; spec.icon = spec.icon || 'carga'; }
+  }
+  return spec;
+}
+// Historias automáticas VIGENTES armadas con un diseño anterior ⇒ se rearma la foto desde el plan del día (mismo título).
+async function _storyAutoBackfillImages(today, plan) {
+  try {
+    const stale = await Story.find({ autoKey: new RegExp('^sa-' + today + '-'), isActive: true, mediaType: 'image', autoImgVer: { $ne: STORY_IMG_VER } }).select('id title').lean();
+    for (const st of stale) {
+      const it = (plan || []).find((p) => String(p.title || '').slice(0, 60) === st.title);
+      const spec = it ? await _storyAutoImgSpec(it) : null;
+      await Story.updateOne({ id: st.id }, { $set: spec ? { autoImg: spec, autoImgVer: STORY_IMG_VER, mediaUrl: _storyImgUrl(st.id) } : { autoImgVer: STORY_IMG_VER } });
+    }
+  } catch (e) { logger.warn('[historias-auto] rearmar fotos: ' + e.message); }
+}
+// Apaga TODAS las historias vigentes (menos las personales), borra las automáticas de hoy y ayer ⇒ la pasada publica las de hoy YA.
+async function _storyWipeForRepublish(who) {
+  const today = _schedArtKey(new Date()); const yesterday = _schedArtKey(new Date(new Date(today + 'T12:00:00-03:00').getTime() - 86400000));
+  const off = await Story.updateMany({ isActive: true, audienceUserId: null }, { $set: { isActive: false } });
+  const del = await Story.deleteMany({ autoKey: { $regex: '^sa-(' + today + '|' + yesterday + ')-' } });
+  const n1 = off.modifiedCount || off.nModified || 0, n2 = del.deletedCount || 0;
+  logger.info(`[historias-auto] ${who}: ${n1} historias apagadas, ${n2} automáticas borradas ⇒ se publican las de hoy ahora`);
+  return { off: n1, del: n2 };
+}
+// Al publicar las del día nuevo se APAGAN las automáticas de días anteriores (la gente ve sólo las de hoy).
+async function _storyAutoRetirePrevious(today) {
+  try { const r = await Story.updateMany({ isActive: true, autoKey: { $regex: '^sa-' }, $nor: [{ autoKey: { $regex: '^sa-' + today + '-' } }] }, { $set: { isActive: false } }); const n = r.modifiedCount || r.nModified || 0; if (n) logger.info('[historias-auto] ' + n + ' historias de días anteriores apagadas'); } catch (e) { logger.warn('[historias-auto] apagar anteriores: ' + e.message); }
+}
+let _storyAutoRunning = false;
+async function _storyAutoTick(opts) {
+  if (_storyAutoRunning) return;
+  if (!(await featureFlags.isOn('stories'))) return; // #222: apagado desde COMANDOS
+  _storyAutoRunning = true;
+  const force = !!(opts && opts.force);
+  try {
+    const now = new Date(); const today = _schedArtKey(now);
+    _storyDiag.lastTickAt = now.toISOString(); _storyDiag.lastError = null; _storyDiag.skipped = [];
+    const plan = await _storyAutoPlan(today);
+    await _storyAutoBackfillImages(today, plan);
+    if (plan.some((it) => force || new Date(`${today}T${it.time}:00-03:00`) <= now)) await _storyAutoRetirePrevious(today);
+    for (const it of plan) try { // una historia que falle (foto, red) no frena a las demás del día
+      const early = new Date(`${today}T${it.time}:00-03:00`) > now;
+      if (early && !force) continue;
+      const at = early ? now : new Date(`${today}T${it.time}:00-03:00`);
+      const autoKey = `sa-${today}-${it.slot}`;
+      if (await Story.exists({ autoKey })) continue;
+      if (it.kind === 'deporte' && await Story.exists({ autoKey: new RegExp('^sa-' + today + '-'), title: String(it.title || '').slice(0, 60) })) continue;
+      const bonusPct = Number(it.bonusPct) || 0, bonusHours = Number(it.bonusHours) || 1;
+      const newId = uuidv4();
+      let autoImg = null;
+      try { autoImg = await _storyAutoImgSpec(it); } catch (e) { _storyDiag.skipped.push({ slot: String(it.slot), title: it.title, why: 'foto: ' + e.message }); autoImg = null; }
+      let doc;
+      try {
+        doc = await Story.create({
+          id: newId, title: String(it.title || '').slice(0, 60), text: String(it.text || '').slice(0, 300),
+          mediaType: autoImg ? 'image' : 'none', mediaUrl: autoImg ? _storyImgUrl(newId) : '', autoImg: autoImg || null, autoImgVer: autoImg ? STORY_IMG_VER : null, bgColor: autoImg ? '#ffffff' : (it.bg || '#06070d'),
+          linkUrl: it.link || '', linkLabel: String(it.label || '').slice(0, 40), durationSec: 7, hours: 24,
+          publishedAt: at, expiresAt: new Date(at.getTime() + 24 * 3600 * 1000), isActive: true,
+          bonusPct, bonusHours, bonusUntil: bonusPct > 0 ? new Date(at.getTime() + bonusHours * 3600 * 1000) : null, notifyAll: !!it.notifyAll,
+          autoKey, autoKind: it.kind, createdBy: 'automático'
+        });
+      } catch (e) { if (e && e.code === 11000) continue; throw e; }
+      logger.info(`[historias-auto] ${today} ${it.time} ${it.kind}: ${it.title}`);
+      _storyDiag.lastPublished = [{ at: now.toISOString(), day: today, time: it.time, kind: it.kind, title: it.title }].concat(_storyDiag.lastPublished || []).slice(0, 12);
+      // Push a todos sólo si se publica a tiempo (no al recuperar un horario viejo tras un reinicio ni con force).
+      if (it.notifyAll && !early && now - at < 30 * 60 * 1000) {
+        const pTitle = bonusPct > 0 ? `🎁 +${bonusPct}% extra en tu próxima carga` : String(it.title || '📣 Novedad en CARGAS 1GIROX');
+        const pBody = bonusPct > 0 ? `Sólo por ${bonusHours} h: abrí la historia y tocá "Reclamar ahora".` : String(it.text || '').slice(0, 120);
+        setTimeout(() => {
+          Promise.resolve(sendNotificationToAllUsers(User, pTitle, pBody, { url: '/?story=' + doc.id, storyId: doc.id, tag: 'story-' + doc.id, type: 'story' }))
+            .then((r) => { Story.updateOne({ id: doc.id }, { $set: { pushStats: r || null } }).catch(() => {}); })
+            .catch((e) => logger.warn(`[historias-auto] push falló: ${e.message}`));
+        }, 50);
+      }
+    } catch (e) { _storyDiag.skipped.push({ slot: String(it.slot), title: it.title, why: e.message }); logger.warn(`[historias-auto] ${today} ${it.time} "${it.title}": ${e.message}`); }
+  } catch (e) { _storyDiag.lastError = e.message; logger.warn('[historias-auto] ' + e.message); } finally { _storyAutoRunning = false; await _storyDiagSave(); }
+}
+setTimeout(() => { _storyAutoTick().catch(() => {}); setInterval(() => { _storyAutoTick().catch(() => {}); }, 5 * 60 * 1000); }, 2 * 60 * 1000);
+// Historias manuales programadas SEMANALMENTE: a los 7 días de publicada (y activa) se vuelve a publicar sola con las mismas horas.
+async function _storiesRepeatTick() {
+  try {
+    if (!(await featureFlags.isOn('stories'))) return;
+    const lim = new Date(Date.now() - 7 * 86400000);
+    const due = await Story.find({ repeatWeekly: true, isActive: true, publishedAt: { $lte: lim } }).select('id hours title').lean();
+    for (const st of due) {
+      const now = new Date();
+      await Story.updateOne({ id: st.id }, { $set: { publishedAt: now, expiresAt: new Date(now.getTime() + (Number(st.hours) || 24) * 36e5) } });
+      logger.info(`[historias] republicada (semanal): ${st.title || st.id}`);
+    }
+  } catch (e) { logger.warn(`[historias] repetición semanal: ${e.message}`); }
+}
+setInterval(() => { _storiesRepeatTick().catch(() => {}); }, 60 * 60 * 1000);
+// Panel → Cronograma historias: hoy y los próximos 6 días, diagnóstico y respuesta a las historias con bono.
+app.get('/api/admin/stories-autopilot', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const now = new Date(); const today = _schedArtKey(now);
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const dk = _schedArtKey(new Date(new Date(today + 'T12:00:00-03:00').getTime() + i * 86400000));
+      const plan = await _storyAutoPlan(dk, { noMatches: i >= 2 });
+      const pub = await Story.find({ autoKey: { $in: plan.map((p) => `sa-${dk}-${p.slot}`) } }).select('autoKey id views clicks bonusClaims bonusUses bonusUsedTotal bonusDepositTotal pushStats isActive autoKind').lean();
+      const pubBy = new Map(pub.map((p) => [p.autoKey, p]));
+      days.push({ day: dk, matchesKnown: i < 2, items: plan.map((p) => { const d = pubBy.get(`sa-${dk}-${p.slot}`); return { time: p.time, kind: p.kind, title: p.title, text: p.text, label: p.label, bonusPct: p.bonusPct || 0, bonusHours: p.bonusHours || 0,
+        slot: p.slot, removed: !!(d && (d.isActive === false || d.autoKind === 'borrada')), published: !!(d && d.isActive !== false && d.autoKind !== 'borrada'), views: d ? d.views || 0 : null, clicks: d ? d.clicks || 0 : null, claims: d ? d.bonusClaims || 0 : null, uses: d ? d.bonusUses || 0 : null, bonusTotal: d ? d.bonusUsedTotal || 0 : null, depositTotal: d ? d.bonusDepositTotal || 0 : null }; }) });
+    }
+    const bonusStories = await Story.find({ autoKind: 'bono' }).sort({ publishedAt: -1 }).limit(8).select('title publishedAt bonusPct bonusHours views bonusClaims bonusUses bonusUsedTotal bonusDepositTotal pushStats').lean();
+    let diag = null; try { diag = await getConfig('storyAutoDiag', null); } catch (_) {}
+    const publishedToday = await Story.countDocuments({ autoKey: new RegExp('^sa-' + today + '-'), isActive: true, autoKind: { $ne: 'borrada' } });
+    res.json({ success: true, today, days, bonusStories, matchesOn: await _storyAutoMatchesOn(), diag, publishedToday, sources: { matches: 'ESPN (scoreboard público)', slots: '1girox (catálogo público, más jugados)' } });
+  } catch (e) { logger.warn('[historias-auto] panel: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+// Borrar una historia automática: publicada ⇒ sale de la app al instante (queda isActive:false con su autoKey); programada ⇒ ese horario queda 'borrada'.
+app.post('/api/admin/stories-autopilot/remove', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const day = String((req.body || {}).day || ''), rawSlot = String((req.body || {}).slot == null ? '' : (req.body || {}).slot);
+    const slot = /^m[0-2]$/.test(rawSlot) ? rawSlot : parseInt(rawSlot, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !(typeof slot === 'string' || (slot >= 0 && slot < storyAuto.SLOTS.length))) return res.status(400).json({ error: 'Datos inválidos.' });
+    const autoKey = `sa-${day}-${slot}`;
+    const upd = await Story.updateOne({ autoKey }, { $set: { isActive: false } });
+    if (!(upd.matchedCount || upd.n)) {
+      const now = new Date();
+      try { await Story.create({ id: uuidv4(), title: '(borrada)', text: '', mediaType: 'none', hours: 1, publishedAt: now, expiresAt: now, isActive: false, autoKey, autoKind: 'borrada', createdBy: req.user.username }); }
+      catch (e) { if (!(e && e.code === 11000)) throw e; await Story.updateOne({ autoKey }, { $set: { isActive: false } }); }
+    }
+    logger.info(`[historias-auto] ${req.user.username} borró ${autoKey}`);
+    res.json({ success: true });
+  } catch (e) { logger.warn('[historias-auto] borrar: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/stories-autopilot/republish-today', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    for (let i = 0; i < 40 && _storyAutoRunning; i++) await new Promise((r) => setTimeout(r, 250));
+    if (_storyAutoRunning) return res.status(503).json({ error: 'El motor está publicando en este momento. Probá en un minuto.' });
+    const w = await _storyWipeForRepublish(req.user.username || 'admin');
+    await _storyAutoTick({ force: true });
+    const today = _schedArtKey(new Date());
+    const published = await Story.countDocuments({ autoKey: new RegExp('^sa-' + today + '-'), isActive: true, autoKind: { $ne: 'borrada' } });
+    res.json({ success: true, off: w.off, del: w.del, published, skipped: _storyDiag.skipped || [], error: _storyDiag.lastError || null });
+  } catch (e) { logger.warn('[historias-auto] republicar: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/stories-autopilot/matches', authMiddleware, adminMiddleware, _storiesGate, async (req, res) => {
+  try {
+    if (!_storiesAdminOnly(req, res)) return;
+    const on = !!(req.body && (req.body.on === true || req.body.on === 'true' || req.body.on === 1));
+    await Config.set('storyAutoMatches', on, req.user.username || 'admin');
+    logger.info(`[historias-auto] partidos del día ${on ? 'ENCENDIDOS' : 'apagados'} por ${req.user.username}`);
+    res.json({ success: true, matchesOn: on });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
 });
 app.post('/api/admin/users/:id/block', authMiddleware, adminMiddleware, async (req, res) => {
   try {

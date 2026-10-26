@@ -370,6 +370,8 @@
                          divisor dorado: REEMPLAZADO 2026-08-05 por el banner de 1girox. -->
                     <img src="/images/banner-inicio-1girox.jpg" alt="1GIROX"
                          style="width:100%;max-width:230px;display:block;margin:0 auto;border-radius:12px;border:1px solid rgba(212,175,55,0.35);">
+                    <!-- #224: HISTORIAS públicas en el ingreso (anillo tipo Instagram; aparece sólo si hay historias y la función está prendida) -->
+                    <button type="button" id="lgStoriesRing" class="lg-ring" style="display:none;margin:6px auto 0;" onclick="if(window.VIP&&VIP.stories)VIP.stories.open()" title="Historias" aria-label="Ver historias"><span class="lg-ring-av"><img src="/icons/icon-192x192.png" alt=""></span><b id="lgStoriesCount" class="lg-ring-n"></b></button>
                 </div>
                 <button id="loginGiftsBtn" type="button" style="flex:0 0 64px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;background:rgba(106,13,173,0.18);border:1px solid rgba(157,78,221,0.55);border-radius:11px;color:#d9b8ff;cursor:pointer;-webkit-tap-highlight-color:rgba(157,78,221,.3);touch-action:manipulation;">
                     <span style="font-size:19px;line-height:1;">🎁</span>
@@ -495,6 +497,12 @@
                 <span class="tb-telegram-icon">📣</span>
                 <span class="tb-telegram-text">Unite a la Comunidad de Telegram</span>
             </a>
+            <!-- #224 HISTORIAS (réplica de PICA ROJA): anillo tipo historia; con historias nuevas brilla y muestra la cantidad.
+                 stories.js lo pinta y abre el visor #storyViewer. Oculto hasta que la función esté prendida en COMANDOS. -->
+            <button type="button" class="tb-stories" id="navHistorias" style="display:none;" onclick="if(window.VIP&&VIP.stories)VIP.stories.open()" title="Historias">
+                <span class="st-ring"><span class="st-core">▶</span><span class="st-badge" id="storiesBadge" style="display:none;">1</span></span>
+                <span class="tb-stories-text" id="storiesLbl">Historias</span>
+            </button>
             <button class="tb-hamburger" id="menuToggleBtn" title="Menú" aria-label="Abrir menú" aria-expanded="false">
                 <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
                     <path d="M4 6h16M4 12h16M4 18h16"/>
@@ -2247,7 +2255,24 @@
       window.VIP_DEVICE = { os: ios ? 'ios' : (and ? 'android' : 'otro'), model: model, w: w, h: h, dpr: window.devicePixelRatio || 1, app: app };
       if (and && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) navigator.userAgentData.getHighEntropyValues(['model']).then(function (v) { if (v && v.model) window.VIP_DEVICE.model = v.model; }).catch(function () {});
     } catch (e) {} })();</script>
+    <!-- #224: visor de HISTORIAS (pantalla completa). Tocar derecha = siguiente, izquierda = anterior, mantener = pausa. -->
+    <div id="storyViewer" class="story-viewer" aria-hidden="true">
+        <div class="st-bars" id="storyBars"></div>
+        <div class="st-head">
+            <span class="st-logo"><img src="/icons/icon-96x96.png" alt=""></span>
+            <span class="st-who"><b class="st-brand">CARGAS 1GIROX</b><small class="st-brand-sub">oficial</small><b id="storyTitle" class="st-title-hidden">CARGAS 1GIROX</b><small id="storyWhen"></small></span>
+            <button type="button" class="st-close" onclick="VIP.stories.close()" aria-label="Cerrar">✕</button>
+        </div>
+        <div class="st-media" id="storyMedia"></div>
+        <div class="st-tap" id="storyTap"></div>
+        <div class="st-foot">
+            <div class="st-caption" id="storyCaption"></div>
+            <a class="st-link" id="storyLink" href="#" target="_blank" rel="noopener" style="display:none;">Ver más ›</a>
+            <div class="st-react" id="storyReact" style="display:none;"></div>
+        </div>
+    </div>
     <script src="/js/activity.js"></script>
+    <script src="/js/stories.js"></script>
     <script src="/js/app.js"></script>
     
     <!-- ============================================

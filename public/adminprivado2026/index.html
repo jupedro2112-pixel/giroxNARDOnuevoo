@@ -163,10 +163,18 @@ document.addEventListener('change', function (ev) {
                     <span>📅</span>
                     <span>Cronograma</span>
                 </a>
+                <a href="#" class="nav-item" data-section="cronohist" data-feature="stories" style="display:none" title="Historias automáticas: qué sale hoy y los próximos días (se prende en COMANDOS → Funciones)">
+                    <span>📖</span>
+                    <span>Cronograma historias</span>
+                </a>
                 <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#d4af37;text-transform:uppercase;opacity:.7;">Nuevo</div>
                 <a href="#" class="nav-item" data-section="roulette">
                     <span>🎰</span>
                     <span>Ruleta diaria</span>
+                </a>
+                <a href="#" class="nav-item" data-section="stories" data-feature="stories" style="display:none" title="Historias manuales (imagen/video/texto, botón, bono +X%); se prende en COMANDOS → Funciones">
+                    <span>📽️</span>
+                    <span>Historias</span>
                 </a>
                 <a href="#" class="nav-item" data-section="reviews">
                     <span>⭐</span>
@@ -1238,6 +1246,97 @@ document.addEventListener('change', function (ev) {
                 </div>
             </section>
 
+            <!-- #224 HISTORIAS (réplica #361/#742/#772 de PICA ROJA): manuales -->
+            <section id="storiesSection" class="section">
+                <div class="panel-header">
+                    <h2>📽️ Historias</h2>
+                    <button class="refresh-btn" onclick="loadAppStories()" title="Refrescar">🔄</button>
+                </div>
+                <div style="background:rgba(212,175,55,0.06);border:1px solid rgba(212,175,55,0.30);border-radius:10px;padding:12px;margin-bottom:14px;">
+                    <p style="margin:0;color:#bbb;font-size:11.5px;line-height:1.6;">Lo que publiques acá lo ve el cliente en el botón <strong style="color:#fff;">Historias</strong> del header de la app (y en la pantalla de ingreso), como historias: pantalla completa, pasan solas. Cada historia <strong style="color:#fff;">vence sola</strong> a las horas que indiques; después queda acá por si querés extenderla o borrarla. Las automáticas (5 por día) se manejan en <strong style="color:#fff;">Cronograma historias</strong>.</p>
+                </div>
+                <div class="cbu-form" style="margin-bottom:14px;border:2px solid #d4af37;">
+                    <h3 style="margin:0 0 4px;">⚡ Historia de bono en 1 toque</h3>
+                    <p style="margin:0 0 8px;font-size:11.5px;color:#9ab;">Poné el % y las horas y listo: la imagen se arma sola (+X% · "Tocá RECLAMAR AHORA"), la historia dura esas horas, el que la reclama recibe el extra solo en su próxima carga y se avisa a todos con una notificación.</p>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+                        <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:700;">% extra<input type="number" id="qsPct" min="5" max="200" step="5" value="50" style="width:110px;"></label>
+                        <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:700;">Horas<input type="number" id="qsHours" min="1" max="72" step="1" value="6" style="width:90px;"></label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;cursor:pointer;"><input type="checkbox" id="qsNotify" checked style="width:auto;"> 🔔 Avisar a todos</label>
+                        <button type="button" class="btn btn-primary" onclick="publishQuickBonusStory()" id="qsBtn">⚡ Publicar ya</button>
+                        <span id="qsMsg" style="font-size:11.5px;color:#9ab;"></span>
+                    </div>
+                </div>
+                <div class="cbu-form" style="margin-bottom:14px;">
+                    <h3 style="margin:0 0 8px;">➕ Publicar historia</h3>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
+                        <div class="form-group" style="margin:0;"><label>Título (arriba, opcional)</label><input type="text" id="stTitle" maxlength="60" placeholder="CARGAS 1GIROX" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>Texto (abajo de la foto; si no hay foto, va grande al centro)</label><input type="text" id="stText" maxlength="300" placeholder="Ej: Nuevo sistema de cargas automáticas" style="width:100%;"></div>
+                        <details class="form-group" style="margin:0;grid-column:1 / -1;" id="stArtBox">
+                            <summary style="cursor:pointer;color:#d4af37;font-weight:800;">🎨 Armar la foto automáticamente (estilo CARGAS 1GIROX) — completás los datos y se genera sola</summary>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;">
+                                <div class="form-group" style="margin:0;"><label>Frase chica (arriba)</label><input type="text" id="stArtKicker" maxlength="40" placeholder="LA NOVEDAD LLEGÓ" style="width:100%;"></div>
+                                <div class="form-group" style="margin:0;"><label>Título grande</label><input type="text" id="stArtTitle" maxlength="60" placeholder="El futuro está acá" style="width:100%;"></div>
+                                <div class="form-group" style="margin:0;"><label>Píldora</label><input type="text" id="stArtPill" maxlength="30" placeholder="CARGAS AUTOMÁTICAS" style="width:100%;"></div>
+                                <div class="form-group" style="margin:0;"><label>Texto de abajo</label><input type="text" id="stArtBody" maxlength="140" placeholder="Transferís, mandás la foto y se acredita solo." style="width:100%;"></div>
+                                <div class="form-group" style="margin:0;"><label>Foto opcional (va arriba, recortada)</label><input type="file" id="stArtPhoto" accept="image/png,image/jpeg,image/webp" style="width:100%;"></div>
+                                <div class="form-group" style="margin:0;"><label>Fondo</label><select id="stArtBg" style="width:100%;"><option value="dark" selected>Oscuro (negro / dorado)</option><option value="light">Claro (blanco / gris)</option></select></div>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+                                <button type="button" class="btn btn-secondary" onclick="stMakeArt()">🎨 Generar vista previa</button>
+                                <small style="color:#aaa;">Se arma en 1080×1920 y queda lista para Publicar. Si después elegís un archivo, reemplaza a la generada.</small>
+                            </div>
+                        </details>
+                        <div class="form-group" style="margin:0;"><label>Imagen o video (png/jpg/webp ≤ 4 MB · mp4 ≤ 8 MB)</label><input type="file" id="stFile" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>…o URL de imagen (ruta /images/… o https)</label><input type="text" id="stMediaUrl" maxlength="500" placeholder="/images/games/sweet-bonanza-2500.jpg" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>Horas visible</label><input type="number" id="stHours" min="1" max="720" step="1" placeholder="24" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>Programación</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:6px 0 0;"><input type="checkbox" id="stRepeat" style="width:auto;"> 🔁 Repetir cada semana (se vuelve a publicar sola a los 7 días)</label></div>
+                        <div class="form-group" style="margin:0;"><label>Segundos por historia (imagen/texto)</label><input type="number" id="stDuration" min="2" max="60" step="1" placeholder="6" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>Link (botón abajo, opcional)</label><input type="text" id="stLink" maxlength="500" placeholder="https://… o app:cargar · app:retirar · app:ruleta · app:reembolso · app:referidos · app:instalar · app:casino" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;"><label>Texto del botón</label><input type="text" id="stLinkLabel" maxlength="40" placeholder="Cargar ahora ›" style="width:100%;"></div>
+                        <div class="form-group" style="margin:0;grid-column:1 / -1;padding:10px;border:1px solid rgba(255,215,0,.35);border-radius:10px;background:rgba(255,215,0,.05);">
+                            <label style="font-weight:800;">🎁 Bono de la historia (opcional)</label>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+                                <div><label>% extra en la próxima carga</label><input type="number" id="stBonusPct" min="0" max="200" step="5" placeholder="0 = sin bono (ej. 50 o 100)" style="width:100%;"></div>
+                                <div><label>Vigencia del bono (horas)</label><input type="number" id="stBonusHours" min="1" max="72" step="1" placeholder="1" style="width:100%;"></div>
+                            </div>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:8px 0 0;"><input type="checkbox" id="stNotifyAll" style="width:auto;"> 🔔 Enviar notificación push a TODOS los clientes al publicar</label>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
+                                <div><label>Título del push (opcional)</label><input type="text" id="stPushTitle" maxlength="80" placeholder="🎁 +50% extra en tu próxima carga" style="width:100%;"></div>
+                                <div><label>Texto del push (opcional)</label><input type="text" id="stPushBody" maxlength="160" placeholder="Tocá la historia y reclamalo: vale por 1 h." style="width:100%;"></div>
+                            </div>
+                            <small style="color:#aaa;display:block;margin-top:6px;">Quien toca <b>"Reclamar ahora"</b> recibe el extra SOLO en su próxima carga (manual o por el banco automático), con el tope y el rollover global de siempre; pisa al bono del agente si lo hubiera. El que no lo toca no ve nada. Queda como Bonificación propia en Transacciones (origen "historia").</small>
+                        </div>
+                        <div class="form-group" style="margin:0;"><label>Color de fondo (solo texto)</label><input type="color" id="stBg" value="#06070d" style="width:60px;height:34px;padding:0;border:0;background:none;"></div>
+                    </div>
+                    <div id="stPreview" style="margin-top:10px;display:none;"><img id="stPreviewImg" alt="" style="max-height:160px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);"></div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">
+                        <button type="button" class="btn btn-primary" id="stPublishBtn" onclick="publishAppStory()">📽️ Publicar historia</button>
+                        <span id="stMsg" style="font-size:12px;color:#aaa;"></span>
+                    </div>
+                </div>
+                <div class="cbu-form" style="margin-bottom:14px;">
+                    <h3 style="margin:0 0 8px;">⚙️ Valores por defecto</h3>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+                        <div class="form-group" style="margin:0;"><label>Horas visible (si no indicás otra cosa)</label><input type="number" id="stDefHours" min="1" max="720" step="1" style="width:140px;"></div>
+                        <div class="form-group" style="margin:0;"><label>Segundos por historia</label><input type="number" id="stDefDuration" min="2" max="60" step="1" style="width:140px;"></div>
+                        <button type="button" class="btn btn-secondary" onclick="saveAppStoriesConfig()">💾 Guardar</button>
+                        <span id="stCfgMsg" style="font-size:12px;color:#aaa;"></span>
+                    </div>
+                </div>
+                <div id="storiesList"><div style="color:#aaa;text-align:center;padding:24px;">⏳ Cargando…</div></div>
+            </section>
+            <!-- #224 HISTORIAS AUTOMÁTICAS (réplica #827/#909/#931 de PICA ROJA) -->
+            <section id="cronohistSection" class="section">
+                <div class="panel-header"><h2>📖 Cronograma historias <small style="font-size:.6em;color:#f59e0b;font-weight:800">· AUTOMÁTICO</small></h2></div>
+                <div class="card" style="margin-bottom:1rem" id="stAutoCard">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+                        <h3 style="margin:0;font-size:1rem">📖 Historias automáticas (5 por día a las 00 hs: se apagan las de ayer y salen las de hoy; sin repetir)</h3>
+                        <button class="btn btn-secondary btn-sm" onclick="loadStoriesAuto()">🔄</button>
+                    </div>
+                    <div style="color:#8fd3a8;font-size:.78rem;margin:.4rem 0 .6rem">Cada día a las 00:05 salen 5 historias (duran 24 h) sobre lo que ofrece el servicio (cómo funciona para los nuevos, carga, retiros, reembolso, soporte, niveles VIP, referidos, juegos, instalar la app, seguridad), rotando sin repetir las de ayer. Los lunes el slot más jugado de la semana (catálogo público de 1girox) y los miércoles a las 19:00 la historia con <b>bono +100 % por 3 h</b> con notificación a todos. Los partidos del día (ESPN) salen sólo con su llave encendida.</div>
+                    <div id="stAutoBody" style="font-size:.82rem">Cargando…</div>
+                </div>
+            </section>
             <section id="datosSection" class="section">
                 <div class="panel-header">
                     <h2><span class="icon icon-chart"></span> Datos</h2>

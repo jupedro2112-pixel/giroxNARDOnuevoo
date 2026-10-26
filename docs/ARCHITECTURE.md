@@ -5,9 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-2: interruptores de funciones
+> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-3: interruptores de funciones
 > (`featureFlags`, `Config['features']`), registro abierto / sólo con invitación, sistema de notificaciones
-> anterior apagado por flag, Alertas de estafa y Datos IA (§7, §9, §10, §10.1; WORKLOG #222-#223).
+> anterior apagado por flag, Alertas de estafa, Datos IA e Historias (§7, §9, §10-§10.2; WORKLOG #222-#224).
 > Antes: 2026-10-20 — PUBLICIDAD solo para DUEÑOS (`User.isOwner`,
 > `ownerMiddleware`, `stripPublicity`, card 👑 en COMANDOS; §3, §9; WORKLOG #221).
 > Antes: 2026-10-19 — rollover GLOBAL de bonos editable desde COMANDOS
@@ -1154,3 +1154,21 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   `getRefundTiersByPeriod`, `getInstallBonusPct`, `getBonusCapConfig`, `getDailyRouletteConfig`), cada uno en try/catch.
   `POST /api/activity/ping` (rol user) arma las sesiones y escribe `lastDevice`/`deviceIds`; apagado ⇒
   `{ok:false, off:true}`. Cliente: `public/js/activity.js` + `window.VIP_DEVICE` (index.html).
+
+### 10.2 Historias (#224)
+
+- Modelo `Story` (`src/models/Story.js`; `autoKey` único sparse, `mediaData` y `autoImg` con `select:false`; TTL no: vencen
+  por `expiresAt` pero quedan en el panel). `User.storyBonus`.
+- Rutas cliente: `GET /api/stories/public` (sin sesión), `GET /api/stories/active` (`off:true` si está apagado),
+  `POST /api/stories/:id/view|click|react`, `GET /api/stories/:id/auto.svg|media`, `POST /api/stories/:id/claim-bonus`,
+  `GET /api/stories/bonus`. Admin: `/api/admin/stories*`, `/api/admin/stories-autopilot*` (admin general). Gate `_storiesGate`.
+- Motor: `_storyAutoTick` (5 min), `_storiesRepeatTick` (1 h); plan del día = `storyAuto.planDay(dayKey, matches, ctx)`;
+  fotos = `storyImage.renderSvg(spec)` servidas en `/auto.svg` (CSP estricta). `STORY_IMG_VER` fuerza rearmar las fotos.
+  Config: `storiesConfig`, `storyAutoMatches`, `storyGamesSnapshot`, `storyAutoDiag`.
+- **Bono de historia en la carga:** `claimStoryBonusPercent` dentro de `resolveAutoBonus` (orden: app → código →
+  ruleta → historia → lote; UN bono por carga). `settle`/`revert` mantienen los contadores de la Story. El flujo de
+  carga (manual y hgcash) escribe el Transaction `bonus` con `metadata.source 'story_bonus'`. Un flujo de carga nuevo
+  que pase por `resolveAutoBonus` lo hereda solo.
+- PWA: `public/js/stories.js` (`VIP.stories = {init, load, loadPublic, open, openById, claimBonus, close, …}`), botón
+  `#navHistorias` (header), anillo `#lgStoriesRing` (ingreso), visor `#storyViewer`; CSS en `chat.css` y `login.css`.
+  El SW reenvía `data.url` de la push (`vip-open`).

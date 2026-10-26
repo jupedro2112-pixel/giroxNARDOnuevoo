@@ -96,6 +96,64 @@
   Datos IA → pestaña Panorama con la base; cargar clave → al volver a entrar pide la clave; con la función apagada la
   PWA recibe `{off:true}` en el primer ping y no insiste.
 
+### 224. RÉPLICA DE PICA ROJA — tanda 3: 📽️ HISTORIAS manuales + 📖 automáticas (en OFF, interruptor en COMANDOS) — SW v119
+- **Qué es:** historias estilo Instagram en la app: botón **"Historias"** en el header (antes del ☰, oculto hasta que la
+  función esté prendida), **anillo** en la pantalla de ingreso (historias públicas) y **visor** a pantalla completa
+  (`#storyViewer`: barras, tocar derecha/izquierda, mantener = pausa, reacciones 🔥❤️😂👍 una por cliente, toques al botón).
+  Archivos nuevos (copiados 1:1 de CARGASGIROX #210, que ya estaba rebrandeado a **CARGAS 1GIROX**, la misma marca de
+  esta app): `src/models/Story.js`, `src/services/storyAutopilot.js`, `src/services/storyImage.js` (SVG 1080×1920
+  server-side, sin sharp/canvas; logo = `icons/icon-192x192.png`), `public/js/stories.js`, `public/images/games/*.jpg`
+  (10 fotos de slots).
+- **Manuales** (panel → Nuevo → "📽️ Historias", `#storiesSection`, solo admin general): imagen/video/texto, botón
+  (https, / o `app:cargar|retirar|ruleta|reembolso|referidos|verificar|soporte|instalar|vip|casino`), horas visibles,
+  repetir semanal, compositor "🎨 armar la foto" (canvas, `stMakeArt`) y **"⚡ Historia de bono en 1 toque"** (sólo % y
+  horas; la imagen la arma el server; push a todos). Funciones `loadAppStories/publishAppStory/extendAppStory/
+  toggleAppStory/deleteAppStory/saveAppStoriesConfig` (con prefijo App porque `deleteStory` ya es acá de las historias de
+  INFLUENCERS). Rutas `GET/POST /api/admin/stories`, `POST …/config`, `PATCH/DELETE …/:id`.
+- **Automáticas** (panel → Notificaciones → "📖 Cronograma historias", `#cronohistSection`): `_storyAutoTick` cada 5 min
+  (arranca 2 min después del boot): 5 historias de SERVICIO por día a las 00:05–00:09 que rotan sin repetir las de ayer
+  (temas: cómo funciona, carga, retiros, reembolso, soporte, niveles VIP, referidos, juegos, deportes, instalar la app,
+  seguridad — todos existen en esta app; **sin "misiones"** ni "bienvenida 1ª carga" (`firstPct: 0`), que acá no
+  existen), lunes el slot más jugado (catálogo público de 1girox), miércoles 19:00 el **bono semanal +100 % por 3 h con
+  push a todos**, partidos del día (ESPN público) sólo con la llave `Config['storyAutoMatches']`. Las de ayer se apagan
+  al salir las de hoy. `Story.autoKey` único ⇒ multi-instancia. Diagnóstico en `Config['storyAutoDiag']`. Rutas
+  `GET /api/admin/stories-autopilot`, `POST …/remove|republish-today|matches`. Repetición semanal de las manuales:
+  `_storiesRepeatTick` (1 h). El rollover que muestran las historias sale de `getGlobalBonusRollover()` (x3 si está
+  apagado el global, como en el gemelo).
+- **Bono de la historia en la carga — ADAPTADO al pipeline de ESTA página:** `POST /api/stories/:id/claim-bonus` deja
+  `User.storyBonus {storyId,pct,label,claimedAt,expiresAt}` (bloqueados o con `fraudFlags` no pueden). CARGASGIROX lo
+  enchufaba en `_pendingBonusFor/_settlePendingBonuses` (varios bonos suman); acá el pipeline es **`resolveAutoBonus`**
+  (UN bono por carga, en orden: app → código de bienvenida → ruleta → **historia** → lote), así que se agregó
+  **`claimStoryBonusPercent(user, usedBy, amount)`** con la misma mecánica que `claimDailyRoulettePercent`: reserva
+  atómica (`storyBonus.pct` → 0 mientras no venza), `settle(bonus)` suma `bonusUses/bonusUsedTotal/bonusDepositTotal`
+  en la Story, `revert()` devuelve el % y deshace esos contadores si la carga o el bono adjunto fallan. Vale igual en la
+  carga manual y en hgcash, con el tope (`bonusCap`) y el rollover global. El Transaction `type:'bonus'` lo escribe el
+  flujo de carga como siempre: hgcash ya ponía `metadata.source = _auto.source`; **la carga manual ahora también** (antes
+  no llevaba metadata) ⇒ `metadata.source 'story_bonus'` + `autoBonus{pct,rule}`. No hay `_recordAppliedBonusTx` ni
+  `appliedOnDeposit` en este repo: el bono queda en la base del reembolso en vivo como cualquier bono de carga (regla de
+  acá: "todo regalo nuevo = Transaction 'bonus'").
+- **Push que abre la historia:** `sendNotificationToAllUsers(User, t, b, { url:'/?story=<id>', … })` → el SW
+  (`notificationclick`) ahora lee `data.url`: con la app abierta manda `{type:'vip-open', url}` (stories.js la abre), si
+  no abre esa URL. Sin URL sigue abriendo `/`. SW `v119`.
+- **Interruptor** `featureFlags.stories`: `_storiesGate` (404 `FEATURE_OFF`) en todas las rutas; `/api/stories/active`
+  responde `{items:[], off:true}` ⇒ la app esconde el botón; `/api/config/access` publica `features.stories` para el
+  anillo del ingreso (`auth.js` → `VIP.stories.loadPublic`); los crons salen sin hacer nada. Menú del panel con
+  `data-feature="stories"`. PWA: `app.js` → `VIP.stories.init()`, `ui.js` → `VIP.stories.load()` al entrar.
+- **Links `app:*` en esta PWA:** `app:casino|juegos|deportes` → `VIP.ui.enterCasino()` (existe acá; el fallback
+  `openCasinoChooser` no, queda en try/catch), `app:instalar` → `VIP.appTest.doInstall()` (acá la ruleta no tiene
+  `showInstallGuide`, queda en el catch), `app:ruleta` → `VIP.roulette.open()`, `app:reembolso` → `VIP.refunds.showRefundModal`,
+  `app:vip` → `VIP.refunds.showProfileModal`, `app:retirar` → `VIP.withdraw.openWithdrawModal`, `app:cargar` →
+  `depositModal`, `app:verificar` → `verifyPhoneModal`, `app:referidos` → `VIP.ui.openReferralModal`. Todos verificados.
+- **No se trajo:** la etiqueta "📽️ historia" en la tabla de Transacciones (este panel no tiene el mapa
+  `getTransactionSourceLabel`; se ve en la descripción "automática: historia…"), el bono de bienvenida por días (#886 de
+  allá), las migraciones #845/#911/#931 (borraban historias al deployar) y todo lo de Render (`_STORY_IMG_BASE`). Links
+  `app:play:<ruta>` abren el casino con la sesión (acá no se puede abrir un juego puntual).
+- `node --check` + `check-tdz` OK; HTML balanceado. **Back + panel + PWA necesitan redeploy.** PROBAR: prender `stories`
+  → aparecen "📽️ Historias" y "📖 Cronograma historias"; publicar una historia de texto → botón "Historias" en el header
+  y anillo en el ingreso; "⚡ bono en 1 toque" +50 % 2 h con push → tocar la push abre la historia → "Reclamar ahora" →
+  cargar $10.000 a mano sin bonus → la carga entra con $5.000 de bono y nota interna "BONO AUTOMÁTICO… historia";
+  Cronograma historias → "Republicar hoy" publica 5 historias automáticas.
+
 ## Sesión 2026-10-20
 
 ### 221. 👑 PUBLICIDAD solo para DUEÑOS (marca `isOwner` sobre admin general, gestionada desde COMANDOS, sin SSM) — admin-sw v58
