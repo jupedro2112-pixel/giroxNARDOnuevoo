@@ -311,6 +311,11 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // #225 CENTRO DE AVISOS (réplica #971 de PICA ROJA): qué avisos quiere el cliente ('all' | 'mine' | 'none'; Perfil) y la
+  // "fatiga" (promos seguidas sin abrir la app; 10 ⇒ se pausan las masivas hasta que entre; la resetea /api/activity/ping).
+  notifPrefs: { level: { type: String, default: 'all' }, updatedAt: { type: Date, default: null }, fatigue: { type: Number, default: 0 } },
+  // #225 RECORRIDO DE RETENCIÓN: pasos ya enviados ("<paso>@<episodio>"), último paso y segmento. Lo escribe sólo _journeyTick.
+  journey: { segment: { type: String, default: null }, lastStep: { type: String, default: null }, lastAt: { type: Date, default: null }, sent: { type: [{ k: String, at: Date }], default: [] } },
   // Lista de todos los tokens FCM activos del usuario (uno por contexto/dispositivo).
   // Cada entrada: { token, context, updatedAt, notifPermission }
   // Permite enviar notificaciones a Chrome Y a la PWA instalada al mismo tiempo.

@@ -154,6 +154,71 @@
   cargar $10.000 a mano sin bonus → la carga entra con $5.000 de bono y nota interna "BONO AUTOMÁTICO… historia";
   Cronograma historias → "Republicar hoy" publica 5 historias automáticas.
 
+### 225. RÉPLICA DE PICA ROJA — tanda 4: 🧭 CENTRO DE AVISOS + 🤖 PILOTO AUTOMÁTICO de notificaciones (ambos en OFF, interruptor en COMANDOS) — SW v120
+- **Qué es (réplica de CARGASGIROX #211 / PICA ROJA #817/#821/#970/#971/#973/#979):** todo lo AUTOMÁTICO que le llega al
+  cliente sale de un solo lugar, con UN tope (1 aviso por día + tope mensual, contando también los lotes a mano) y
+  respetando lo que el cliente eligió en su Perfil. Archivos nuevos (copiados de CARGASGIROX): `src/services/retentionJourney.js`
+  (reglas puras del recorrido), `src/services/weeklyReview.js` (decisión semanal), `src/utils/arCalendar.js` (feriados y fechas
+  comerciales argentinas, Pascua calculada). Dos flags: `notifCenter` y `autopilot`.
+- **Centro de avisos (`notifCenter`)** — panel → Notificaciones → "🧭 Centro de avisos" (`#notifCenterSection`) y "📏 Revisión
+  semanal" (`#weeklyReviewSection`), ambos `data-feature="notifCenter"`, rutas sólo admin general (`_ncGate`):
+  · **Recorrido de retención por cliente** (`_journeyTick`, cada 20 min, corre 17–19 h ART una vez por día, lock
+    `_cronClaim` en Config para multi-instancia): segmentos nuevo / enfriando (7–13 d) / inactivo (14–29 d) / perdido
+    (30–89 d) / lejano (90–180 d); un paso por día y por cliente, regalos crecientes (aviso → +% → fichas según el valor del
+    cliente; sin fichas gratis hasta 5 cargas reales). Cada paso sale como un **lote** por `_createNotifBatchFromBody`
+    (nombre "Recorrido · …", `appOnly:false`, `dailyCap:1`, `monthlyCap` si el paso cuenta para el tope) ⇒ misma cola,
+    mismos candados. `User.journey.sent` evita repetir un paso en el mismo episodio.
+  · **Avisos "reclamá tu reembolso"** (`_refundReminderTick`, 15 min, 11–21 h ART): semanal (lunes y jueves) y mensual
+    (día 1 y 8) a quien cargó hace poco, perdió en el período (stats batch de 1girox, 100 por llamada) y no tiene
+    `RefundClaim` de ese `periodKey`; push `kind:'personal'` con `url:'/?open=refund'` ⇒ la PWA abre Reembolsos
+    (`showUnifiedRefundModal`). Textos `/sys_refund_reminder_weekly` / `_monthly` (variable `{pct}` = el rango más alto).
+  · **Preferencias del cliente** (`User.notifPrefs.level` all | mine | none): Perfil → "🎚️ Qué avisos querés recibir"
+    (`refunds.js` → `GET/POST /api/notifications/prefs`; la fila sólo se ve con la función prendida). Se respeta en
+    `sendPushIfOffline` (data.kind 'promo' / 'personal'; sin kind = del sistema, siempre sale), en
+    `notificationService.sendNotificationToAllUsers` (`prefsFilter`, default 'promo') y `sendNotificationToUsernames`
+    (default 'personal'). **Fatiga:** 10 promos seguidas sin abrir la app ⇒ se pausan las masivas; la resetea
+    `/api/activity/ping` (aunque Datos IA esté apagado) y cambiar la preferencia.
+  · **Revisión semanal** (`_weeklyReviewTick`, lunes 10–14 h ART): mide cargadores, "volvieron", regalado/depositado,
+    conversión del recorrido (7 d) y de la campaña masiva (48 h), reembolsos, app instalada, avisos bajados → decide
+    impulsar / mantener / frenar un escalón (`Config['journeyTuning']`, nivel −2..+3 ⇒ × del % y de las fichas del
+    recorrido y puntos extra del piloto). Informe en texto para copiar. "▶ Medir ahora" fuerza la corrida.
+  · `Config['notifCenter'] = { monthlyCap, journey, refundReminder }`, estado en `journeyLast`, `refundRemindLast`,
+    `weeklyReview`. Rutas: `GET/PUT /api/admin/notif-center`, `POST …/run`, `GET /api/admin/weekly-review`, `POST …/run`.
+- **Piloto automático (`autopilot`)** — card "🤖 Piloto automático" dentro de 📅 Cronograma (se ve sólo con la función
+  prendida; `loadCronAutopilot` desde `loadCronograma`). `_autopilotTick` (cada 3 h) pre-programa el mes en curso y el
+  siguiente como `ScheduledCampaign` con `autoKey 'ap-YYYY-MM-DD'` (índice único sparse ⇒ multi-instancia): una campaña
+  por día a las 19:00 en 3 tandas cada 30 min, **sólo a quien tiene la app con permiso** (`appOnly`), grupos que rotan
+  por hash del id (`rotGroup`) para respetar el tope mensual (8 por default o el del Centro de avisos), días fuertes
+  (cierre de mes, feriados y fechas comerciales de `arCalendar`) para todos, bono AUTOMÁTICO de 4 h en % (sale por el
+  pipeline de lotes ⇒ tope y rollover global de siempre) o sólo aviso (`giftType:'none'`). Los miércoles con Historias
+  prendidas no manda campaña (ese día sale la historia con bono). `onFeaturesChanged`: al apagarlo se borran las
+  campañas futuras (`_autopilotClearFuture`); al prenderlo se programa al toque. Cambiar el tope mensual también
+  reprograma. `GET /api/admin/cronograma-autopilot` = plan de este mes a diciembre del año que viene.
+- **Lotes: `giftType:'none'` y filtros de audiencia** — `NotifBatch.giftType` acepta `'none'` (amount 0; sólo modo
+  `window`): `_notifBatchChatContent` manda sólo el mensaje, el motor NO crea PromoBonus, `_giftLabelOf` dice "aviso", el
+  panel lista "📣 sólo aviso". El cronograma (`POST /api/admin/cronograma`) también lo acepta. `_resolveNotifBatchAudience`
+  pasó a ser un **wrapper** sobre `_resolveNotifBatchAudienceBase` que aplica `appOnly` / `monthlyCap` / `dailyCap` /
+  `rotGroup` encima del resolver de siempre (sin esos campos, nada cambia; `SCHED_ADAPTER.resolveAudience` lo hereda).
+  `NOTIF_BATCH_USER_SELECT` suma `notifPrefs`; el motor de lotes manda `kind` ('personal' si el lote es del recorrido,
+  'promo' si no) y suma fatiga a los masivos.
+- **Adaptaciones a ESTE repo (distinto de CARGASGIROX):** (1) **no hay reembolso diario por rango** (acá hay semanal,
+  mensual y el reembolso en vivo acumulativo) ⇒ el aviso diario queda **inerte** (`_refundRemindPlan('daily')` →
+  `due:false`; `/sys_refund_reminder` se siembra igual por compatibilidad, la descripción lo aclara), los textos del
+  recorrido hablan de "reembolsos" sin `{daily}`, y la recomendación de la revisión semanal mira el reembolso SEMANAL;
+  (2) **no hay `DailyClose`** ⇒ regalado/depositado de la semana se calcula directo de `Transaction` (depósitos reales vs
+  tipos `bonus/refund/roulette/fire_reward/rakeback/vip_levelup`, 7 días); (3) `periodRanges` de acá no tiene rango de
+  "ayer" (no hace falta con el diario inerte); (4) el `_processOneNotifBatch` de acá es el motor viejo (sin `_nbChatText`
+  ni `claimRequired`): se tocaron sus 3 puntos equivalentes; (5) el informe semanal dice "CARGAS 1GIROX" (en el gemelo
+  había quedado "PICA ROJA") y sin "misiones".
+- **No se trajo (igual que CARGASGIROX):** ofertas de bienvenida por días (#886), historia "pagos de la semana" (#971,
+  usaba sorteos), reglas viejas (acá es el flag `legacyNotifs`), cohortes de INICIO (`cohortM1`/`cohorts` van `null`/`[]`).
+- SW `v120`. `node --check` + `check-tdz` OK; HTML balanceado. **Back + panel + PWA necesitan redeploy.** PROBAR: prender
+  `notifCenter` → aparecen "🧭 Centro de avisos" y "📏 Revisión semanal"; Centro → segmentos de hoy y "▶ Mandar ahora"
+  crea lotes "Recorrido · …" (visibles en Notificaciones → lotes); Perfil de la PWA → selector de avisos, poner "Ninguno"
+  y verificar que un lote masivo no le llega (`muted`); prender `autopilot` → en 📅 Cronograma aparece la card 🤖 y en
+  unos segundos el calendario se llena con 🤖 campañas a las 19:00 del mes en curso y el siguiente; apagarlo → se borran
+  las futuras; "▶ Medir ahora" en Revisión semanal genera el informe.
+
 ## Sesión 2026-10-20
 
 ### 221. 👑 PUBLICIDAD solo para DUEÑOS (marca `isOwner` sobre admin general, gestionada desde COMANDOS, sin SSM) — admin-sw v58

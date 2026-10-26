@@ -167,6 +167,14 @@ document.addEventListener('change', function (ev) {
                     <span>📖</span>
                     <span>Cronograma historias</span>
                 </a>
+                <a href="#" class="nav-item" data-section="notifCenter" data-feature="notifCenter" style="display:none" title="Todo lo automático que le llega al cliente, desde un solo lugar (se prende en COMANDOS → Funciones)">
+                    <span>🧭</span>
+                    <span>Centro de avisos</span>
+                </a>
+                <a href="#" class="nav-item" data-section="weeklyReview" data-feature="notifCenter" style="display:none" title="Cada lunes mide la semana y ajusta sola los regalos del recorrido">
+                    <span>📏</span>
+                    <span>Revisión semanal</span>
+                </a>
                 <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#d4af37;text-transform:uppercase;opacity:.7;">Nuevo</div>
                 <a href="#" class="nav-item" data-section="roulette">
                     <span>🎰</span>
@@ -1337,6 +1345,24 @@ document.addEventListener('change', function (ev) {
                     <div id="stAutoBody" style="font-size:.82rem">Cargando…</div>
                 </div>
             </section>
+            <!-- #225 CENTRO DE AVISOS (réplica #971 de PICA ROJA): todo lo automático desde un solo lugar -->
+            <section id="notifCenterSection" class="section">
+                <div class="panel-header"><h2>🧭 Centro de avisos</h2><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary" onclick="loadNotifCenter(true)">🔄</button></div></div>
+                <div class="card" style="margin-bottom:1rem" id="notifCenterCard">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+                        <h3 style="margin:0;font-size:1rem">🧭 Centro de avisos · todo lo automático sale de acá</h3>
+                        <button class="btn btn-secondary btn-sm" onclick="loadNotifCenter(true)">🔄 Actualizar</button>
+                    </div>
+                    <div style="color:#9ab;font-size:.78rem;margin:.4rem 0 .6rem">Un cliente recibe como máximo <b>1 aviso por día</b> y el tope mensual de abajo, cuente de donde cuente (recorrido, campaña del día, lotes a mano). El aviso del reembolso y lo que el cliente pide en su Perfil ("Qué avisos querés recibir") van aparte.</div>
+                    <div id="ncBody" style="font-size:.84rem">Cargando…</div>
+                </div>
+            </section>
+            <!-- #225 REVISIÓN SEMANAL automática (réplica #973 de PICA ROJA) -->
+            <section id="weeklyReviewSection" class="section">
+                <div class="panel-header"><h2>📏 Revisión semanal</h2><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary" onclick="wrCopy()" title="Copia el informe en texto para pegarlo donde quieras analizarlo">📋 Copiar informe</button><button class="btn btn-secondary" onclick="wrRun()">▶ Medir ahora</button><button class="btn btn-secondary" onclick="loadWeeklyReview()">🔄</button></div></div>
+                <div class="card" style="margin-bottom:1rem;font-size:.8rem;color:#9ab">Todos los lunes a las 10 h el sistema mide la semana (cuántos cargaron, cuántos volvieron, cuánto se regaló sobre lo depositado según las transacciones, cuánto convirtió cada paso del recorrido y la campaña masiva, reembolsos, app instalada, avisos bajados) y decide solo: <b>impulsar</b> (más % y más fichas en el recorrido, más puntos en el piloto automático), <b>mantener</b> o <b>frenar</b>. Nivel de −2 a +3. El informe completo queda acá con historial.</div>
+                <div id="wrBody">Cargando…</div>
+            </section>
             <section id="datosSection" class="section">
                 <div class="panel-header">
                     <h2><span class="icon icon-chart"></span> Datos</h2>
@@ -2271,6 +2297,15 @@ document.addEventListener('change', function (ev) {
                         <button class="btn btn-secondary" onclick="cronMonthShift(0)">Hoy</button>
                         <button class="btn btn-primary" onclick="cronNewCampaign()">➕ Nueva campaña programada</button>
                     </div>
+                </div>
+                <!-- #225 PILOTO AUTOMÁTICO de notificaciones (réplica #817/#821 de PICA ROJA): se ve sólo con la función prendida en COMANDOS -->
+                <div class="card" style="margin-bottom:1rem;display:none" id="cronAutopilotCard">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+                        <h3 style="margin:0;font-size:1rem">🤖 Piloto automático de notificaciones (corre solo, todos los días)</h3>
+                        <span id="apState" style="font-size:.85rem"></span>
+                    </div>
+                    <div style="color:#8fd3a8;font-size:.78rem;margin:.4rem 0 .6rem">Todos los días sale una notificación a las 19:00, en 3 tandas, con un bono automático de 4 h en una carga (con el tope y el rollover de siempre). Los clientes con la app se reparten en grupos que rotan (máximo 8 por cliente en el mes, o el tope del Centro de avisos) y los días fuertes (cierre de mes, feriados y fechas comerciales argentinas) salen para todos. Se programa solo el mes en curso y el que viene, y aparece en el calendario de abajo. Se apaga desde COMANDOS → Funciones (se borran las campañas que todavía no salieron).</div>
+                    <div id="apMonths" style="margin-top:.8rem;font-size:.82rem">Cargando…</div>
                 </div>
                 <div class="card" style="margin-bottom:1rem">
                     <div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:.78rem;color:#a5b4fc;margin-bottom:.6rem">

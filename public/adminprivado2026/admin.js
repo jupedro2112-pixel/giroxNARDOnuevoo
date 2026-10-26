@@ -4954,6 +4954,8 @@ function switchSection(section) {
     if (section === 'fraud') { if (!_featureOnOrToast('fraudRadar', 'Alertas de estafa')) return; loadFraud(); } // #223
     if (section === 'stories') { if (!_featureOnOrToast('stories', 'Historias')) return; loadAppStories(); } // #224
     if (section === 'cronohist') { if (!_featureOnOrToast('stories', 'Historias')) return; loadStoriesAuto(); } // #224
+    if (section === 'notifCenter') { if (!_featureOnOrToast('notifCenter', 'El Centro de avisos')) return; loadNotifCenter(); } // #225
+    if (section === 'weeklyReview') { if (!_featureOnOrToast('notifCenter', 'El Centro de avisos')) return; loadWeeklyReview(); } // #225
     if (section === 'datosIa') { if (!_featureOnOrToast('datosIa', 'Datos IA')) return; datosIaGate('Datos IA').then(function (ok) { if (ok) diaInit(); }); } // #223 (clave propia)
     if (section === 'datos') loadDatos();
     if (section === 'datos2') loadDatos2();
@@ -6453,6 +6455,111 @@ async function storiesAutoRepublish() {
     } catch (e) { showToast('Error de conexión', 'error'); }
 }
 window.loadStoriesAuto = loadStoriesAuto; window.storiesAutoRemove = storiesAutoRemove; window.storiesAutoMatches = storiesAutoMatches; window.storiesAutoRepublish = storiesAutoRepublish;
+
+// ═══ #225 CENTRO DE AVISOS (réplica #971 de PICA ROJA) — fuentes, tope único, segmentos de hoy y pasos del recorrido ═══
+async function loadNotifCenter(refresh) {
+    const box = document.getElementById('ncBody'); if (!box) return;
+    try {
+        const r = await authFetch('/api/admin/notif-center' + (refresh ? '?refresh=1' : ''));
+        const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error');
+        const c = j.config || {}, pv = j.preview || {}, L = j.segmentLabels || {}; const num = (n) => Number(n || 0).toLocaleString('es-AR'); const money = (n) => '$' + num(n);
+        const gift = (s) => s.gift.type === 'none' ? 'sólo aviso' : s.gift.type === 'percent' ? '+' + s.gift.pct + '% en la próxima carga · ' + s.gift.hours + ' h' : 'FICHAS según valor del cliente: ' + (j.tiers || []).map((t) => money(Math.round(t.chips * (s.gift.mult || 1)))).join(' / ');
+        const tog = (k, label, on, hint) => '<label style="display:flex;gap:.5rem;align-items:flex-start;padding:.4rem .55rem;border:1px solid rgba(255,255,255,.12);border-radius:8px;cursor:pointer"><input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="ncToggle(\'' + k + '\', this.checked)" style="margin-top:.2rem;width:auto"><span><b>' + label + '</b><br><small style="color:#9ab">' + hint + '</small></span></label>';
+        const fixed = (label, on, hint) => '<div style="padding:.4rem .55rem;border:1px solid rgba(255,255,255,.12);border-radius:8px"><b>' + label + '</b> ' + (on ? '🟢' : '⚪') + '<br><small style="color:#9ab">' + hint + '</small></div>';
+        const jl = j.journeyLast, rl = j.refundLast, ap = j.autopilot || {};
+        const sources = [
+            tog('journey', '🧭 Recorrido por cliente', c.journey, 'Nuevos sin carga, enfriando (7–13 d), inactivos (14–29 d), perdidos (30–89 d), lejanos (90–180 d). Un paso por día, regalos crecientes, 17–19 h. ' + (jl ? 'Último: ' + jl.day + ' · ' + (jl.steps || []).reduce((x, s) => x + (s.sent || 0), 0) + ' avisos en ' + (jl.steps || []).length + ' pasos.' : 'Todavía no corrió.')),
+            fixed('🤖 Campaña masiva del día (piloto automático)', ap.enabled, (ap.parts || 3) + ' lotes desde las ' + (ap.time || '19:00') + ' · bono ' + (ap.hours || 4) + ' h · se prende/apaga en COMANDOS → Funciones'),
+            tog('refundReminder', '🔁 Aviso del reembolso (diario / semanal / mensual)', c.refundReminder, 'A quien perdió y no lo reclamó; al tocarla abre Reembolso. Diario 11–21 h, semanal lunes y jueves, mensual día 1 y 8. ' + (rl ? 'Último: ' + rl.day + ' · ' + num(rl.sent) + ' enviados.' : 'Todavía no corrió.')),
+            fixed('📣 Historia con bono (push a todos)', j.storiesOn, 'Los miércoles a las 19:00 (Historias automáticas) · ese día el piloto NO manda campaña (un solo aviso).'),
+            fixed('🗂️ Sistema de notificaciones anterior (reglas, encuesta, estrategia programada)', j.legacyNotifs, 'Se prende/apaga en COMANDOS → Funciones → "Sistema anterior". Encenderlo junto con esto duplica avisos.')
+        ];
+        const segs = Object.keys(L).map((k) => '<div class="in-box"><div class="in-l">' + L[k] + '</div><div class="in-v">' + num((pv.segments || {})[k]) + '</div></div>').join('');
+        const todaySteps = (pv.steps || []).length
+            ? '<table class="data-table" style="width:100%;font-size:.8rem"><thead><tr><th>Paso</th><th>Segmento</th><th>Regalo</th><th>Clientes</th><th>Ejemplos</th></tr></thead><tbody>' + pv.steps.map((s) => '<tr><td><b>' + escapeHtml(s.name) + '</b></td><td>' + (L[s.segment] || s.segment) + '</td><td>' + (s.gift === 'none' ? 'aviso' : s.gift === 'percent' ? '+' + s.amount + '%' : money(s.amount) + ' en fichas') + '</td><td>' + num(s.n) + '</td><td style="color:#9ab">' + escapeHtml((s.sample || []).join(', ')) + '</td></tr>').join('') + '</tbody></table>'
+            : '<div style="color:#9ab">Hoy no le toca ningún paso a nadie (o ya salió).</div>';
+        box.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:.5rem">' + sources.join('') + '</div>'
+            + '<div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.7rem 0"><b>Tope por cliente al mes:</b> <input type="number" id="ncCap" class="form-input" style="width:90px" min="2" max="60" value="' + (c.monthlyCap || '') + '" placeholder="auto ' + (j.cap || '') + '"> <button class="btn btn-secondary btn-sm" onclick="ncSaveCap()">Guardar tope</button><small style="color:#9ab">Vacío = automático (' + (j.cap || 8) + '). Al cambiarlo, el piloto se reprograma solo.</small></div>'
+            + '<div style="margin:.3rem 0"><small style="color:#9ab">Clientes que bajaron sus avisos desde el Perfil: sólo lo mío <b>' + num((j.optOut || {}).mine) + '</b> · ninguno <b>' + num((j.optOut || {}).none) + '</b>. Además, 10 promos seguidas sin abrir la app pausan las masivas hasta que vuelva.</small></div>'
+            + '<h4 style="margin:.8rem 0 .3rem">📊 Dónde está cada cliente hoy (' + num(pv.total) + ' clientes)</h4><div class="in-grid">' + segs + '</div>'
+            + '<h4 style="margin:.8rem 0 .3rem">📅 Lo que le toca hoy <button class="btn btn-secondary btn-sm" onclick="ncRunNow()">▶ Mandar ahora</button></h4>' + todaySteps
+            + '<details style="margin-top:.8rem"><summary style="cursor:pointer"><b>🧭 Los ' + (j.steps || []).length + ' pasos del recorrido</b> (fijos en el código, textos de servicio)</summary><div style="overflow:auto"><table class="data-table" style="width:100%;font-size:.78rem;margin-top:.4rem"><thead><tr><th>Día</th><th>Segmento</th><th>Paso</th><th>Regalo</th><th>Mensaje</th></tr></thead><tbody>' + (j.steps || []).map((s) => '<tr><td>' + s.day + '</td><td>' + (L[s.segment] || s.segment) + '</td><td><b>' + escapeHtml(s.name) + '</b>' + (s.capped ? '' : ' <small style="color:#9ab">(fuera del tope)</small>') + '</td><td>' + escapeHtml(gift(s)) + '</td><td style="color:#ccc"><b>' + escapeHtml(s.title) + '</b><br>' + escapeHtml(s.text) + '</td></tr>').join('') + '</tbody></table></div></details>';
+    } catch (e) { box.innerHTML = '<span style="color:#f87171">' + escapeHtml(e.message) + '</span>'; }
+}
+async function ncToggle(k, v) { try { const r = await authFetch('/api/admin/notif-center', { method: 'PUT', body: JSON.stringify({ [k]: !!v }) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error'); loadNotifCenter(); } catch (e) { showToast(e.message, 'error'); loadNotifCenter(); } }
+async function ncSaveCap() { const v = (document.getElementById('ncCap') || {}).value; try { const r = await authFetch('/api/admin/notif-center', { method: 'PUT', body: JSON.stringify({ monthlyCap: v === '' || v == null ? null : Number(v) }) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error'); showToast('Tope guardado' + (j.reprogrammed ? ' · ' + j.reprogrammed + ' campañas del piloto se reprograman' : ''), 'success'); loadNotifCenter(); } catch (e) { showToast(e.message, 'error'); } }
+async function ncRunNow() { if (!confirm('¿Mandar AHORA los pasos de hoy del recorrido? Sólo le llega a quien todavía no recibió ese paso. Ojo: los pasos con fichas regalan plata real.')) return; try { const r = await authFetch('/api/admin/notif-center/run', { method: 'POST' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error'); const out = j.result; showToast(out ? ('Listo: ' + (out.steps || []).length + ' pasos · ' + (out.steps || []).reduce((x, s) => x + (s.sent || 0), 0) + ' avisos') : 'No corrió (apagado u otra instancia lo está haciendo)', out ? 'success' : 'error'); loadNotifCenter(true); } catch (e) { showToast(e.message, 'error'); } }
+window.loadNotifCenter = loadNotifCenter; window.ncToggle = ncToggle; window.ncSaveCap = ncSaveCap; window.ncRunNow = ncRunNow;
+// ═══ #225 REVISIÓN SEMANAL (réplica #973 de PICA ROJA) — informe, decisión, historial y texto para copiar ═══
+let _wrText = '';
+async function loadWeeklyReview() {
+    const box = document.getElementById('wrBody'); if (!box) return;
+    try {
+        const r = await authFetch('/api/admin/weekly-review');
+        const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error');
+        _wrText = j.text || ''; const rep = j.report, t = j.tuning || {};
+        const n = (v) => Number(v || 0).toLocaleString('es-AR'); const money = (v) => '$' + n(Math.round(v || 0)); const pc = (v) => v == null ? '—' : (Math.round(v * 1000) / 10).toLocaleString('es-AR') + ' %';
+        const box1 = (ico, label, val, sub, c) => '<div class="in-box" style="border-top:3px solid ' + (c || '#6366f1') + '"><div class="in-l">' + ico + ' ' + label + '</div><div class="in-v">' + val + '</div>' + (sub ? '<div class="in-s">' + sub + '</div>' : '') + '</div>';
+        const tun = 'Ajuste vigente: nivel <b>' + (t.level > 0 ? '+' : '') + (t.level || 0) + '</b> · bonos del recorrido ×' + (t.pctMult || 1) + ' · fichas ×' + (t.chipsMult || 1) + ' · campaña masiva ' + ((t.apPctPlus || 0) >= 0 ? '+' : '') + (t.apPctPlus || 0) + ' pts';
+        if (!rep || !rep.metrics) { box.innerHTML = '<div class="in-note">Todavía no corrió: sale sola el lunes a las 10 h. ' + tun + '. <button class="btn btn-secondary btn-sm" onclick="wrRun()">▶ Medir ahora</button></div>'; return; }
+        const m = rep.metrics, d = rep.decision || {}; const col = d.verdict === 'impulsar' ? '#f59e0b' : d.verdict === 'frenar' ? '#ef4444' : '#22c55e'; const V = { impulsar: '🚀 IMPULSAR', frenar: '🛑 FRENAR', mantener: '✅ MANTENER' };
+        const rate = (o) => o && o.targets ? o.converted / o.targets : null;
+        const steps = Object.keys((m.journey && m.journey.steps) || {});
+        box.innerHTML = '<div class="card" style="border-left:6px solid ' + col + ';margin-bottom:1rem"><div style="font-size:1.1rem;font-weight:900;color:' + col + '">' + (V[d.verdict] || d.verdict) + ' <small style="color:#9ab;font-weight:600">· semana ' + m.week.from + ' → ' + m.week.to + ' · nivel ' + d.prevLevel + ' → ' + d.level + (rep.forced ? ' · medición manual' : '') + '</small></div><ul style="margin:.4rem 0 .4rem 1rem;padding:0;font-size:.85rem">' + (d.reasons || []).map((x) => '<li>' + escapeHtml(x) + '</li>').join('') + '</ul><div style="font-size:.8rem;color:#9ab">' + tun + '</div></div>'
+            + '<div class="in-grid">'
+            + box1('💳', 'Cargaron esta semana', n(m.deposits.users), n(m.deposits.count) + ' cargas · ' + money(m.deposits.amount) + ' · semana anterior ' + n(m.deposits.prevUsers), '#6366f1')
+            + box1('🔁', 'Volvieron', pc(m.repeatRate), 'de los que cargaron la semana anterior · la previa ' + pc(m.prevRepeatRate), m.repeatRate != null && m.prevRepeatRate != null && m.repeatRate < m.prevRepeatRate - 0.03 ? '#ef4444' : '#22c55e')
+            + box1('🎁', 'Regalos / depósitos', pc(m.giftRatio), money(m.gifts.regalos) + ' de ' + money(m.gifts.depositos) + ' (' + m.gifts.days + ' días)', m.giftRatio == null ? '#9ca3af' : m.giftRatio <= 0.15 ? '#22c55e' : m.giftRatio <= 0.2 ? '#f59e0b' : '#ef4444')
+            + box1('🆕', 'Registrados → 1ª carga', n(m.newRegs) + ' → ' + n(m.firstDeposits), m.newRegs ? pc(m.firstDeposits / m.newRegs) + ' hicieron su primera carga' : '', '#0ea5e9')
+            + box1('📲', 'Con la app (cargaron en 30 d)', pc(m.app && m.app.appPct), (m.app ? n(m.app.withApp) + ' de ' + n(m.app.depositors30) : ''), '#0ea5e9')
+            + box1('🎚️', 'Bajaron sus avisos', n(m.prefs.mine + m.prefs.none), 'sólo lo mío ' + n(m.prefs.mine) + ' · ninguno ' + n(m.prefs.none) + ' · pausados por fatiga ' + n(m.prefs.fatigued), '#f59e0b')
+            + box1('🧭', 'Recorrido (carga en 7 d)', pc(rate(m.journey)), n(m.journey.converted) + ' de ' + n(m.journey.targets) + ' contactados hace 7–14 d', '#7c3aed')
+            + box1('🤖', 'Campaña masiva (48 h)', pc(rate(m.campaigns)), n(m.campaigns.converted) + ' de ' + n(m.campaigns.targets), '#7c3aed')
+            + '</div>'
+            + (steps.length ? '<h3 class="in-h">🧭 Qué paso del recorrido funciona</h3><div class="card" style="padding:.4rem .6rem;overflow:auto"><table class="data-table" style="width:100%;font-size:.82rem"><thead><tr><th>Paso</th><th>Contactados</th><th>Cargaron en 7 d</th><th>%</th></tr></thead><tbody>' + steps.map((k) => '<tr><td>' + escapeHtml(k) + '</td><td>' + n(m.journey.steps[k].targets) + '</td><td>' + n(m.journey.steps[k].converted) + '</td><td>' + pc(rate(m.journey.steps[k])) + '</td></tr>').join('') + '</tbody></table></div>' : '')
+            + '<h3 class="in-h">💸 Reembolsos reclamados en la semana</h3><div class="in-grid">' + (Object.keys(m.refunds || {}).length ? Object.keys(m.refunds).map((k) => box1('💸', { daily: 'Diario', weekly: 'Semanal', monthly: 'Mensual', rakeback: 'Rakeback' }[k] || k, n(m.refunds[k].n), money(m.refunds[k].amount), '#10b981')).join('') : '<div style="color:#9ab">ninguno</div>') + '</div>'
+            + ((d.recommendations || []).length ? '<h3 class="in-h">💡 Dónde está el problema de fondo (no automático)</h3><div class="card"><ul style="margin:0 0 0 1rem;padding:0;font-size:.85rem">' + d.recommendations.map((x) => '<li style="margin:.2rem 0">' + escapeHtml(x) + '</li>').join('') + '</ul></div>' : '')
+            + (m.segments ? '<h3 class="in-h">📊 Segmentos del recorrido (último día)</h3><div class="in-grid">' + Object.keys(m.segments).map((k) => box1('', k, n(m.segments[k]), '', '#64748b')).join('') + '</div>' : '')
+            + ((rep.history || []).length ? '<h3 class="in-h">🗓️ Historial</h3><div class="card" style="padding:.4rem .6rem;overflow:auto"><table class="data-table" style="width:100%;font-size:.82rem"><thead><tr><th>Semana</th><th>Decisión</th><th>Nivel</th><th>Cargadores</th><th>Volvieron</th><th>Regalos/dep.</th></tr></thead><tbody>' + rep.history.map((x) => '<tr><td>' + escapeHtml(x.weekKey || '') + '</td><td>' + escapeHtml(x.verdict || '') + '</td><td>' + (x.level == null ? '—' : x.level) + '</td><td>' + n(x.depositors) + '</td><td>' + pc(x.repeatRate) + '</td><td>' + pc(x.giftRatio) + '</td></tr>').join('') + '</tbody></table></div>' : '')
+            + '<details style="margin-top:1rem"><summary style="cursor:pointer"><b>📋 Informe en texto</b> (para copiar y analizar afuera)</summary><textarea readonly style="width:100%;min-height:260px;font-family:monospace;font-size:.75rem;margin-top:.4rem">' + escapeHtml(_wrText) + '</textarea></details>';
+    } catch (e) { box.innerHTML = '<span style="color:#f87171">' + escapeHtml(e.message) + '</span>'; }
+}
+async function wrRun() {
+    if (!confirm('¿Medir la semana AHORA y aplicar la decisión? (Normalmente corre sola los lunes a las 10 h.)')) return;
+    const box = document.getElementById('wrBody'); if (box) box.innerHTML = '<div class="in-note">⏳ Midiendo la semana… (puede tardar un minuto)</div>';
+    try { const r = await authFetch('/api/admin/weekly-review/run', { method: 'POST' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'error'); if (!j.report) showToast('No corrió: apagado u otra instancia lo está haciendo. Probá en un minuto.', 'error'); loadWeeklyReview(); } catch (e) { showToast(e.message, 'error'); loadWeeklyReview(); }
+}
+async function wrCopy() { try { await navigator.clipboard.writeText(_wrText || 'Todavía no hay revisión semanal.'); showToast('📋 Informe copiado', 'success'); } catch (_) { showToast('No se pudo copiar: abrí "Informe en texto" abajo y copialo de ahí.', 'error'); } }
+window.loadWeeklyReview = loadWeeklyReview; window.wrRun = wrRun; window.wrCopy = wrCopy;
+// ═══ #225 PILOTO AUTOMÁTICO (réplica #817 de PICA ROJA) — estado + plan del año (este mes → diciembre del año que viene) ═══
+async function loadCronAutopilot() {
+    const card = document.getElementById('cronAutopilotCard'), box = document.getElementById('apMonths'); if (!card || !box) return;
+    if (!(_featuresCache && _featuresCache.autopilot === true)) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    try {
+        const r = await authFetch('/api/admin/cronograma-autopilot'); const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'error');
+        const c = j.config || {};
+        const st = document.getElementById('apState');
+        if (st) st.innerHTML = c.enabled ? '<b style="color:#22c55e">🟢 EN MARCHA</b> · ' + c.parts + ' lotes desde las ' + escapeHtml(c.time) + ' · bono ' + c.hours + ' h · máx ' + c.cap + ' por cliente/mes' : '<b style="color:#f87171">⚪ apagado</b>';
+        const num = (n) => Number(n || 0).toLocaleString('es-AR');
+        box.innerHTML = '<div style="font-weight:700;margin-bottom:.3rem">📆 Estrategia del año (' + (j.months || []).length + ' meses, automática)</div>' + (j.months || []).map((m) => {
+            const [y, mo] = m.month.split('-').map(Number);
+            const label = new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString('es-AR', { month: 'long', year: 'numeric', timeZone: 'UTC' }).replace(/^./, (x) => x.toUpperCase());
+            const specials = m.items.filter((i) => i.special).map((i) => i.day + ' ' + i.special);
+            const bonos = m.items.filter((i) => i.gift !== 'aviso').length;
+            return '<details style="border-bottom:1px solid rgba(255,255,255,.08);padding:.3rem 0"><summary style="cursor:pointer"><b>' + label + '</b> · ' + m.days + ' días · ' + m.groups + ' grupos que rotan + ' + m.forAll + ' día(s) para todos · ' + bonos + ' con bono' +
+                (m.programmed ? ' · <span style="color:#22c55e">✅ ' + num(m.programmed) + ' programados</span>' : (c.enabled ? ' · <span style="color:#9ca3af">se programa solo un mes antes</span>' : '')) +
+                (specials.length ? '<div style="color:#a5b4fc;font-size:.74rem;margin-left:1rem">🎉 ' + escapeHtml(specials.join(' · ')) + '</div>' : '') + '</summary>' +
+                '<div style="overflow:auto"><table class="data-table" style="margin-top:.3rem"><thead><tr><th>Día</th><th>Qué sale</th><th>A quién</th><th>Por qué</th><th>Mensaje</th></tr></thead><tbody>' +
+                m.items.map((i) => '<tr><td style="white-space:nowrap">' + i.dayKey.slice(8, 10) + '/' + i.dayKey.slice(5, 7) + ' ' + escapeHtml(i.dow.slice(0, 3)) + ' ' + escapeHtml(i.time) + '</td><td><b>' + escapeHtml(i.gift) + '</b></td><td>' + escapeHtml(i.who) + '</td><td>' + escapeHtml(i.reason) + '</td><td style="white-space:normal;min-width:260px;color:#ccc"><b>' + escapeHtml(i.title || '') + '</b><br>' + escapeHtml(i.message || '') + '</td></tr>').join('') +
+                '</tbody></table></div></details>';
+        }).join('');
+        try { const first = box.querySelector('details'); if (first) first.open = true; } catch (_) {}
+    } catch (e) { box.innerHTML = '<span style="color:#f87171">No se pudo cargar el piloto automático: ' + escapeHtml(e.message) + '</span>'; }
+}
+window.loadCronAutopilot = loadCronAutopilot;
+
 
 
 
@@ -12583,7 +12690,7 @@ async function loadNotifBatches() {
         box.innerHTML = rows.map((b) => {
             const fecha = new Date(b.sentAt).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
             const vencido = new Date(b.expiresAt).getTime() <= Date.now();
-            const regalo = b.giftType === 'percent' ? ('+' + b.amount + '%' + (b.capARS != null ? (Number(b.capARS) === 0 ? ' · sin tope' : ' · tope $' + Number(b.capARS).toLocaleString('es-AR') + (b.capExcessPct != null ? ' +' + b.capExcessPct + '% resto' : '')) : '')) : ('$' + Number(b.amount).toLocaleString('es-AR'));
+            const regalo = b.giftType === 'none' ? '📣 sólo aviso' : b.giftType === 'percent' ? ('+' + b.amount + '%' + (b.capARS != null ? (Number(b.capARS) === 0 ? ' · sin tope' : ' · tope $' + Number(b.capARS).toLocaleString('es-AR') + (b.capExcessPct != null ? ' +' + b.capExcessPct + '% resto' : '')) : '')) : ('$' + Number(b.amount).toLocaleString('es-AR'));
             const modo = b.mode === 'code' ? ('🔑 ' + escapeHtml(b.code || '')) : ('⏰ ' + b.validHours + 'hs');
             const aud = b.isPublic ? ('📣 código público' + (b.maxClaims ? ' (cupo ' + b.maxClaims + ')' : '')) :
                 b.audienceType === 'all' ? '🌍 todos' :
@@ -14735,7 +14842,7 @@ function _cronGiftTxt(g) {
     if (!g) return '';
     if (g.kind === 'push') return '📱 aviso push (sin regalo)' + (g.batchSize ? ' · lotes de ' + g.batchSize : '');
     if (g.kind === 'auto') return '🤖 plantilla ' + (g.type || '') + (g.plan ? ' · plan ' + g.plan : '');
-    const base = g.giftType === 'percent' ? ('+' + g.amount + '%' + (g.applyMode === 'auto' ? ' auto' : ' c/agente') + (g.capARS != null ? (Number(g.capARS) === 0 ? ' sin tope' : ' tope $' + Number(g.capARS).toLocaleString('es-AR')) : '')) : ('$' + Number(g.amount || 0).toLocaleString('es-AR') + ' fichas');
+    const base = g.giftType === 'none' ? '📣 sólo aviso' : g.giftType === 'percent' ? ('+' + g.amount + '%' + (g.applyMode === 'auto' ? ' auto' : ' c/agente') + (g.capARS != null ? (Number(g.capARS) === 0 ? ' sin tope' : ' tope $' + Number(g.capARS).toLocaleString('es-AR')) : '')) : ('$' + Number(g.amount || 0).toLocaleString('es-AR') + ' fichas');
     return base + ' · ' + (g.mode === 'code' ? 'código' : 'por tiempo ' + g.validHours + 'h');
 }
 
@@ -14812,6 +14919,7 @@ async function loadCronograma() {
         if (!r.ok) throw new Error(j.error || 'error');
         _cronData = j;
         _cronRenderCalendar(); _cronRenderList();
+        try { loadCronAutopilot(); } catch (_) {} // #225 piloto automático (la card se ve sólo con la función prendida)
     } catch (e) {
         const l = document.getElementById('cronList'); if (l) l.innerHTML = '<span style="color:#f87171">No se pudo cargar el cronograma</span>';
     }

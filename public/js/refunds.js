@@ -767,12 +767,40 @@ VIP.refunds = (function () {
                 <div style="font-size:13px;font-weight:800;color:#d4af37;margin:14px 0 8px;">Escala de reembolsos</div>
                 <div style="display:flex;flex-direction:column;gap:6px;">${tiersHtml}</div>
 
+                <!-- #225 (réplica #971 de PICA ROJA): qué avisos quiere recibir, sin apagar las notificaciones del teléfono. Se ve sólo con el Centro de avisos prendido. -->
+                <div id="pfAvisosRow" style="display:none;margin-top:14px;background:rgba(0,0,0,0.3);border-radius:10px;padding:12px;">
+                    <div style="font-size:13px;font-weight:800;color:#d4af37;margin-bottom:4px;">🎚️ Qué avisos querés recibir</div>
+                    <div id="pfAvisosHint" style="font-size:11px;color:#999;margin-bottom:8px;">Bonos del día, novedades y todo lo tuyo</div>
+                    <select id="pfAvisosSel" onchange="VIP.refunds.setNotifLevel(this.value)" aria-label="Qué avisos querés recibir"
+                        style="width:100%;background:#1a0033;color:#fff;border:1px solid rgba(212,175,55,0.4);border-radius:10px;padding:9px 10px;font-size:13px;font-weight:700;">
+                        <option value="all">Todos</option><option value="mine">Sólo lo mío</option><option value="none">Ninguno</option>
+                    </select>
+                </div>
+
                 <button type="button" onclick="VIP.refunds.closeProfileModal()"
                     style="width:100%;margin-top:16px;background:linear-gradient(135deg,#6a0dad,#9b30ff);color:#fff;
                            border:none;padding:12px;border-radius:22px;font-weight:800;font-size:14px;cursor:pointer;">
                     Cerrar</button>
             </div>`;
         overlay.style.display = 'flex';
+        paintPfAvisos(); // #225
+    }
+
+    // #225: preferencia de avisos (GET/POST /api/notifications/prefs). Con el Centro de avisos apagado la fila no se muestra.
+    function _pfAvisosHint(v) { const h = document.getElementById('pfAvisosHint'); if (h) h.textContent = v === 'none' ? 'Sólo Soporte y tus cargas y retiros' : v === 'mine' ? 'Tu reembolso y los regalos para vos; nada masivo' : 'Bonos del día, novedades y todo lo tuyo'; }
+    function paintPfAvisos() {
+        const row = document.getElementById('pfAvisosRow'), sel = document.getElementById('pfAvisosSel'); if (!row || !sel || !VIP.state.currentToken) return;
+        fetch(VIP.config.API_URL + '/api/notifications/prefs', { headers: { 'Authorization': 'Bearer ' + VIP.state.currentToken } }).then((x) => x.json()).then((j) => {
+            if (!j || !j.success || j.enabled === false) { row.style.display = 'none'; return; }
+            row.style.display = ''; sel.value = j.level || 'all'; _pfAvisosHint(sel.value);
+        }).catch(() => {});
+    }
+    async function setNotifLevel(v) {
+        try {
+            const x = await fetch(VIP.config.API_URL + '/api/notifications/prefs', { method: 'POST', headers: { 'Authorization': 'Bearer ' + VIP.state.currentToken, 'Content-Type': 'application/json' }, body: JSON.stringify({ level: v }) });
+            const j = await x.json(); if (!(j && j.success)) throw new Error((j && j.error) || 'error');
+            _pfAvisosHint(j.level); try { VIP.ui.showToast('Listo, guardado ✓'); } catch (_) {}
+        } catch (_) { try { VIP.ui.showToast('No se pudo guardar, probá de nuevo', 'error'); } catch (__) {} paintPfAvisos(); }
     }
 
     function closeProfileModal() {
@@ -791,6 +819,7 @@ VIP.refunds = (function () {
         claimRefund,
         showUnifiedRefundModal,
         showProfileModal,
+        setNotifLevel, // #225
         closeProfileModal,
         loadCashbackStatus,
         refreshCashback,

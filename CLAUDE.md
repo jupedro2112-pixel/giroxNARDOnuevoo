@@ -173,7 +173,10 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   **Historias (#224):** `Story` + `storyAutopilot`/`storyImage`; el bono "+X%" de una historia se aplica en la carga por
   el MISMO pipeline de los bonos automáticos (`resolveAutoBonus` → `claimStoryBonusPercent`, source `story_bonus`,
   después de la ruleta y antes del lote). En el panel `deleteStory`/`loadStories` son de las historias de INFLUENCERS:
-  las de la app se llaman `*AppStory`.
+  las de la app se llaman `*AppStory`. **Centro de avisos / piloto (#225):** toda push automática nueva lleva
+  `data.kind` (`'promo'` masivo · `'personal'` lo suyo; sin kind = del sistema) para respetar `User.notifPrefs`; un lote
+  "sólo aviso" es `giftType:'none'`; `_resolveNotifBatchAudience` aplica `appOnly/monthlyCap/dailyCap/rotGroup` sobre
+  el resolver base. Los crons nuevos usan `_cronClaim(nombre, ttl)` (lock en Config) además de sus llaves únicas.
 
 - **Lotes y Cronograma (#218):** el POST `/api/admin/notif-batches` es un wrapper de
   `_createNotifBatchFromBody(body, user)`; cualquier validación/efecto nuevo del lote va en esa

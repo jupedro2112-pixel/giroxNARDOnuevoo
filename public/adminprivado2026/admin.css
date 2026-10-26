@@ -1965,3 +1965,13 @@ body {
 /* #224 Cronograma historias: tarjetas del plan del día */
 .sa-item { font-size:.76rem; padding:5px 7px; border-radius:8px; background:rgba(255,255,255,.03); display:flex; flex-direction:column; gap:2px; }
 .sa-item .sa-sub { color:#9ca3af; font-size:.72rem; }
+
+
+/* #225 Centro de avisos / Revisión semanal: recuadros de números */
+.in-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:.5rem; margin:.3rem 0 .6rem; }
+.in-box { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:.5rem .7rem; }
+.in-box .in-l { font-size:.72rem; color:#9ab; text-transform:uppercase; letter-spacing:.5px; }
+.in-box .in-v { font-size:1.25rem; font-weight:900; color:#fff; margin-top:2px; }
+.in-box .in-s { font-size:.72rem; color:#9ca3af; margin-top:2px; }
+.in-note { background:rgba(255,255,255,.04); border:1px dashed rgba(255,255,255,.15); border-radius:10px; padding:.6rem .8rem; font-size:.85rem; color:#cbd5e1; }
+.in-h { font-size:.95rem; margin:.9rem 0 .3rem; color:#d4af37; }

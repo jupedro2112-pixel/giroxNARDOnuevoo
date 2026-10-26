@@ -34,7 +34,8 @@ try {
 // ============================================
 // CONFIGURACIÓN DE CACHÉ
 // ============================================
-const CACHE_VERSION = 'v119'; // v119: HISTORIAS (botón en el header, anillo en el ingreso, visor, bono +X% reclamable, push que abre la historia) — se ven sólo con la función prendida (#224)
+const CACHE_VERSION = 'v120'; // v120: Perfil → 'Qué avisos querés recibir' (todos / sólo lo mío / ninguno) + la push del reembolso abre Reembolsos (/?open=refund) (#225)
+// v119: HISTORIAS (botón en el header, anillo en el ingreso, visor, bono +X% reclamable, push que abre la historia) — se ven sólo con la función prendida (#224)
 // v118: medidor de uso de la app (activity.js, ping cada 60 s sólo con Datos IA prendido) + datos del teléfono (#223)
 // v117: registro sólo con invitación (aviso en la pantalla de ingreso, se esconde Registrarse sin link de referido/publicidad) + interruptores de funciones (#222)
 // v116: // v116: Información del Servicio y mini-tarjeta muestran el % vigente del bono por instalar la app (chau 100% fijo)

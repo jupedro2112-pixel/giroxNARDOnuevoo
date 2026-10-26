@@ -32,8 +32,10 @@ const notifBatchSchema = new mongoose.Schema({
   // carga, cartel verde). fixed = regalo de fichas: en modo 'code' se
   // ACREDITA AUTOMÁTICO al canjear (bono girox con rolloverX); en modo
   // 'window' va con cartel del agente como el %.
-  giftType: { type: String, enum: ['percent', 'fixed'], required: true },
-  amount: { type: Number, required: true, min: 1 },
+  // #225: 'none' = sólo aviso (sin regalo) — lo usan el recorrido de retención y el piloto automático.
+  giftType: { type: String, enum: ['percent', 'fixed', 'none'], required: true },
+  // % (1..200) o $ (1..500000) según giftType; 0 con 'none'.
+  amount: { type: Number, required: true, min: 0 },
 
   // Rollover del regalo de fichas auto-acreditado (owner 2026-08-10):
   // 0 = sin rollover (retirable), x2/x5/etc = debe apostar N× el bono.

@@ -1245,6 +1245,12 @@ async function sendPushIfOffline(user, title, body, data = {}, opts = {}) {
   if (user.fcmToken) allTokens.add(user.fcmToken);
 
   if (allTokens.size === 0) return { delivery: 'none', sent: 0, failed: 0, cleaned: 0 };
+  // #225: qué avisos quiere el cliente (Perfil). data.kind: 'promo' (masivo) · 'personal' (lo suyo) · sin kind = del sistema (siempre sale).
+  try {
+    const kind = data && data.kind, lv = (user.notifPrefs && user.notifPrefs.level) || 'all', fat = Number(user.notifPrefs && user.notifPrefs.fatigue) || 0;
+    if ((kind === 'promo' || kind === 'personal') && lv === 'none') return { delivery: 'none', sent: 0, failed: 0, cleaned: 0, muted: true };
+    if (kind === 'promo' && (lv === 'mine' || fat >= 10)) return { delivery: 'none', sent: 0, failed: 0, cleaned: 0, muted: true };
+  } catch (_) {}
 
   // Si el usuario tiene un socket activo, ya recibió el mensaje en tiempo real;
   // no enviamos push para evitar notificación duplicada. En su lugar emitimos
@@ -10682,6 +10688,25 @@ async function initializeData() {
       response: '🎉 ¡Código de bienvenida canjeado, {username}!\n\n💰 Tu BONO SORPRESA de ${amount} ya está ACREDITADO en tu cuenta. ¡A jugarlo! 🎰\n\n⚠️ Es por única vez.',
     },
     {
+      // #225: avisos "reclamá tu reembolso" del Centro de avisos (semanal / mensual; el diario queda inerte en esta página). Variable: {pct}
+      name: '/sys_refund_reminder',
+      description: 'Centro de avisos: push a quien perdió AYER y no reclamó el reembolso diario (al tocarla abre Reembolso). Variable: {pct}. En esta página no hay reembolso diario por rango: hoy no se envía.',
+      type: 'message',
+      response: REFUND_REMIND_DEFAULT
+    },
+    {
+      name: '/sys_refund_reminder_weekly',
+      description: 'Centro de avisos: push (lunes y jueves) a quien tiene el reembolso SEMANAL disponible y no lo reclamó. Variable: {pct}.',
+      type: 'message',
+      response: REFUND_REMIND_WEEKLY_DEFAULT
+    },
+    {
+      name: '/sys_refund_reminder_monthly',
+      description: 'Centro de avisos: push (día 1 y 8) a quien tiene el reembolso MENSUAL disponible y no lo reclamó. Variable: {pct}.',
+      type: 'message',
+      response: REFUND_REMIND_MONTHLY_DEFAULT
+    },
+    {
       // #222: aviso de "registro sólo con invitación" (pantalla de ingreso y respuesta del server)
       name: '/sys_register_invite',
       description: 'Registro SÓLO CON INVITACIÓN (COMANDOS → Registro de clientes): aviso que ve quien quiere registrarse sin código de referido ni link de publicidad.',
@@ -15687,6 +15712,7 @@ async function _diaFirstDepositDate() {
 // teléfono usa (lastDevice) y el ID propio del celular (deviceIds, últimos 6) que cruzan las Alertas de estafa.
 app.post('/api/activity/ping', authMiddleware, async (req, res) => {
   try {
+    User.updateOne({ id: req.user.userId, 'notifPrefs.fatigue': { $gt: 0 } }, { $set: { 'notifPrefs.fatigue': 0 } }).catch(() => {}); // #225: abrió la app ⇒ sin fatiga (aunque Datos IA esté apagado)
     if (!(await featureFlags.isOn('datosIa'))) return res.json({ ok: false, off: true });
     const userId = req.user.userId; const now = new Date();
     try {
@@ -20195,7 +20221,7 @@ function _notifChannelOf(u) {
   return 'none';
 }
 
-const NOTIF_BATCH_USER_SELECT = 'id username role isBlocked fcmToken fcmTokens fcmTokenContext notifPermission';
+const NOTIF_BATCH_USER_SELECT = 'id username role isBlocked fcmToken fcmTokens fcmTokenContext notifPermission notifPrefs'; // #225: + preferencias
 
 // Resuelve la lista de usernames del panel (case-insensitive) a usuarios
 // reales. Devuelve { users, notFound, skipped } — skipped = bloqueados.
@@ -20246,7 +20272,48 @@ function _notifInactiveRange(b) {
   const or = winFrom ? [{ lastLogin: { $gte: winFrom, $lte: winTo } }] : [{ lastLogin: { $lt: winTo } }, { lastLogin: null }, { lastLogin: { $exists: false } }];
   return { days: days || null, daysMax, dateFrom: hasDates ? b.dateFrom : null, dateTo: hasDates ? b.dateTo : null, hasRange: !!winFrom, winFrom, winTo, label, or };
 }
+// #225 (réplica #817/#971 de PICA ROJA): filtros de AUDIENCIA que usan el recorrido y el piloto automático, encima del resolver de siempre:
+// `appOnly` (sólo quien tiene la app con permiso de avisos), `monthlyCap` (tope de lotes por cliente en el mes), `dailyCap` (tope por día)
+// y `rotGroup {n,k}` (grupo estable por hash del id ⇒ los clientes nuevos entran solos a algún grupo). Sin esos campos no cambia nada.
+function _notifMonthStartART(d) { const k = _schedArtKey(d || new Date()).slice(0, 7); return new Date(k + '-01T00:00:00-03:00'); }
+async function _notifDayCounts(ids, now) {
+  if (!ids.length) return new Map();
+  const start = new Date(_schedArtKey(now || new Date()) + 'T00:00:00-03:00');
+  const rows = await NotifBatch.aggregate([
+    { $match: { sentAt: { $gte: start }, isPublic: { $ne: true }, 'recipients.userId': { $in: ids } } },
+    { $project: { recipients: { $filter: { input: '$recipients', as: 'r', cond: { $in: ['$$r.userId', ids] } } } } },
+    { $unwind: '$recipients' }, { $group: { _id: '$recipients.userId', n: { $sum: 1 } } }]);
+  return new Map(rows.map((r) => [r._id, r.n]));
+}
+async function _notifMonthCounts(ids, now) {
+  if (!ids.length) return new Map();
+  const rows = await NotifBatch.aggregate([
+    { $match: { sentAt: { $gte: _notifMonthStartART(now) }, isPublic: { $ne: true }, 'recipients.userId': { $in: ids } } },
+    { $project: { recipients: { $filter: { input: '$recipients', as: 'r', cond: { $in: ['$$r.userId', ids] } } } } },
+    { $unwind: '$recipients' }, { $group: { _id: '$recipients.userId', n: { $sum: 1 } } }]);
+  return new Map(rows.map((r) => [r._id, r.n]));
+}
+function _rotGroupOf(id, n) { let h = 0x811c9dc5; const t = String(id || ''); for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h % n; }
 async function _resolveNotifBatchAudience(b) {
+  const r = await _resolveNotifBatchAudienceBase(b);
+  if (!r || r.error || !Array.isArray(r.users)) return r;
+  const appOnly = b.appOnly === true || b.appOnly === 'true';
+  const cap = b.monthlyCap == null || b.monthlyCap === '' ? null : Math.round(Number(b.monthlyCap));
+  if (cap != null && (!Number.isFinite(cap) || cap < 1 || cap > 60)) return { error: 'El tope por cliente en el mes tiene que estar entre 1 y 60 (o vacío = sin tope).' };
+  const rg = b.rotGroup && Number(b.rotGroup.n) > 1 ? { n: Math.min(60, Math.round(Number(b.rotGroup.n))), k: Math.round(Number(b.rotGroup.k)) || 0 } : null;
+  const dcap = b.dailyCap == null || b.dailyCap === '' ? null : Math.round(Number(b.dailyCap));
+  if (!appOnly && cap == null && !rg && !dcap) return r;
+  let users = r.users, noApp = 0, capped = 0, dayCapped = 0;
+  if (rg) users = users.filter((u) => _rotGroupOf(u.id, rg.n) === ((rg.k % rg.n) + rg.n) % rg.n);
+  if (appOnly) { const before = users.length; users = users.filter((u) => _notifChannelOf(u) === 'app' && u.notifPermission !== 'denied'); noApp = before - users.length; }
+  if (cap != null && users.length) { const counts = await _notifMonthCounts(users.map((u) => u.id), new Date()); const before = users.length; users = users.filter((u) => (counts.get(u.id) || 0) < cap); capped = before - users.length; }
+  if (dcap != null && dcap > 0 && users.length) { const dc = await _notifDayCounts(users.map((u) => u.id), new Date()); const before = users.length; users = users.filter((u) => (dc.get(u.id) || 0) < dcap); dayCapped = before - users.length; }
+  const aud = Object.assign({}, r.audience || {});
+  const base = aud.audienceLabel || (aud.audienceType === 'all' ? '🌍 todos' : aud.audienceType === 'list' ? '📋 lista' : '');
+  aud.audienceLabel = [base, rg ? `grupo ${(rg.k % rg.n) + 1}/${rg.n}` : '', appOnly ? '📱 con app y notis' : '', cap != null ? `tope ${cap}/mes` : '', dcap ? `${dcap}/día` : ''].filter(Boolean).join(' · ').slice(0, 200);
+  return Object.assign({}, r, { users, audience: aud, filtered: { noApp, capped, dayCapped } });
+}
+async function _resolveNotifBatchAudienceBase(b) {
   const type = (b.audienceType === 'inactive' || b.audienceType === 'all') ? b.audienceType : 'list';
   if (type === 'list') {
     const usernames = Array.isArray(b.usernames) ? b.usernames : [];
@@ -20374,6 +20441,7 @@ async function _creditNotifBatchGift(uDoc, batch) {
 
 // Texto que ve el cliente en el chat (el push lleva title + message pelado).
 function _notifBatchChatContent(batch) {
+  if (batch.giftType === 'none') return String(batch.message || ''); // #225: sólo aviso, sin bloque de regalo
   if (batch.mode === 'code') {
     // Fichas por código = acreditación AUTOMÁTICA al canjear; % = lo aplica
     // el agente en la próxima carga.
@@ -20450,7 +20518,7 @@ async function _processOneNotifBatch(batchId) {
     let dejarEnSending = false; // fallo transitorio del crédito → reintento automático
     try {
       const u = await User.findOne({ id: rec.userId })
-        .select('id username fcmToken fcmTokens').lean();
+        .select('id username fcmToken fcmTokens notifPrefs').lean(); // #225 + notifPrefs
       if (u) {
         let mensajeChat = chatContent;
         let notificar = true;
@@ -20496,7 +20564,7 @@ async function _processOneNotifBatch(batchId) {
               : '';
             mensajeChat = `${batch.message}\n\n💰 ¡Te ACREDITAMOS $${Number(batch.amount).toLocaleString('es-AR')} en fichas${rollTxt}! Ya están en tu cuenta. ¡A jugarlas! 🎰`;
           }
-        } else if (batch.mode === 'window' && !rec.promoBonusId) {
+        } else if (batch.mode === 'window' && batch.giftType === 'percent' && !rec.promoBonusId) { // #225: con 'none' no hay PromoBonus
           // % por tiempo: cartel verde del agente (PromoBonus), como siempre.
           const pb = await _activateBatchPromoBonus(u, batch);
           await NotifBatch.updateOne(
@@ -20510,7 +20578,9 @@ async function _processOneNotifBatch(batchId) {
             receiverId: u.id, receiverRole: 'user', content: mensajeChat,
             type: 'system', timestamp: new Date(), read: false
           });
-          const r = await sendPushIfOffline(u, pushTitle, pushBody, { tag: 'notif-batch' });
+          const _isJourney = /^Recorrido/.test(String(batch.name || '')); // #225: el recorrido es 'personal'; el resto, 'promo'
+          const r = await sendPushIfOffline(u, pushTitle, pushBody, { tag: 'notif-batch', kind: _isJourney ? 'personal' : 'promo' });
+          if (r && r.sent > 0 && !_isJourney) User.updateOne({ id: u.id }, { $inc: { 'notifPrefs.fatigue': 1 } }).catch(() => {}); // #225 fatiga
           delivery = (r && r.delivery) || 'none';
         } else {
           delivery = 'none';
@@ -20585,6 +20655,7 @@ async function _activateBatchPromoBonus(user, batch) {
 }
 
 function _giftLabelOf(batch) {
+  if (batch.giftType === 'none') return 'aviso'; // #225
   if (batch.giftType !== 'percent') {
     return `regalo de $${Number(batch.amount).toLocaleString('es-AR')} en tu próxima carga`;
   }
@@ -20814,10 +20885,11 @@ async function _createNotifBatchFromBody(body, user) {
     const b = req.body || {};
     const mode = b.mode === 'window' ? 'window' : (b.mode === 'code' ? 'code' : null);
     if (!mode) return res.status(400).json({ error: 'Modo inválido (code | window).' });
-    const giftType = b.giftType === 'fixed' ? 'fixed' : (b.giftType === 'percent' ? 'percent' : null);
-    if (!giftType) return res.status(400).json({ error: 'Tipo de regalo inválido (percent | fixed).' });
+    const giftType = b.giftType === 'fixed' ? 'fixed' : (b.giftType === 'percent' ? 'percent' : (b.giftType === 'none' ? 'none' : null)); // #225: 'none' = sólo aviso
+    if (!giftType) return res.status(400).json({ error: 'Tipo de regalo inválido (percent | fixed | none).' });
+    if (giftType === 'none' && mode !== 'window') return res.status(400).json({ error: 'Un aviso sin regalo va por tiempo (window), no con código.' });
 
-    const amount = Math.round(Number(b.amount));
+    const amount = giftType === 'none' ? 0 : Math.round(Number(b.amount));
     if (giftType === 'percent' && (!Number.isFinite(amount) || amount < 1 || amount > 200)) {
       return res.status(400).json({ error: 'El % del regalo tiene que estar entre 1 y 200.' });
     }
@@ -21333,6 +21405,420 @@ try {
 
 function _schedCanManage(role) { return NOTIF_BATCH_SEND_ROLES.includes(role); }
 function _schedCanView(role) { return NOTIF_BATCH_VIEW_ROLES.includes(role); }
+
+// ============================================================
+// #225 CENTRO DE AVISOS + PILOTO AUTOMÁTICO (réplica #817/#821/#970/#971/#973/#979 de PICA ROJA)
+// ============================================================
+// Todo lo AUTOMÁTICO que le llega al cliente sale de acá, con UN tope (1 aviso por día + tope mensual, contando también los lotes a
+// mano) y respetando lo que el cliente eligió en su Perfil (User.notifPrefs). Dos interruptores en COMANDOS → Funciones:
+//   · `notifCenter`: recorrido de retención por cliente (_journeyTick, 17–19 h ART), avisos "reclamá tu reembolso" (diario 11–21 h,
+//     semanal lunes/jueves, mensual 1 y 8), revisión semanal (lunes 10–14 h: mide y ajusta sola el nivel de regalos).
+//   · `autopilot`: una campaña por día a las 19:00 en 3 tandas, sólo a quien tiene la app, grupos que rotan, feriados argentinos
+//     (src/utils/arCalendar.js), bono AUTOMÁTICO de 4 h; se pre-programa el mes en curso y el que viene (`ScheduledCampaign.autoKey`).
+// Config['notifCenter'] = { monthlyCap, journey, refundReminder } · Config['journeyTuning'] · estado: journeyLast, refundRemindLast, weeklyReview.
+// Allá esto corría siempre y se apagaba sólo por env; acá arranca APAGADO. No se trajeron: ofertas de bienvenida por días (#886),
+// historia "pagos de la semana" (#971, usaba sorteos), reglas viejas (acá es el flag `legacyNotifs`), cohortes de INICIO.
+// Adaptado a ESTE repo: sin reembolso diario por rango (el aviso diario queda inerte) y sin DailyClose (la revisión semanal mide
+// regalado/depositado directo de Transaction).
+const retentionJourney = require('./src/services/retentionJourney');
+const weeklyReview = require('./src/services/weeklyReview');
+const arCalendar = require('./src/utils/arCalendar');
+// Lock genérico para crons en multi-instancia: una sola instancia corre la pasada; las demás saltean hasta que vence.
+async function _cronClaim(name, ttlMs) {
+  try {
+    const key = ('cronlock_' + name).toLowerCase(); const now = Date.now();
+    const r = await Config.findOneAndUpdate({ key, $or: [{ 'value.until': { $lt: now } }, { 'value.until': null }] }, { $set: { value: { until: now + ttlMs, at: new Date().toISOString() }, updatedAt: new Date() } }, { new: true });
+    if (r) return true;
+    if (!(await Config.exists({ key }))) { await Config.set(key, { until: now + ttlMs, at: new Date().toISOString() }, 'system'); return true; }
+    return false;
+  } catch (_) { return true; }
+}
+const _ncGate = (flag) => async (req, res, next) => {
+  try {
+    if (!(await featureFlags.isOn(flag))) return res.status(404).json({ error: (flag === 'autopilot' ? 'El piloto automático' : 'El Centro de avisos') + ' está apagado (COMANDOS → Funciones).', code: 'FEATURE_OFF' });
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
+    next();
+  } catch (_) { res.status(500).json({ error: 'Error del servidor' }); }
+};
+let _tuningCache = weeklyReview.tuningFor(0);
+async function getJourneyTuning() { let t = null; try { t = await getConfig('journeyTuning', null); } catch (_) {} _tuningCache = weeklyReview.tuningFor(t && Number.isFinite(Number(t.level)) ? Number(t.level) : 0); return _tuningCache; }
+async function getNotifCenterConfig() {
+  let c = {}; try { c = (await getConfig('notifCenter', null)) || {}; } catch (_) {}
+  const cap = Math.round(Number(c.monthlyCap));
+  return { monthlyCap: Number.isFinite(cap) && cap >= 2 && cap <= 60 ? cap : null, dailyCap: 1, journey: c.journey !== false, refundReminder: c.refundReminder !== false };
+}
+// ---- Avisos "reclamá tu reembolso" (diario / semanal / mensual) ----
+const REFUND_REMIND_DEFAULT = '🔁 Ayer no fue tu día, pero te devolvemos el {pct}% 💸 Tocá acá y reclamá tu reembolso de ayer: se acredita al toque.';
+const REFUND_REMIND_WEEKLY_DEFAULT = '📅 Tenés un reembolso SEMANAL del {pct}% esperándote 💸 Tocá acá y reclamalo: se acredita al toque.';
+const REFUND_REMIND_MONTHLY_DEFAULT = '🗓️ Tu reembolso MENSUAL del {pct}% ya está disponible 💸 Tocá acá y reclamalo antes de que venza.';
+let _refundRemindRunning = false;
+async function _refundRemindPlan(kind, now) {
+  const tiers = await getRefundTiersByPeriod(); const maxPct = (t) => (t || []).reduce((m, x) => Math.max(m, Number(x.pct) || 0), 0);
+  const today = _schedArtKey(now), dow = new Date(now.getTime() - 3 * 3600000).getUTCDay(), dom = Number(today.slice(8, 10));
+  // Acá NO hay reembolso diario por rango (hay semanal, mensual y el reembolso en vivo acumulativo): el aviso diario queda inerte
+  // (due:false). Se conserva la estructura y el /sys_refund_reminder por si algún día se agrega el rango diario.
+  if (kind === 'daily') return { r: null, periodKey: 'daily:' + today, pct: 0, cmd: '/sys_refund_reminder', def: REFUND_REMIND_DEFAULT, activeDays: 15, title: '🔁 No te olvides de reclamar tu reembolso', slot: today, due: false };
+  if (kind === 'weekly') { const r = periodRanges.getLastWeekRangeArgentinaEpoch(); return { r, periodKey: 'weekly:' + r.fromDateStr, pct: maxPct(tiers.weekly), cmd: '/sys_refund_reminder_weekly', def: REFUND_REMIND_WEEKLY_DEFAULT, activeDays: 30, title: '📅 Tu reembolso semanal te espera', slot: r.fromDateStr + '#' + dow, due: dow === 1 || dow === 4 }; }
+  const r = periodRanges.getLastMonthRangeArgentinaEpoch(); return { r, periodKey: 'monthly:' + r.fromDateStr.slice(0, 7), pct: maxPct(tiers.monthly), cmd: '/sys_refund_reminder_monthly', def: REFUND_REMIND_MONTHLY_DEFAULT, activeDays: 60, title: '🗓️ Tu reembolso mensual está disponible', slot: r.fromDateStr.slice(0, 7) + '#' + dom, due: dom === 1 || dom === 8 };
+}
+async function _refundRemindRun(kind, plan, now) {
+  const from = new Date(plan.r.fromEpoch * 1000), to = new Date(plan.r.toEpoch * 1000);
+  const ids = await Transaction.distinct('userId', { type: 'deposit', status: { $nin: ['failed', 'cancelled'] }, 'metadata.source': { $nin: ['install_bonus', 'welcome_gift', 'welcome_code', 'payout_refund'] }, timestamp: { $gte: new Date(now.getTime() - plan.activeDays * 86400000) } });
+  const users = ids.length ? await User.find({ id: { $in: ids }, role: 'user', isActive: { $ne: false }, isBlocked: { $ne: true }, 'notifPrefs.level': { $ne: 'none' }, $or: [{ fcmToken: { $nin: [null, ''] } }, { 'fcmTokens.0': { $exists: true } }] }).select('id username').lean() : [];
+  const claimed = new Set((await RefundClaim.find({ type: kind, periodKey: plan.periodKey, userId: { $in: users.map((u) => u.id) } }).select('userId').lean()).map((c) => c.userId));
+  const names = users.filter((u) => !claimed.has(u.id)).map((u) => u.username);
+  const losers = []; let apiErr = null;
+  for (let i = 0; i < names.length && !apiErr; i += 100) {
+    const chunk = names.slice(i, i + 100); const b = await girox.getPlayersStatsBatch(chunk, from, to, 'refund-remind-' + kind);
+    if (!b.success) { apiErr = b.error || b.code || 'stats batch falló'; break; }
+    for (const n of chunk) { const p = b.players[n]; if (p && Number(p.casinoNetwin) > 0) losers.push(n); }
+  }
+  if (apiErr) return { error: apiErr };
+  let sent = null;
+  if (losers.length) {
+    const text = await renderSystemCommand(plan.cmd, plan.def, { pct: String(plan.pct) });
+    if (String(text || '').trim()) sent = await sendNotificationToUsernames(User, losers, plan.title, text, { url: '/?open=refund', type: 'refund_reminder', kind: 'personal', refundKind: kind, tag: 'refund-' + plan.periodKey });
+  }
+  return { kind, slot: plan.slot, periodKey: plan.periodKey, at: now.toISOString(), candidates: names.length, losers: losers.length, sent: sent ? (sent.successCount || sent.sent || 0) : 0 };
+}
+async function _refundReminderTick() {
+  if (_refundRemindRunning) return; _refundRemindRunning = true;
+  try {
+    if (!(await featureFlags.isOn('notifCenter'))) return; // #222: apagado desde COMANDOS
+    const now = new Date(); const hourArt = (now.getUTCHours() + 21) % 24; if (hourArt < 11 || hourArt >= 21) return;
+    if ((await getNotifCenterConfig()).refundReminder === false) return;
+    const last = (await getConfig('refundRemindLast', null)) || {}; const slots = Object.assign({}, last.slots || {});
+    let claimed = false;
+    for (const kind of ['daily', 'weekly', 'monthly']) {
+      const plan = await _refundRemindPlan(kind, now); if (!plan.due || !(plan.pct > 0) || slots[kind] === plan.slot) continue;
+      if (!claimed) { if (!(await _cronClaim('refundremind', 10 * 60000))) return; claimed = true; }
+      const r = await _refundRemindRun(kind, plan, now);
+      if (r.error) { logger.warn('[reembolso-aviso] ' + kind + ': ' + r.error + ': se reintenta en la próxima pasada'); continue; }
+      slots[kind] = plan.slot; const kinds = Object.assign({}, last.kinds || {}); kinds[kind] = r;
+      Object.assign(last, { day: _schedArtKey(now), at: now.toISOString(), kind, candidates: r.candidates, losers: r.losers, sent: r.sent, slots, kinds });
+      await Config.set('refundRemindLast', last, 'system');
+      logger.info(`[reembolso-aviso] ${kind} ${plan.periodKey}: ${r.candidates} sin reclamar · ${r.losers} perdieron · push ${r.sent}`);
+    }
+  } catch (e) { logger.warn('[reembolso-aviso] ' + e.message); } finally { _refundRemindRunning = false; }
+}
+setTimeout(() => { _refundReminderTick().catch(() => {}); setInterval(() => { _refundReminderTick().catch(() => {}); }, 15 * 60 * 1000); }, 6 * 60 * 1000);
+// ---- Recorrido de retención por cliente ----
+// Estado de TODOS los clientes (una agregación de cargas reales de la vida + 90 días) ⇒ segmento y paso de hoy. No escribe nada.
+async function _journeyScan(now) {
+  await getJourneyTuning();
+  const since90 = new Date(now.getTime() - 90 * 86400000);
+  const [users, agg] = await Promise.all([
+    User.find({ role: 'user', isBlocked: { $ne: true }, isActive: { $ne: false }, createdAt: { $lte: new Date(now.getTime() - 86400000) } }).select('id username createdAt fraudFlags fcmToken fcmTokens fcmTokenContext journey notifPrefs').lean(),
+    Transaction.aggregate([{ $match: SCHED_ADAPTER.realDepositMatch() }, { $group: { _id: '$userId', n: { $sum: 1 }, last: { $max: '$timestamp' }, total: { $sum: '$amount' },
+      n90: { $sum: { $cond: [{ $gte: ['$timestamp', since90] }, 1, 0] } }, total90: { $sum: { $cond: [{ $gte: ['$timestamp', since90] }, '$amount', 0] } } } }])
+  ]);
+  const dep = new Map(agg.map((a) => [a._id, a]));
+  const segments = {}; const picks = new Map();
+  for (const u of users) {
+    const d = dep.get(u.id);
+    const st = { createdAt: u.createdAt, deposits: d ? d.n : 0, lastDepositAt: d ? d.last : null, avgDeposit: d ? (d.n90 ? d.total90 / d.n90 : d.total / d.n) : 0,
+      hasApp: _notifChannelOf(u) === 'app', flagged: (u.fraudFlags || []).length > 0, sent: (u.journey && u.journey.sent) || [], noWelcome: false };
+    const c = retentionJourney.classify(st, now); segments[c.segment] = (segments[c.segment] || 0) + 1;
+    if (u.notifPrefs && u.notifPrefs.level === 'none') continue;
+    const p = retentionJourney.pickStep(st, now, _tuningCache); if (!p) continue;
+    const g = picks.get(p.step.id) || { pick: p, users: [] }; g.users.push({ id: u.id, username: u.username, key: p.key, segment: p.segment }); picks.set(p.step.id, g);
+  }
+  return { total: users.length, segments, picks: [...picks.values()] };
+}
+let _journeyRunning = false, _journeyPreview = { at: 0, v: null };
+async function _journeyTick(force) {
+  if (_journeyRunning) return null; _journeyRunning = true;
+  try {
+    if (!(await featureFlags.isOn('notifCenter'))) return null; // #222: apagado desde COMANDOS
+    const nc = await getNotifCenterConfig(); if (!nc.journey) return null;
+    const now = new Date(); const hourArt = (now.getUTCHours() + 21) % 24; if (!force && (hourArt < 17 || hourArt >= 19)) return null; // 17–19 h, antes del bono de las 19
+    const today = _schedArtKey(now); const last = await getConfig('journeyLast', null); if (!force && last && last.day === today) return null;
+    if (!(await _cronClaim('journey', 15 * 60000))) return null;
+    const dailyPct = 0; // acá no hay reembolso diario por rango; los textos del recorrido no usan {daily}
+    let rolloverX = 3; try { const r = await getGlobalBonusRollover(); if (r && r.enabled && r.effective > 0) rolloverX = r.effective; } catch (_) {}
+    const apCfg = await getAutopilotConfig();
+    const vars = { first: 0, daily: dailyPct, min: '' };
+    const scan = await _journeyScan(now); const out = { day: today, at: now.toISOString(), total: scan.total, segments: scan.segments, steps: [] };
+    const by = { username: 'recorrido', role: 'admin', userId: null };
+    for (const g of scan.picks) {
+      let sent = 0, err = null;
+      for (let i = 0; i < g.users.length; i += 3000) {
+        const chunk = g.users.slice(i, i + 3000);
+        const body = retentionJourney.batchBody(g.pick, chunk.map((x) => x.username), { monthlyCap: apCfg.cap, rolloverX, vars });
+        const r = await _createNotifBatchFromBody(body, by);
+        if (!r || r.http !== 200 || !r.body || !r.body.success) { err = (r && r.body && r.body.error) || 'lote no creado'; logger.warn(`[recorrido] ${g.pick.step.id}: ${err}`); continue; }
+        const skip = new Set([].concat(r.body.notFound || [], r.body.skipped || []));
+        const okUsers = chunk.filter((x) => !skip.has(x.username));
+        sent += (r.body.totals && r.body.totals.recipients != null) ? r.body.totals.recipients : okUsers.length;
+        const ops = okUsers.map((x) => ({ updateOne: { filter: { id: x.id }, update: { $push: { 'journey.sent': { $each: [{ k: x.key, at: now }], $slice: -60 } }, $set: { 'journey.lastStep': g.pick.step.id, 'journey.lastAt': now, 'journey.segment': x.segment } } } }));
+        if (ops.length) await User.bulkWrite(ops, { ordered: false }).catch((e) => logger.warn('[recorrido] marcar: ' + e.message));
+      }
+      out.steps.push({ id: g.pick.step.id, name: g.pick.step.name, gift: g.pick.giftType, amount: g.pick.amount, candidates: g.users.length, sent, error: err });
+    }
+    await Config.set('journeyLast', out, 'system'); _journeyPreview = { at: 0, v: null };
+    logger.info(`[recorrido] ${today}: ${scan.total} clientes · ${out.steps.length} pasos · ${out.steps.reduce((a, s) => a + s.sent, 0)} avisos`);
+    return out;
+  } catch (e) { logger.warn('[recorrido] ' + e.message); return null; } finally { _journeyRunning = false; }
+}
+setTimeout(() => { _journeyTick().catch(() => {}); setInterval(() => { _journeyTick().catch(() => {}); }, 20 * 60 * 1000); }, 7 * 60 * 1000);
+// Preferencia del cliente (Perfil → "Qué avisos querés recibir").
+app.get('/api/notifications/prefs', authMiddleware, async (req, res) => {
+  try { const u = await User.findOne({ id: req.user.userId }).select('notifPrefs').lean(); res.json({ success: true, level: (u && u.notifPrefs && u.notifPrefs.level) || 'all', enabled: await featureFlags.isOn('notifCenter') }); }
+  catch (_) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/notifications/prefs', authMiddleware, async (req, res) => {
+  try {
+    const lv = String((req.body || {}).level || ''); if (!['all', 'mine', 'none'].includes(lv)) return res.status(400).json({ error: 'Nivel inválido' });
+    await User.updateOne({ id: req.user.userId }, { $set: { 'notifPrefs.level': lv, 'notifPrefs.updatedAt': new Date(), 'notifPrefs.fatigue': 0 } });
+    res.json({ success: true, level: lv });
+  } catch (_) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+// Panel → Centro de avisos.
+app.get('/api/admin/notif-center', authMiddleware, adminMiddleware, _ncGate('notifCenter'), async (req, res) => {
+  try {
+    const [nc, ap] = await Promise.all([getNotifCenterConfig(), getAutopilotConfig()]);
+    if (!_journeyPreview.v || Date.now() - _journeyPreview.at > 10 * 60000 || req.query.refresh === '1') {
+      const sc = await _journeyScan(new Date());
+      _journeyPreview = { at: Date.now(), v: { total: sc.total, segments: sc.segments, steps: sc.picks.map((g) => ({ id: g.pick.step.id, name: g.pick.step.name, segment: g.pick.segment, gift: g.pick.giftType, amount: g.pick.amount, n: g.users.length, sample: g.users.slice(0, 5).map((x) => x.username) })) } };
+    }
+    const [journeyLast, refundLast, optOut] = await Promise.all([getConfig('journeyLast', null), getConfig('refundRemindLast', null),
+      User.aggregate([{ $match: { role: 'user', 'notifPrefs.level': { $in: ['mine', 'none'] } } }, { $group: { _id: '$notifPrefs.level', n: { $sum: 1 } } }])]);
+    res.json({ success: true, config: nc, cap: ap.cap, autopilot: { enabled: ap.enabled, time: ap.time, hours: ap.hours, parts: ap.parts }, legacyNotifs: await featureFlags.isOn('legacyNotifs'), storiesOn: await featureFlags.isOn('stories'),
+      steps: retentionJourney.STEPS.map((x) => ({ id: x.id, segment: x.segment, day: x.day, name: x.name, capped: x.capped, gift: x.gift, title: x.title, text: x.text })),
+      tiers: retentionJourney.VALUE_TIERS, segmentLabels: retentionJourney.SEGMENT_LABELS, preview: _journeyPreview.v, journeyLast, refundLast, storyBonusDays: [3], optOut: Object.fromEntries(optOut.map((o) => [o._id, o.n])) });
+  } catch (e) { logger.error('[notif-center] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.put('/api/admin/notif-center', authMiddleware, adminMiddleware, _ncGate('notifCenter'), async (req, res) => {
+  try {
+    const b = req.body || {}; const cur = (await getConfig('notifCenter', null)) || {}; const next = Object.assign({}, cur); let capChanged = false;
+    if (b.monthlyCap !== undefined) {
+      const c = b.monthlyCap === null || b.monthlyCap === '' ? null : Math.round(Number(b.monthlyCap));
+      if (c != null && (!Number.isFinite(c) || c < 2 || c > 60)) return res.status(400).json({ error: 'El tope mensual va de 2 a 60 (o vacío = automático).' });
+      capChanged = (cur.monthlyCap || null) !== c; next.monthlyCap = c;
+    }
+    for (const k of ['journey', 'refundReminder']) if (typeof b[k] === 'boolean') next[k] = b[k];
+    await Config.set('notifCenter', next, req.user.username || 'admin');
+    let reprogrammed = 0; if (capChanged) { reprogrammed = await _autopilotClearFuture().catch(() => 0); }
+    res.json({ success: true, config: await getNotifCenterConfig(), reprogrammed });
+  } catch (e) { logger.error('[notif-center] put: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/notif-center/run', authMiddleware, adminMiddleware, _ncGate('notifCenter'), async (req, res) => {
+  try { const out = await _journeyTick(true); res.json({ success: true, result: out }); } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+// ---- Revisión semanal automática (lunes 10–14 h ART) ----
+const WEEKLY_GIFT_TX_TYPES = ['bonus', 'refund', 'roulette', 'fire_reward', 'rakeback', 'vip_levelup'];
+async function _weeklyMetrics(now) {
+  const D = 86400000, t0 = now.getTime(); const w1 = new Date(t0 - 7 * D), w2 = new Date(t0 - 14 * D), w3 = new Date(t0 - 21 * D);
+  const REAL = SCHED_ADAPTER.realDepositMatch();
+  const agg = await Transaction.aggregate([{ $match: Object.assign({ timestamp: { $gte: w3 } }, REAL) }, { $group: { _id: '$userId',
+    n1: { $sum: { $cond: [{ $gte: ['$timestamp', w1] }, 1, 0] } }, a1: { $sum: { $cond: [{ $gte: ['$timestamp', w1] }, '$amount', 0] } },
+    in2: { $max: { $cond: [{ $and: [{ $gte: ['$timestamp', w2] }, { $lt: ['$timestamp', w1] }] }, 1, 0] } }, in3: { $max: { $cond: [{ $lt: ['$timestamp', w2] }, 1, 0] } } } }]);
+  let dep1 = 0, amt1 = 0, cnt1 = 0, dep2 = 0, both12 = 0, dep3 = 0, both23 = 0;
+  for (const a of agg) { const i1 = a.n1 > 0; if (i1) { dep1++; amt1 += a.a1; cnt1 += a.n1; } if (a.in2) { dep2++; if (i1) both12++; } if (a.in3) { dep3++; if (a.in2) both23++; } }
+  const dk1 = _schedArtKey(w1), dk0 = _schedArtKey(new Date(t0 - D));
+  // Regalado / depositado de la semana: directo de Transaction (este repo no tiene cierres diarios / DailyClose).
+  const [cDepAgg, cRegAgg] = await Promise.all([
+    Transaction.aggregate([{ $match: Object.assign({ timestamp: { $gte: w1 } }, REAL) }, { $group: { _id: null, t: { $sum: '$amount' } } }]),
+    Transaction.aggregate([{ $match: { type: { $in: WEEKLY_GIFT_TX_TYPES }, status: { $nin: ['failed', 'cancelled'] }, timestamp: { $gte: w1 } } }, { $group: { _id: null, t: { $sum: '$amount' } } }])
+  ]);
+  const cDep = cDepAgg[0] ? Number(cDepAgg[0].t) || 0 : 0, cReg = cRegAgg[0] ? Number(cRegAgg[0].t) || 0 : 0;
+  const closes = { length: 7 };
+  const batches = await NotifBatch.find({ sentAt: { $gte: w2, $lt: w1 }, isPublic: { $ne: true } }).select('name sentAt recipients.userId').lean();
+  const steps = {}; const camp = { targets: 0, converted: 0 }; const jny = { targets: 0, converted: 0 };
+  for (const b of batches) {
+    const ids = [...new Set((b.recipients || []).map((r) => r.userId).filter(Boolean))]; if (!ids.length) continue;
+    const isJ = /^Recorrido/.test(b.name || ''); const sentAt = new Date(b.sentAt); const until = new Date(sentAt.getTime() + (isJ ? 7 : 2) * D);
+    const conv = await Transaction.distinct('userId', Object.assign({ userId: { $in: ids }, timestamp: { $gt: sentAt, $lte: until } }, REAL));
+    const tgt = isJ ? jny : camp; tgt.targets += ids.length; tgt.converted += conv.length;
+    if (isJ) { const k = String(b.name).replace(/^Recorrido · /, ''); steps[k] = steps[k] || { targets: 0, converted: 0 }; steps[k].targets += ids.length; steps[k].converted += conv.length; }
+  }
+  const rc = await RefundClaim.aggregate([{ $match: { claimedAt: { $gte: w1 } } }, { $group: { _id: '$type', n: { $sum: 1 }, amount: { $sum: { $ifNull: ['$amount', 0] } } } }]);
+  const [optMine, optNone, fatigued, regs, totalUsers] = await Promise.all([
+    User.countDocuments({ role: 'user', 'notifPrefs.level': 'mine' }), User.countDocuments({ role: 'user', 'notifPrefs.level': 'none' }),
+    User.countDocuments({ role: 'user', 'notifPrefs.fatigue': { $gte: 10 } }), User.countDocuments({ role: 'user', createdAt: { $gte: w1 } }), User.countDocuments({ role: 'user' })]);
+  const dep30 = await Transaction.distinct('userId', Object.assign({ timestamp: { $gte: new Date(t0 - 30 * D) } }, REAL));
+  const withApp = dep30.length ? await User.countDocuments({ id: { $in: dep30 }, $or: [{ fcmTokenContext: 'standalone' }, { 'fcmTokens.context': 'standalone' }] }) : 0;
+  const firstAgg = await Transaction.aggregate([{ $match: REAL }, { $group: { _id: '$userId', first: { $min: '$timestamp' } } }, { $match: { first: { $gte: w1 } } }, { $count: 'n' }]);
+  const jl = await getConfig('journeyLast', null);
+  return { week: { from: dk1, to: dk0 }, deposits: { users: dep1, count: cnt1, amount: Math.round(amt1), prevUsers: dep2 }, repeatRate: dep2 ? both12 / dep2 : null, prevRepeatRate: dep3 ? both23 / dep3 : null,
+    giftRatio: cDep > 0 ? cReg / cDep : null, gifts: { regalos: Math.round(cReg), depositos: Math.round(cDep), days: closes.length }, journey: Object.assign({ steps }, jny), campaigns: camp,
+    refunds: Object.fromEntries(rc.map((r) => [r._id, { n: r.n, amount: Math.round(r.amount || 0) }])), prefs: { mine: optMine, none: optNone, fatigued, optOutPct: totalUsers ? (optMine + optNone) / totalUsers : 0 },
+    app: { depositors30: dep30.length, withApp, appPct: dep30.length ? withApp / dep30.length : null }, newRegs: regs, firstDeposits: firstAgg[0] ? firstAgg[0].n : 0, totalUsers, cohortM1: null, cohorts: [], segments: (jl && jl.segments) || null };
+}
+let _weeklyRunning = false;
+async function _weeklyReviewTick(force) {
+  if (_weeklyRunning) return null; _weeklyRunning = true;
+  try {
+    if (!(await featureFlags.isOn('notifCenter'))) return null; // #222: apagado desde COMANDOS
+    const now = new Date(); const hourArt = (now.getUTCHours() + 21) % 24; const dow = new Date(now.getTime() - 3 * 3600000).getUTCDay();
+    const weekKey = _schedArtKey(new Date(now.getTime() - ((dow + 6) % 7) * 86400000));
+    if (!force && (dow !== 1 || hourArt < 10 || hourArt >= 14)) return null;
+    const cur = await getConfig('weeklyReview', null); if (!force && cur && cur.weekKey === weekKey) return null;
+    if (!(await _cronClaim('weeklyreview', 15 * 60000))) return null;
+    const metrics = await _weeklyMetrics(now); const tuning0 = await getJourneyTuning();
+    const decision = weeklyReview.decide(metrics, tuning0);
+    if (decision.changed) {
+      await Config.set('journeyTuning', Object.assign({}, decision.tuning, { updatedAt: now.toISOString(), by: 'revisión semanal ' + weekKey }), 'system'); _tuningCache = decision.tuning;
+      await _autopilotClearFuture().catch(() => 0);
+    }
+    const hist = (cur && Array.isArray(cur.history)) ? cur.history.slice() : [];
+    if (cur && cur.weekKey && cur.weekKey !== weekKey && cur.metrics) hist.unshift({ weekKey: cur.weekKey, at: cur.at, level: cur.tuning && cur.tuning.level, verdict: cur.decision && cur.decision.verdict, giftRatio: cur.metrics.giftRatio, repeatRate: cur.metrics.repeatRate, depositors: cur.metrics.deposits && cur.metrics.deposits.users });
+    const rep = { weekKey, at: now.toISOString(), forced: !!force, metrics, decision, tuning: decision.tuning, history: hist.slice(0, 12) };
+    await Config.set('weeklyReview', rep, 'system');
+    logger.info(`[revisión-semanal] ${weekKey}: ${decision.verdict} (nivel ${decision.prevLevel} → ${decision.level})`);
+    return rep;
+  } catch (e) { logger.warn('[revisión-semanal] ' + e.message); return null; } finally { _weeklyRunning = false; }
+}
+setTimeout(() => { _weeklyReviewTick().catch(() => {}); setInterval(() => { _weeklyReviewTick().catch(() => {}); }, 30 * 60 * 1000); }, 11 * 60 * 1000);
+app.get('/api/admin/weekly-review', authMiddleware, adminMiddleware, _ncGate('notifCenter'), async (req, res) => {
+  try { const rep = await getConfig('weeklyReview', null); const tuning = await getJourneyTuning(); res.json({ success: true, report: rep, tuning, text: weeklyReview.reportText(rep), levels: { min: weeklyReview.LEVEL_MIN, max: weeklyReview.LEVEL_MAX } }); }
+  catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/weekly-review/run', authMiddleware, adminMiddleware, _ncGate('notifCenter'), async (req, res) => {
+  try { const rep = await _weeklyReviewTick(true); res.json({ success: true, report: rep, text: weeklyReview.reportText(rep) }); } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+// ---- PILOTO AUTOMÁTICO de notificaciones ----
+// Una campaña por día (ScheduledCampaign con autoKey 'ap-YYYY-MM-DD'), 3 tandas desde las 19:00, sólo a quien tiene la app, grupos que
+// rotan (⌈días / (tope − días para todos)⌉), feriados y fechas comerciales argentinas con mensaje propio, bono AUTOMÁTICO de 4 h con el
+// tope y el rollover global. Los textos hablan del servicio (nunca sueldos ni "ya cobraste") y nunca nombran la ruleta (guard isRouletteText).
+const AUTOPILOT_DEFAULT = { time: '19:00', hours: 4, cap: 8, parts: 3, gapMin: 30, appOnly: true };
+async function getAutopilotConfig() {
+  const nc = await getNotifCenterConfig().catch(() => ({}));
+  await getJourneyTuning().catch(() => {});
+  return { enabled: await featureFlags.isOn('autopilot'), time: AUTOPILOT_DEFAULT.time, hours: AUTOPILOT_DEFAULT.hours, cap: nc.monthlyCap || AUTOPILOT_DEFAULT.cap, parts: AUTOPILOT_DEFAULT.parts, gapMin: AUTOPILOT_DEFAULT.gapMin, appOnly: AUTOPILOT_DEFAULT.appOnly };
+}
+const _AP_DOW = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+// Los miércoles sale la HISTORIA CON BONO (push a todos a las 19) ⇒ si Historias está prendido, el piloto no manda campaña ese día.
+function _autopilotMonthItems(month, cfg) {
+  const skipDows = cfg.storiesOn ? [3] : [];
+  return _autopilotMonthItemsRaw(month, cfg).filter((i) => i.kind === 'todos' || !skipDows.includes(new Date(i.dayKey + 'T12:00:00Z').getUTCDay()));
+}
+function _autopilotMonthItemsRaw(month, cfg) {
+  const [y, mo] = month.split('-').map(Number);
+  const daysIn = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  const spec = arCalendar.specialDays(y);
+  const H = cfg.hours;
+  const fill = (t) => String(t || '').replace(/\{h\}/g, String(H));
+  const base = { mode: 'window', validHours: H, appOnly: cfg.appOnly, monthlyCap: cfg.cap, dailyCap: 1 };
+  const bono = (pct, title, message, extra) => Object.assign({}, base, { giftType: 'percent', amount: pct, applyMode: 'auto', applyScope: 'first', title: fill(title), message: fill(message) }, extra || {});
+  const aviso = (title, message, extra) => Object.assign({}, base, { giftType: 'none', amount: 0, title: fill(title), message: fill(message) }, extra || {});
+  const days = [];
+  for (let d = 1; d <= daysIn; d++) {
+    const k = `${month}-${String(d).padStart(2, '0')}`; const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); const sp = spec.get(k) || null; const last = d === daysIn;
+    days.push({ d, k, dow, sp, last, forAll: last || (sp && sp.pct >= 50) });
+  }
+  const forAllN = days.filter((x) => x.forAll).length;
+  const rotDays = days.filter((x) => !x.forAll);
+  const budget = Math.max(1, cfg.cap - forAllN);
+  const groups = Math.max(1, Math.ceil(rotDays.length / budget));
+  let rot = 0;
+  return days.map((x) => {
+    const { d, k, dow, sp, last } = x;
+    let it;
+    if (x.forAll) {
+      const aud = { audienceType: 'all' };
+      if (sp && last) it = { kind: 'todos', reason: sp.name + ' + cierre de mes', payload: bono(Math.max(100, sp.pct), sp.title, sp.message, aud) };
+      else if (sp) it = { kind: 'todos', reason: sp.name, payload: bono(sp.pct, sp.title, sp.message, aud) };
+      else it = { kind: 'todos', reason: 'Cierre de mes', payload: bono(100, '🎁 Cierre de mes: +100%', 'Gracias por elegir CARGAS 1GIROX 🟡 Para cerrar el mes, cargá en las próximas {h} horas y te DUPLICAMOS la carga automático (con el tope de bonos). Ya está activo.', aud) };
+    } else {
+      const g = rot % groups; rot++;
+      const aud = groups > 1 ? { audienceType: 'all', rotGroup: { n: groups, k: g } } : { audienceType: 'all' };
+      const audInact = Object.assign({ audienceType: 'inactive', audienceDays: 4, audienceDaysMax: null }, groups > 1 ? { rotGroup: { n: groups, k: g } } : {});
+      const penult = d === days.length - 1;
+      const TH = [
+        (pct) => ['⚡ Cargá en segundos: +' + pct + '%', 'Transferís, mandás la foto y se acredita solo. Hoy tenés +' + pct + '% EXTRA en tu carga por {h} horas: ya está activo.'],
+        (pct) => ['🎮 Los juegos más jugados te esperan: +' + pct + '%', 'Entrá al casino con tu sesión iniciada desde la app. Si cargás en las próximas {h} horas te sumamos +' + pct + '% EXTRA automático.'],
+        (pct) => ['💸 Retirás rápido y sin vueltas: +' + pct + '%', 'Tus premios van directo a tu cuenta. Y hoy, +' + pct + '% EXTRA en tu carga por {h} horas (ya activo).'],
+        (pct) => ['🛟 Estamos para ayudarte: +' + pct + '%', 'Nuestro soporte te responde desde el chat de la app todos los días. Y para hoy: +' + pct + '% EXTRA en tu carga por {h} horas.'],
+        (pct) => ['🔥 Fueguito diario: +' + pct + '%', 'Entrá todos los días y sumá tu racha del fueguito: cada hito tiene premio. Hoy además tenés +' + pct + '% EXTRA en tu carga por {h} horas.'],
+        (pct) => ['💎 Subí de nivel VIP: +' + pct + '%', 'Cada carga te acerca al próximo nivel VIP y sus beneficios. Hoy +' + pct + '% EXTRA en tu carga por {h} horas.'],
+        (pct) => ['🤝 Jugá con tus amigos: +' + pct + '%', 'Invitá a tus amigos con tu link y ganá por lo que juegan. Hoy tenés +' + pct + '% EXTRA en tu carga por {h} horas.']
+      ];
+      const tb = (pct0, reason, extra) => { const pct = Math.max(10, Math.min(100, pct0 + (_tuningCache.apPctPlus || 0))); const t = TH[(d * 3 + mo) % TH.length](pct); return { reason, payload: bono(pct, t[0], t[1], extra || aud) }; };
+      if (sp) it = { reason: sp.name, payload: bono(sp.pct || 20, sp.title, sp.message, aud) };
+      else if (d <= 4) it = { reason: 'Inicio de mes', payload: bono(30, '🎉 Mes nuevo en CARGAS 1GIROX: +30%', 'Arrancamos el mes con todo: carga automática en segundos, retiros rápidos y soporte en la app. Cargá en las próximas {h} horas y te sumamos +30% EXTRA.', aud) };
+      else if (d === 5) it = tb(20, 'Día 5 (más chico)');
+      else if (d === 15) it = { reason: 'Mitad de mes', payload: bono(50, '🌟 Mitad de mes: +50%', 'Llegamos a la mitad del mes con un regalo: cargá en las próximas {h} horas y te sumamos +50% EXTRA automático. Ya está activo.', aud) };
+      else if (penult) it = { reason: 'Antes del cierre de mes', payload: bono(50, '⏳ Mañana cerramos el mes: +50%', 'Se viene el cierre de mes en CARGAS 1GIROX. Cargá en las próximas {h} horas y te sumamos +50% EXTRA automático.', aud) };
+      else if (d === 10 || d === 20) it = { reason: 'Aviso de reembolso', payload: aviso('🔁 Tu reembolso te espera', 'Te devolvemos parte de lo que jugás. Entrá a la app y reclamalo desde Reembolsos: se acredita al toque 🟡', aud) };
+      else if (dow === 5) it = tb(50, 'Viernes');
+      else if (dow === 6) it = tb(30, 'Sábado');
+      else if (dow === 0) it = tb(20, 'Domingo');
+      else if (dow === 3) it = { reason: 'Te extrañamos (sin entrar 4+ días)', payload: bono(30, '👋 ¡Te extrañamos! +30%', 'Tu cuenta en CARGAS 1GIROX te espera con novedades. Volvé hoy: tenés +30% EXTRA en tu carga por {h} horas 🟡', audInact) };
+      else it = tb(20, 'Promo del día');
+      it.kind = 'grupo'; it.group = g + 1; it.groups = groups;
+    }
+    const pl = it.payload;
+    const gtxt = pl.giftType === 'percent' ? `+${pl.amount}%` : 'aviso';
+    pl.name = `Autopiloto · ${k.slice(8, 10)}/${k.slice(5, 7)} · ${it.reason}`.slice(0, 60);
+    const who = it.kind === 'todos' ? 'todos' : (pl.audienceType === 'inactive' ? `grupo ${it.group}/${it.groups} sin entrar 4+ d` : `grupo ${it.group}/${it.groups}`);
+    return { day: d, dayKey: k, dow: _AP_DOW[dow], time: cfg.time, kind: it.kind, reason: it.reason, gift: gtxt, who, special: sp ? sp.name : null, name: `🤖 ${gtxt} · ${it.reason}`.slice(0, 80), payload: pl, autoKey: 'ap-' + k };
+  }).map((it) => Object.assign(it, { groups, budget, forAll: forAllN }));
+}
+async function _autopilotProgramMonth(month, cfg, by) {
+  const items = _autopilotMonthItems(month, cfg);
+  const out = { month, created: 0, existing: 0, skipped: 0 };
+  const have = new Set((await ScheduledCampaign.find({ autoKey: { $in: items.map((i) => i.autoKey) } }).select('autoKey').lean()).map((c) => c.autoKey));
+  for (const it of items) {
+    if (have.has(it.autoKey)) { out.existing++; continue; }
+    const first = _schedParseRunAt(`${it.dayKey}T${it.time}`);
+    if (!first || first.getTime() < Date.now() + 2 * 60 * 1000) { out.skipped++; continue; }
+    const parts = Array.from({ length: cfg.parts }, (_, i) => ({ idx: i, runAt: new Date(first.getTime() + i * cfg.gapMin * 60000), status: 'scheduled' }));
+    try {
+      await ScheduledCampaign.create({
+        id: uuidv4(), name: it.name, payload: it.payload, audienceLabel: (it.kind === 'todos' ? '🌍 todos' : '🔁 ' + it.who) + (cfg.appOnly ? ' · 📱 con app y notis' : '') + ` · tope ${cfg.cap}/mes`,
+        estimatedCount: null, parts, runAt: parts[0].runAt, createdBy: by || 'autopiloto', createdByRole: 'admin',
+        notes: `Piloto automático (${month}) · ${it.reason}`.slice(0, 500), autoKey: it.autoKey
+      });
+      out.created++;
+    } catch (e) { if (e && e.code === 11000) out.existing++; else throw e; }
+  }
+  return out;
+}
+function _apMonthAdd(m, n) { let [y, mo] = m.split('-').map(Number); mo += n; while (mo > 12) { mo -= 12; y++; } while (mo < 1) { mo += 12; y--; } return `${y}-${String(mo).padStart(2, '0')}`; }
+// Borra las campañas del piloto que todavía no empezaron a salir (para reprogramar con otro tope/ajuste o al apagarlo).
+async function _autopilotClearFuture() {
+  const r = await ScheduledCampaign.deleteMany({ autoKey: { $exists: true, $ne: null }, parts: { $not: { $elemMatch: { status: { $ne: 'scheduled' } } } }, runAt: { $gt: new Date(Date.now() + 60 * 1000) } });
+  return r.deletedCount || 0;
+}
+let _autopilotRunning = false;
+async function _autopilotTick(by) {
+  if (_autopilotRunning) return null;
+  _autopilotRunning = true;
+  try {
+    const cfg = await getAutopilotConfig();
+    if (!cfg.enabled) return null;
+    cfg.storiesOn = await featureFlags.isOn('stories');
+    const cur = _schedArtKey(new Date()).slice(0, 7);
+    const res = [];
+    for (const m of [cur, _apMonthAdd(cur, 1)]) res.push(await _autopilotProgramMonth(m, cfg, by));
+    const created = res.reduce((a, r) => a + r.created, 0);
+    if (created) logger.info(`[autopiloto] programadas ${created} campañas (${res.map((r) => r.month + ':' + r.created).join(' ')})`);
+    return res;
+  } catch (e) { logger.warn('[autopiloto] ' + e.message); return null; } finally { _autopilotRunning = false; }
+}
+setTimeout(() => { _autopilotTick().catch(() => {}); setInterval(() => { _autopilotTick().catch(() => {}); }, 3 * 3600 * 1000); }, 5 * 60 * 1000);
+// Al apagar el piloto desde COMANDOS se borran sus campañas futuras; al prenderlo se programa al toque.
+onFeaturesChanged(async (info, by) => {
+  if (!info.changed.includes('autopilot')) return;
+  if (!info.after.autopilot) { const n = await _autopilotClearFuture(); logger.info(`[autopiloto] apagado por ${by}: ${n} campañas futuras borradas`); }
+  else { setTimeout(() => { _autopilotTick(by).catch(() => {}); }, 100); }
+});
+app.get('/api/admin/cronograma-autopilot', authMiddleware, adminMiddleware, _ncGate('autopilot'), async (req, res) => {
+  try {
+    const cfg = await getAutopilotConfig(); cfg.storiesOn = await featureFlags.isOn('stories');
+    const cur = _schedArtKey(new Date()).slice(0, 7);
+    const months = [];
+    const endY = Number(cur.slice(0, 4)) + 1;
+    for (let m = cur; Number(m.slice(0, 4)) <= endY; m = _apMonthAdd(m, 1)) {
+      const items = _autopilotMonthItems(m, cfg);
+      const programmed = await ScheduledCampaign.countDocuments({ autoKey: { $in: items.map((i) => i.autoKey) } });
+      months.push({ month: m, programmed, days: items.length, groups: items[0] ? items[0].groups : 1, forAll: items[0] ? items[0].forAll : 0,
+        items: items.map((i) => ({ day: i.day, dayKey: i.dayKey, dow: i.dow, time: i.time, kind: i.kind, reason: i.reason, gift: i.gift, who: i.who, special: i.special, title: i.payload.title, message: i.payload.message })) });
+    }
+    res.json({ success: true, config: cfg, months });
+  } catch (err) { logger.error(`GET /api/admin/cronograma-autopilot: ${err.message}`); res.status(500).json({ error: 'Error del servidor' }); }
+});
 // Valida y arma las tandas del body: { runAt } o { parts: [{runAt}, ...] } (hora AR).
 function _schedBuildParts(b) {
   const list = Array.isArray(b.parts) && b.parts.length ? b.parts : [{ runAt: b.runAt }];
@@ -21435,8 +21921,8 @@ app.post('/api/admin/cronograma', authMiddleware, adminMiddleware, async (req, r
       payload = { title, body, segment, usernames, batchSize };
     } else {
       if (!['code', 'window'].includes(payload.mode)) return res.status(400).json({ error: 'Modo inválido (code | window).' });
-      if (!['percent', 'fixed'].includes(payload.giftType)) return res.status(400).json({ error: 'Tipo de regalo inválido.' });
-      if (!(Number(payload.amount) > 0)) return res.status(400).json({ error: 'Poné el monto del regalo.' });
+      if (!['percent', 'fixed', 'none'].includes(payload.giftType)) return res.status(400).json({ error: 'Tipo de regalo inválido.' }); // #225: 'none' = sólo aviso
+      if (payload.giftType !== 'none' && !(Number(payload.amount) > 0)) return res.status(400).json({ error: 'Poné el monto del regalo.' });
       if (payload.audienceType !== 'public' && String(payload.message || '').trim().length < 5) return res.status(400).json({ error: 'El mensaje tiene que tener al menos 5 caracteres.' });
     }
     const pr = _schedBuildParts(b);

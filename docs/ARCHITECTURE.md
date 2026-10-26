@@ -5,9 +5,10 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-3: interruptores de funciones
+> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
 > (`featureFlags`, `Config['features']`), registro abierto / sólo con invitación, sistema de notificaciones
-> anterior apagado por flag, Alertas de estafa, Datos IA e Historias (§7, §9, §10-§10.2; WORKLOG #222-#224).
+> anterior apagado por flag, Alertas de estafa, Datos IA, Historias, Centro de avisos y piloto automático
+> (§7, §9, §10-§10.3; WORKLOG #222-#225).
 > Antes: 2026-10-20 — PUBLICIDAD solo para DUEÑOS (`User.isOwner`,
 > `ownerMiddleware`, `stripPublicity`, card 👑 en COMANDOS; §3, §9; WORKLOG #221).
 > Antes: 2026-10-19 — rollover GLOBAL de bonos editable desde COMANDOS
@@ -937,6 +938,9 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
 | `_runInactividadTick` | 6 h | **APAGADO** (`INACTIVIDAD_DISABLED=true`) | InactividadFire.fireKey único |
 | `_runBonusStrategy` | 10 min | **APAGADO** (`BONUS_STRATEGY_DISABLED=true`) | step en StrategyEnrollment |
 | `_runDueSchedules` (ScheduledNotif) | 60 s | **APAGADO por default** (#222: sólo con `legacyNotifs` ON) | lastRunAt |
+| `_storyAutoTick` / `_storiesRepeatTick` (#224) | 5 min / 1 h | sólo con `stories` ON | `Story.autoKey` único |
+| `_journeyTick` / `_refundReminderTick` / `_weeklyReviewTick` (#225) | 20 / 15 / 30 min | sólo con `notifCenter` ON | lock `_cronClaim` (Config `cronlock_*`) + `journeyLast`/`refundRemindLast.slots`/`weeklyReview.weekKey` |
+| `_autopilotTick` (#225) | 3 h | sólo con `autopilot` ON | `ScheduledCampaign.autoKey` único sparse |
 | `_pollPayingPayouts` | 45 s | activo (confirma pagos si el webhook no llegó) | handlePayoutStatusWebhook idempotente |
 | `_runVipTick` (niveles VIP) | 30 min | activo (se apaga desde el panel: Config → "Niveles VIP", flag `vip_levels_disabled` en Config, SOLO admin general — sin cache a propósito para que aplique al instante en todas las instancias) | buckets con `$set` idempotente + bono con reference `vip-lvl-*` (la plataforma dedupe) |
 | `_runVipSweepCheck` (sweep VIP) | 1 h (corre a las 05 ART) | activo | claim atómico por día en Config (`vip_sweep_day`) → instancia única |
@@ -1172,3 +1176,21 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
 - PWA: `public/js/stories.js` (`VIP.stories = {init, load, loadPublic, open, openById, claimBonus, close, …}`), botón
   `#navHistorias` (header), anillo `#lgStoriesRing` (ingreso), visor `#storyViewer`; CSS en `chat.css` y `login.css`.
   El SW reenvía `data.url` de la push (`vip-open`).
+
+### 10.3 Centro de avisos y piloto automático (#225)
+
+- **Servicios puros:** `retentionJourney` (`STEPS`, `classify`, `pickStep`, `render`, `batchBody`), `weeklyReview`
+  (`tuningFor`, `decide`, `reportText`), `arCalendar.specialDays(año)`. El estado vive en Config: `notifCenter`,
+  `journeyTuning`, `journeyLast`, `refundRemindLast`, `weeklyReview`, locks `cronlock_*`. `User.notifPrefs {level,
+  fatigue}`, `User.journey {segment, lastStep, sent[]}`.
+- **Preferencias:** `data.kind` en toda push automática: `'promo'` (masivo), `'personal'` (lo suyo), sin kind = sistema.
+  `sendPushIfOffline` y `notificationService.prefsFilter` las aplican; `bumpFatigue`/motor de lotes suman fatiga.
+- **Lotes:** `giftType:'none'` (sólo aviso, modo window). `_resolveNotifBatchAudience` = wrapper (`appOnly`,
+  `monthlyCap`, `dailyCap`, `rotGroup{n,k}`) sobre `_resolveNotifBatchAudienceBase`. Un flujo nuevo que arme lotes pasa
+  esos campos en el body y hereda el tope.
+- **Piloto:** `_autopilotMonthItems(mes, cfg)` arma el plan (días para todos vs grupos que rotan; textos del servicio; nunca
+  nombran la ruleta); `_autopilotProgramMonth` crea `ScheduledCampaign` con `autoKey`; `_autopilotClearFuture` borra las
+  futuras (al apagar, al cambiar el tope o cuando la revisión semanal cambia el nivel). Rutas: `/api/admin/notif-center`
+  (GET/PUT/run), `/api/admin/weekly-review` (+/run), `/api/admin/cronograma-autopilot`, `/api/notifications/prefs`.
+- **Diferencias con el gemelo:** sin aviso diario de reembolso (no hay rango diario acá), sin `DailyClose` (regalado /
+  depositado sale de Transaction), sin cohortes de INICIO.

@@ -451,6 +451,12 @@ function setupEventListeners() {
         if (VIP.publisherWelcome && typeof VIP.publisherWelcome.init === 'function') {
             VIP.publisherWelcome.init();
             try { if (VIP.stories) VIP.stories.init(); } catch (e) {} // #224 historias (visor + aviso del SW)
+            // #225: la push "reclamá tu reembolso" trae /?open=refund ⇒ abrir Reembolsos (al entrar por la notificación o, con la app abierta, por el aviso del SW)
+            try {
+                const openRefund = () => { try { if (!(VIP.state && VIP.state.currentToken) || !VIP.refunds) return; if (VIP.refunds.showUnifiedRefundModal) VIP.refunds.showUnifiedRefundModal(); else if (VIP.refunds.showRefundModal) VIP.refunds.showRefundModal('weekly'); } catch (_) {} };
+                if (/[?&]open=refund\b/.test(location.search)) { try { history.replaceState(null, '', location.pathname); } catch (_) {} setTimeout(openRefund, 1500); }
+                if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', (e) => { const d = e && e.data; if (d && d.type === 'vip-open' && /[?&]open=refund\b/.test(String(d.url || ''))) openRefund(); });
+            } catch (_) {}
         }
 
         // Cambio de contraseña — entrada temporal (fallback cuando el SMS no llega)
