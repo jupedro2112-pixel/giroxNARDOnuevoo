@@ -116,6 +116,10 @@ document.addEventListener('change', function (ev) {
                     <span class="icon icon-exchange"></span>
                     <span>Transacciones</span>
                 </a>
+                <a href="#" class="nav-item" data-section="fraud" data-feature="fraudRadar" style="display:none" title="Clientes que podrían estar intentando estafar: evidencia y bloqueo (se prende en COMANDOS → Funciones)">
+                    <span>🚨</span>
+                    <span>Alertas de estafa</span>
+                </a>
                 <a href="#" class="nav-item" data-section="commands">
                     <span class="icon icon-terminal"></span>
                     <span>Comandos</span>
@@ -127,6 +131,10 @@ document.addEventListener('change', function (ev) {
                 <a href="#" class="nav-item" data-section="datos2">
                     <span>📊</span>
                     <span>Datos 2.0</span>
+                </a>
+                <a href="#" class="nav-item" data-section="datosIa" data-feature="datosIa" style="display:none" title="Análisis del negocio con datos reales (se prende en COMANDOS → Funciones)">
+                    <span>🧠</span>
+                    <span>Datos IA 🔒</span>
                 </a>
                 <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#d4af37;text-transform:uppercase;opacity:.7;">Central</div>
                 <a href="#" class="nav-item" data-section="centralIngresos">
@@ -683,6 +691,17 @@ document.addEventListener('change', function (ev) {
                                 <span id="regModeState" style="font-size:11.5px;color:#9ab;"></span>
                             </div>
                         </div>
+                        <!-- #223 clave propia de Datos IA (réplica #590 de PICA ROJA; solo admin general, se ve con la función prendida) -->
+                        <div class="cbu-form" id="datosPinForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">🔒 Clave de Datos IA</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 8px;">Además del login del panel, la sección Datos IA pide esta clave (una vez por sesión). Vacío = sin clave. Nunca queda escrita en el código: se guarda sólo su huella.</p>
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <input type="password" id="dpPin" placeholder="Clave nueva" autocomplete="new-password" style="width:180px;">
+                                <button type="button" class="btn-primary btn-small" onclick="saveDatosIaPin()">💾 Guardar clave</button>
+                                <button type="button" class="btn-secondary btn-small" onclick="saveDatosIaPin(true)">Quitar clave</button>
+                                <span id="dpState" style="font-size:11.5px;color:#9ab;"></span>
+                            </div>
+                        </div>
                         <!-- DUEÑOS: quiénes ven PUBLICIDAD (#221; solo admin general ve la card) -->
                         <div class="cbu-form" id="ownersForm" style="display:none;margin-bottom:14px;">
                             <h3 style="margin:0 0 6px;">👑 Dueños (ven Publicidad)</h3>
@@ -1060,6 +1079,165 @@ document.addEventListener('change', function (ev) {
             </section>
 
             <!-- SECCIÓN DATOS: métricas de adquisición, actividad y recurrencia -->
+            <!-- #223 ALERTAS DE ESTAFA (réplica #873 de PICA ROJA) — reglas + puntaje (src/services/fraudRadar.js); bloquear usa /api/admin/users/:id/block -->
+            <section id="fraudSection" class="section">
+                <div class="panel-header">
+                    <h2>🚨 Alertas de estafa</h2>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <select id="frDays" class="form-input" style="width:auto" onchange="loadFraud(true)"><option value="7">Últimos 7 días</option><option value="30" selected>Últimos 30 días</option><option value="90">Últimos 90 días</option></select>
+                        <select id="frLevel" class="form-input" style="width:auto" onchange="renderFraud()"><option value="">Todos</option><option value="alto">Sólo riesgo alto</option><option value="medio">Riesgo medio</option><option value="watch">En observación</option><option value="blocked">Bloqueados</option></select>
+                        <button class="btn btn-secondary" onclick="loadFraud(true)">🔄</button>
+                    </div>
+                </div>
+                <div class="card" style="margin-bottom:1rem;font-size:.8rem;color:#a5b4fc">Cada cliente con movimiento en el período se revisa con reglas (como los sistemas antifraude de las casas grandes): multicuenta por banco, celular o número de teléfono, cargas desde cuentas de terceros, retiros a nombre de otra persona, abuso de bonos, ciclos de carga y retiro sin jugar, cuentas nuevas con retiros grandes y referidos propios. Cada regla suma puntos (60+ = riesgo alto). <b>Nada se bloquea solo</b>: abrí el caso, revisá la evidencia y decidí.</div>
+                <div id="frSummary" style="margin-bottom:.6rem;font-size:.85rem"></div>
+                <div id="frList">Cargando…</div>
+            </section>
+            <div id="frCaseModal" class="modal hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)this.classList.add('hidden')"><div class="modal-content" style="max-width:900px;max-height:90vh;overflow:auto" onclick="event.stopPropagation()"><div id="frCaseBody">Cargando…</div></div></div>
+            <!-- #223 DATOS IA (réplica #459… de PICA ROJA) — análisis del negocio sin IA externa; clave propia en COMANDOS -->
+            <section id="datosIaSection" class="section dia">
+                <div class="panel-header cfg-head">
+                    <div><h2>🧠 Datos IA</h2><div class="cfg-sub">Análisis del negocio con datos reales · informe por reglas · historial y ajuste</div></div>
+                    <button class="refresh-btn" onclick="diaRun()" title="Recalcular">🔄</button>
+                </div>
+                <!-- #477: cotización USDT y moneda de TODA la sección -->
+                <div class="dia-bar dia-money"><span class="dia-money-t">💵 Dólar USDT</span><label>$<input type="number" id="diaUsdt" min="1" step="1" placeholder="cotización" style="width:110px;"></label><button class="btn-secondary btn-small" onclick="diaUsdtFetch()" title="Trae la cotización actual (mediana de los exchanges)">⟳ Automático</button><button class="btn-primary btn-small" onclick="diaUsdtSave()">Guardar</button><span id="diaUsdtInfo" class="dia-pill">…</span><span class="dia-cur"><b>Ver todo en</b><button type="button" id="diaCurArs" class="on" onclick="diaSetCur('ars')">Pesos $</button><button type="button" id="diaCurUsd" onclick="diaSetCur('usd')">USDT US$</button></span></div>
+                <!-- #484 (owner): el PANORAMA es la pestaña principal (abre por defecto); siempre analiza desde que empezó la página -->
+                <div class="dia-tabs">
+                    <button type="button" id="diaTabC" class="on" onclick="diaTab('c')">🧮 Panorama (principal)</button>
+                    <button type="button" id="diaTabE" onclick="diaTab('e')">📆 Cierre de ayer (base retenida)</button>
+                    <button type="button" id="diaTabA" onclick="diaTab('a')">📊 Análisis por fechas</button>
+                    <button type="button" id="diaTabB" onclick="diaTab('b')">⚖️ Comparativa</button>
+                    <button type="button" id="diaTabD" onclick="diaTab('d')">📜 Historial</button>
+                </div>
+                <div id="diaPaneA" style="display:none;">
+                    <div class="dia-bar">
+                        <label>Desde<input type="date" id="diaFrom"></label>
+                        <label>Hasta<input type="date" id="diaTo"></label>
+                        <label>Ver por<select id="diaGran"><option value="day">Día a día</option><option value="week">Semana a semana</option><option value="month">Mes a mes</option></select></label>
+                        <label>Campaña / publicista<select id="diaCampaign"><option value="">Toda la app</option></select></label>
+                        <label>Gasto en pauta del rango ($, opcional)<input type="number" id="diaSpend" min="0" step="1" placeholder="usa el guardado" style="width:140px;" title="Total gastado en TODO el rango analizado. Si lo dejás vacío, se usa el gasto guardado abajo (repartido por día)."></label>
+                        <button class="btn-primary btn-small" onclick="diaRun()">Analizar</button>
+                        <span class="dia-presets"><button onclick="diaPreset(7,'day')">7 d</button><button onclick="diaPreset(30,'day')">30 d</button><button onclick="diaPreset(90,'week')">90 d · semanas</button><button onclick="diaPreset(365,'month')">1 año · meses</button></span>
+                    </div>
+                    <div id="diaVerdict" class="dia-verdict"></div>
+                    <!-- #466: guardar el veredicto con una nota de qué se analizó -->
+                    <div id="diaSaveBox" class="dia-card" style="display:none;"><div class="dia-card-h"><b>💾 Guardar este análisis con nota</b><small>Qué se analizó, cómo terminó, qué decidiste. Queda en el Historial junto con todos los números.</small></div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;"><textarea id="diaNote" rows="2" placeholder="Ej.: semana 2 de la campaña X, con $300.000 de pauta. Retención floja: probar bono en la 2ª carga." style="flex:1;min-width:240px;resize:vertical;"></textarea><button class="btn-primary btn-small" onclick="diaSaveNote()">Guardar nota</button></div>
+                    </div>
+                    <div id="diaKpis"></div>
+                    <div class="dia-card"><div class="dia-card-h"><b>📝 Informe</b><small>Cada sección tiene un semáforo (🟢 bien · 🟡 regular · 🔴 flojo) y una recomendación</small></div><div id="diaInforme" class="dia-report"></div></div>
+                    <div class="dia-card"><div class="dia-card-h"><b>🪜 Después de la primera carga</b><small>Los nuevos del rango, contando todo lo que cargaron hasta hoy</small></div><div id="diaLadder"></div></div>
+                    <div class="dia-card"><div class="dia-card-h"><b>📅 Serie</b><small id="diaSerieSub">por período</small></div><div id="diaTable" style="overflow-x:auto;"></div></div>
+                    <div class="dia-card"><div class="dia-card-h"><b>📣 Gasto en publicidad</b><small>Cargá el TOTAL gastado entre dos fechas (por ejemplo, lo de una semana): se reparte parejo por día. Así el análisis sabe cuánto se gastó cada día y calcula el costo por cliente nuevo por día, semana o mes.</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Desde<input type="date" id="spFrom2"></label><label>Hasta<input type="date" id="spTo2"></label>
+                            <label>Campaña (opc.)<input type="text" id="spCamp" placeholder="CODIGO" style="width:110px;"></label>
+                            <label>Monto $<input type="number" id="spAmount" min="0" style="width:120px;"></label>
+                            <label>Nota<input type="text" id="spNote" style="width:160px;"></label>
+                            <button class="btn-primary btn-small" onclick="diaSaveSpend()">Guardar gasto</button>
+                        </div>
+                        <div id="diaSpendList" class="dia-list"></div>
+                    </div>
+                </div>
+                <div id="diaPaneB" style="display:none;">
+                    <div class="dia-card"><div class="dia-card-h"><b>📝 Números de la otra página</b><small>La que dejó de publicitar: completá lo que tengas para un día o un rango. Se guarda y se compara por día contra esta app.</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Nombre<input type="text" id="opLabel" placeholder="Equipo viejo" style="width:140px;"></label>
+                            <label>Desde<input type="date" id="opFrom"></label><label>Hasta<input type="date" id="opTo"></label>
+                            <label>Primeras cargas<input type="number" id="opFirst" min="0" style="width:90px;"></label>
+                            <label>Usuarios que entraron<input type="number" id="opUsers" min="0" style="width:90px;"></label>
+                            <label>Depósitos (cant.)<input type="number" id="opDeps" min="0" style="width:90px;"></label>
+                            <label>Monto depositado $<input type="number" id="opSum" min="0" style="width:120px;"></label>
+                            <label>Min. por sesión (opc.)<input type="number" id="opMin" min="0" step="0.1" style="width:90px;"></label>
+                            <label>Retención % (opc.)<input type="number" id="opRet" min="0" max="100" style="width:90px;"></label>
+                            <button class="btn-primary btn-small" onclick="diaSaveOther()">Guardar</button>
+                        </div>
+                    </div>
+                    <div class="dia-card"><div class="dia-card-h"><b>⚖️ Comparar</b><small>Rango completo, un día sorteado o un día elegido (esta app ese día vs el promedio diario de la otra)</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Entrada guardada<select id="opSelect" style="min-width:240px;"></select></label>
+                            <label>Campaña de esta app<select id="opCampaign"><option value="">Toda la app</option></select></label>
+                            <button class="btn-primary btn-small" onclick="diaCompare(null)">Comparar el rango</button>
+                            <button class="btn-secondary btn-small" onclick="diaCompare('random')">🎲 Sortear un día</button>
+                            <label>o un día<input type="date" id="opDay"></label>
+                            <button class="btn-secondary btn-small" onclick="diaCompare('day')">Comparar ese día</button>
+                            <button class="btn-secondary btn-small" onclick="diaDeleteOther()">🗑 Borrar entrada</button>
+                        </div>
+                        <div id="diaCompareOut"></div>
+                    </div>
+                </div>
+                <div id="diaPaneC">
+                    <!-- #477 (owner): PANORAMA. 1) la base real · 2) condiciones vigentes/futuras · 3) si invertís X en N días → 3 panoramas -->
+                    <div class="dia-card"><div class="dia-card-h"><b>1️⃣ ✅ DATOS REALES · tu negocio desde que empezó hasta hoy</b><small>Confirmado con los movimientos registrados, desde la primera carga real hasta hoy. Depósitos, retiros, VENTA (netwin = depósitos − retiros), regalos, NETO (venta − regalos) y retención por antigüedad. Lo único que ponés vos es la inversión.</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <!-- #484: la base es SIEMPRE desde que la página empezó a recibir clientes (primera carga real) hasta hoy -->
+                            <select id="prBaseMode" style="display:none;"><option value="inicio" selected>Desde el inicio</option></select><input type="hidden" id="prBase" value="60">
+                            <span class="dia-pill">Desde que empezó la página hasta hoy</span>
+                            <!-- #487: la INVERSIÓN se paga en dólares; la venta es en pesos. Esta moneda es sólo para los campos de inversión. -->
+                            <label>La inversión la cargo en<select id="prInvCur" onchange="diaInvCurChange()"><option value="usd">Dólares (US$)</option><option value="ars">Pesos ($)</option></select></label>
+                            <label>Gasto en publicidad desde el inicio <span class="inv-sym">US$</span> (opcional)<input type="number" id="prBaseSpend" min="0" step="100" placeholder="usa el gasto total guardado" style="width:150px;" title="Si lo dejás vacío usa el gasto total guardado abajo"></label>
+                            <label>Campaña<select id="prCampaign"><option value="">Toda la app</option></select></label>
+                            <button class="btn-primary btn-small" onclick="diaProject()">Ver la base</button>
+                        </div>
+                        <div id="diaBaseOut"></div>
+                        <div class="dia-sub" style="margin-top:10px;"><b>📣 Gasto total en publicidad desde que empezó la página</b> <span id="stInfo" class="dia-pill">…</span></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Gasto total hasta hoy <span class="inv-sym">US$</span><input type="number" id="stAmount" min="0" step="100" style="width:150px;"></label>
+                            <label>Empezó el (opcional)<input type="date" id="stSince" title="Desde cuándo contás ese gasto. Si es más vieja que el primer cliente, se toma la del primer cliente."></label>
+                            <button class="btn-secondary btn-small" onclick="diaSaveSpendTotal()">Guardar</button>
+                        </div>
+                    </div>
+                    <div class="dia-card"><div class="dia-card-h"><b>2️⃣ Condiciones promocionales</b><small>Las vigentes se leen del panel. Las futuras las escribís vos: con esas se calculan los regalos del panorama (no se copian los de hoy). Bajar el bono de 1ª carga sube lo que dejan los clientes que quedan.</small></div>
+                        <div id="diaCondOut" class="dia-note" style="margin:0 0 8px;">Vigentes: …</div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Bono 1ª carga futuro %<input type="number" id="prBonus" min="0" max="500" placeholder="vigente" style="width:90px;"></label>
+                            <label>Reembolso diario futuro %<input type="number" id="prRefund" min="0" max="100" placeholder="vigente" style="width:90px;"></label>
+                            <label>Bono en cargas siguientes futuro % (ruleta / diario repartido, promedio)<input type="number" id="prRec" min="0" max="500" placeholder="vigente" style="width:90px;"></label>
+                            <label>Costo por cliente nuevo $ (opc.)<input type="number" id="prCac" min="0" step="100" placeholder="de la base" style="width:130px;"></label>
+                            <label>% orgánico (si la base no tiene gasto)<input type="number" id="prOrg" min="0" max="100" value="30" style="width:70px;"></label>
+                        </div>
+                    </div>
+                    <div class="dia-card"><div class="dia-card-h"><b>3️⃣ 🔮 ESTIMACIÓN · si invertís…</b><small>Clientes nuevos = inversión ÷ costo por cliente. Lo primero que vas a ver: la VENTA (netwin) <b>por día y por mes</b> de esos clientes <b>cuando termina la inversión y sin más pauta</b>, según la retención real por antigüedad, y cómo cae en los 6 meses siguientes. Abajo, lo del período. Tres panoramas (−30 % / base / +30 %). Son proyecciones, no datos confirmados.</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Plata a invertir <span class="inv-sym">US$</span><input type="number" id="prSpend" min="0" step="100" value="" placeholder="ej. 400000" style="width:150px;"></label>
+                            <label>Durante (días)<input type="number" id="prDays" min="1" max="365" value="60" style="width:80px;"></label>
+                            <span class="dia-presets"><button onclick="diaProjPreset(30)">30 d</button><button onclick="diaProjPreset(60)">60 d</button><button onclick="diaProjPreset(120)">4 meses</button><button onclick="diaProjPreset(180)">6 meses</button></span>
+                            <button class="btn-primary btn-small" onclick="diaProject()">Calcular panorama</button>
+                        </div>
+                        <div id="diaProjOut"></div>
+                        <div id="diaProjSave" style="display:none;margin-top:10px;"><div class="dia-sub"><b>💾 Guardar este panorama con nota</b> <small>qué decidiste, qué esperás; queda con todo el detalle del cierre en el Historial</small></div>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;"><textarea id="diaProjNote" rows="2" placeholder="Ej.: panorama para noviembre con 400 M y bono de 1ª carga al 30%." style="flex:1;min-width:240px;"></textarea><button class="btn-primary btn-small" onclick="diaSaveProjNote()">Guardar nota</button></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- #499 (owner): CIERRE DIARIO de la base retenida — la venta de ayer SIN los clientes nuevos de ayer -->
+                <div id="diaPaneE" style="display:none;">
+                    <div class="dia-card"><div class="dia-card-h"><b>📆 Cierre del día · base retenida</b><small>La venta de AYER (o del día que elijas) de los clientes que YA cargaban de antes. Los que hicieron su primera carga ese día quedan afuera: llevan bono de primera carga y no dicen nada de la retención. Además: qué costó traer a esos retenidos y cuánto dejaron en toda su vida.</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Día<input type="date" id="dyDay"></label>
+                            <button class="btn-primary btn-small" onclick="diaDaily()">Ver cierre</button>
+                            <span class="dia-presets"><button onclick="diaDailyPreset(1)">Ayer</button><button onclick="diaDailyPreset(2)">Anteayer</button><button onclick="diaDailyPreset(7)">Hace 7 días</button></span>
+                        </div>
+                        <div id="diaDailyOut"></div>
+                    </div>
+                </div>
+                <div id="diaPaneD" style="display:none;">
+                    <div class="dia-card"><div class="dia-card-h"><b>📜 Historial de cálculos</b><small>Todo lo calculado queda guardado. Las proyecciones se pueden <b>revisar contra lo real</b> y con eso se ajustan las siguientes (factor de calibración).</small></div>
+                        <div class="dia-bar dia-bar-in">
+                            <label>Tipo<select id="hiKind" onchange="diaLoadHistory()"><option value="">Todos</option><option value="analysis">Análisis</option><option value="projection">Proyecciones</option><option value="compare">Comparativas</option><option value="daily">Cierres diarios</option></select></label>
+                            <span id="hiCalib" class="dia-pill"></span>
+                            <button class="btn-secondary btn-small" onclick="diaCalibrate(null)">Ajustar con el promedio de revisiones</button>
+                            <label>o factor a mano<input type="number" id="hiFactor" min="0.2" max="3" step="0.05" placeholder="1.00" style="width:80px;"></label>
+                            <button class="btn-secondary btn-small" onclick="diaCalibrate('manual')">Aplicar</button>
+                            <button class="btn-secondary btn-small" onclick="diaCalibrate('reset')">Sin ajuste (1.00)</button>
+                        </div>
+                        <div id="diaHistory" class="dia-list"></div>
+                        <div id="diaHistoryDetail"></div>
+                    </div>
+                </div>
+            </section>
+
             <section id="datosSection" class="section">
                 <div class="panel-header">
                     <h2><span class="icon icon-chart"></span> Datos</h2>

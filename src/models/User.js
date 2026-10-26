@@ -302,6 +302,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // #223 (réplica #823/#952 de PICA ROJA): último teléfono con el que entró { os, model, w, h, dpr, app, id, at } y los
+  // últimos 6 IDs propios del celular (los manda /api/activity/ping; las Alertas de estafa cruzan cuentas por ellos).
+  lastDevice: { type: mongoose.Schema.Types.Mixed, default: null },
+  deviceIds: { type: [String], default: [], index: true },
   // Último permiso de notificaciones reportado por el cliente: 'granted' / 'denied' / 'default'
   notifPermission: {
     type: String,
@@ -565,6 +569,11 @@ const userSchema = new mongoose.Schema({
   // RULETA DIARIA v2 (2026-09-18): % EXTRA ganado y todavía sin usar. Lo consume
   // la próxima carga (manual o hgcash) vía resolveAutoBonus (server.js); un
   // premio nuevo en % pisa uno anterior sin usar. 0 = nada pendiente.
+  // #223 ALERTAS DE ESTAFA (réplica #873 de PICA ROJA): banderas del sistema, notas y revisión de una alerta:
+  // 'legit' (revisado, no se vuelve a mostrar) | 'watch' (en observación). by/at/note de quién lo revisó.
+  fraudFlags: { type: [String], default: [] },
+  fraudNotes: { type: [{ at: Date, note: String }], default: [] },
+  fraudReview: { status: { type: String, default: null }, by: { type: String, default: null }, at: { type: Date, default: null }, note: { type: String, default: null } },
   dailyRoulettePendingPct: { type: Number, default: 0 },
   dailyRoulettePendingLabel: { type: String, default: null },
   dailyRouletteWonAt: { type: Date, default: null },

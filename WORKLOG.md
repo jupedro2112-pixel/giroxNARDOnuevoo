@@ -53,6 +53,49 @@
 - **Pendiente de las próximas tandas:** 2) Alertas de estafa + Datos IA · 3) Historias · 4) Centro de avisos +
   piloto automático.
 
+### 223. RÉPLICA DE PICA ROJA — tanda 2: 🚨 ALERTAS DE ESTAFA y 🧠 DATOS IA 🔒 (ambas en OFF, interruptor en COMANDOS) — SW v118
+- **Alertas de estafa** (`src/services/fraudRadar.js`, copiado 1:1 de CARGASGIROX #209 / PICA ROJA #873/#877/#952):
+  reglas que cruzan los datos (CBU de carga/retiro compartido, mismo celular por token de push o ID del celular, mismo
+  número de teléfono, terceros que cargan, retiro a nombre de otro, abuso de bonos, retiro casi sin jugar, cuenta nueva
+  con retiro grande, ciclo carga→retiro, granja de referidos, marcas previas, sin teléfono) y suman PUNTAJE (60+ alto,
+  30–59 medio) con la evidencia. **Nada se bloquea solo.** Rutas `GET /api/admin/fraud/alerts?days=&fresh=` (cache 5
+  min; las stats de juego salen de `girox.getPlayersStatsBatch`, sólo para quienes pidieron retirar, máx. 100),
+  `GET /api/admin/fraud/case/:id` (caso completo), `POST /api/admin/fraud/review/:id` (legit/watch/clear →
+  `User.fraudReview` + `fraudNotes`). Bloquear/desbloquear usa `/api/admin/users/:id/block|unblock` de siempre.
+  **Solo admin general** (`_fraudGate`) y `featureFlags.fraudRadar` (apagado ⇒ 404 `FEATURE_OFF`). Sin crons. Panel:
+  menú "🚨 Alertas de estafa" (`data-feature="fraudRadar"`, oculto si está OFF), sección `#fraudSection`, caso en
+  `#frCaseModal`. Todos los modelos que usa (`User`, `Transaction`, `PendingPayout`, `BankMovement`) tienen acá los
+  mismos campos que allá (verificado campo por campo antes de copiar).
+- **Datos IA** (`src/services/datosIaService.js` + modelos `AppSession` y `DatosIaSnapshot`, copiados 1:1; **no usa
+  IA**: son agregaciones de Mongo). Pestañas Panorama (inversión y proyección con calibración), Cierre de ayer (base
+  retenida), Análisis por fechas (KPIs, informe con semáforos, escalera post 1ª carga, serie, gasto en pauta),
+  Comparativa con "la otra página" (números a mano) e Historial (revisar proyecciones contra lo real). Rutas bajo
+  `/api/admin/datos-ia/*` con un `app.use` que exige: función prendida (`featureFlags.datosIa`) → admin general →
+  **clave propia** si está cargada (`Config['datosIaPinHash']` sha256, header `x-datos-pin`, 423 `PIN_REQUIRED`; 6
+  fallos ⇒ 15 min 429). Clave en COMANDOS → card "🔒 Clave de Datos IA" (`/api/admin/datos-ia-pin`; la card sólo se
+  ve con la función prendida). Cotización USDT manual o de criptoya (público, sin clave).
+- **`_diaPromoConfig` adaptado a ESTA página** (cada lectura en su try/catch): bono de 1ª carga y bono automático = 0
+  (acá no existen), "reembolso diario" = `getInstantCashbackConfig().pct` si el reembolso en vivo está prendido,
+  semanal/mensual = el rango más alto de `getRefundTiersByPeriod()` (acá no hay rango diario), extra por instalar =
+  `getInstallBonusPct()` + tope global `getBonusCapConfig()` (`capArs`/`restPct`; allá era `getInstallBonusConfig()`
+  con `excessPct`), ruleta = % promedio ponderado de `getDailyRouletteConfig()`.
+- **Medidor de uso de la app**: `public/js/activity.js` pinguea `POST /api/activity/ping` cada 60 s con la app visible
+  (sesión nueva si pasan >3 min) + `window.VIP_DEVICE` (modelo/OS/pantalla, bloque inline en index.html) + ID propio
+  del celular (`localStorage.vip_device_id`) → `User.lastDevice` y `User.deviceIds` (últimos 6), que también cruzan las
+  Alertas de estafa. Con Datos IA apagado el server responde `{ok:false, off:true}` y la app deja de pinguear en esa
+  sesión. Esta PWA no tiene "modos" del menú del inicio ⇒ `mode` viaja `null` (allá iba `homePanelMode`).
+- `User`: + `lastDevice`, `deviceIds` (index), `fraudFlags`, `fraudNotes`, `fraudReview`. Panel: `admin.css` suma las
+  reglas `.dia` con las variables `--p-*` mapeadas al tema oscuro de acá (`--darker`); `authFetch` agrega `x-datos-pin`
+  a `/api/admin/datos-ia/`; `datosIaGate` pide la clave una vez por sesión (sessionStorage `datos_pin`);
+  `_featureOnOrToast` avisa si se entra a una sección apagada. El selector de campañas de Datos IA usa
+  `/api/admin/campaigns`, que acá es sólo para DUEÑOS (#221): un admin que no sea dueño ve "Toda la app" sin opciones.
+  SW `v118`. `node --check` + `check-tdz` OK. **Back + panel + PWA necesitan redeploy.**
+- Lo que NO se trajo a propósito (igual que CARGASGIROX): la sección INICIO de PICA ROJA, "clave para Datos/Datos
+  2.0/Cierres" y `STAFF_DENY_MUTATIONS` (acá se resolvió con admin-only en las rutas nuevas). PROBAR: prender
+  `fraudRadar` y `datosIa` en COMANDOS → aparecen los dos ítems del menú; Alertas → lista con puntaje y "Ver caso";
+  Datos IA → pestaña Panorama con la base; cargar clave → al volver a entrar pide la clave; con la función apagada la
+  PWA recibe `{off:true}` en el primer ping y no insiste.
+
 ## Sesión 2026-10-20
 
 ### 221. 👑 PUBLICIDAD solo para DUEÑOS (marca `isOwner` sobre admin general, gestionada desde COMANDOS, sin SSM) — admin-sw v58

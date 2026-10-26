@@ -15547,6 +15547,355 @@ app.post('/api/admin/change-own-password', authMiddleware, async (req, res) => {
 // BLOQUEO / DESBLOQUEO DE USUARIOS
 // ============================================
 
+
+// ============================================================
+// #223 ALERTAS DE ESTAFA (réplica #873/#877/#952 de PICA ROJA — src/services/fraudRadar.js)
+// ============================================================
+// Reglas que cruzan los datos (multicuenta por banco, celular y teléfono, terceros que cargan, retiro a nombre de otro,
+// abuso de bonos, retiro casi sin jugar, ciclo carga→retiro, granja de referidos) y suman PUNTAJE por cliente con la
+// evidencia. Nada se bloquea solo: bloquear usa /api/admin/users/:id/block. SOLO admin general. Interruptor
+// `featureFlags.fraudRadar` (COMANDOS → Funciones): apagado ⇒ 404 FEATURE_OFF. Sin crons.
+const fraudRadar = require('./src/services/fraudRadar');
+let _fraudCache = { at: 0, days: 0, data: null };
+const _fraudGate = async (req, res, next) => {
+  try {
+    if (!(await featureFlags.isOn('fraudRadar'))) return res.status(404).json({ error: 'Alertas de estafa está apagado (COMANDOS → Funciones).', code: 'FEATURE_OFF' });
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
+    next();
+  } catch (_) { res.status(500).json({ error: 'Error del servidor' }); }
+};
+app.get('/api/admin/fraud/alerts', authMiddleware, adminMiddleware, _fraudGate, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(180, parseInt(req.query.days, 10) || 30));
+    // 5 min de memoria (las stats del juego usan el cupo de 1girox que comparten cargas y retiros); 'fresh' fuerza, pero no más de 1 por minuto.
+    if (_fraudCache.data && _fraudCache.days === days && Date.now() - _fraudCache.at < (req.query.fresh ? 60 * 1000 : 5 * 60 * 1000)) return res.json(Object.assign({ cached: true }, _fraudCache.data));
+    // Cuánto apostó / ganó cada uno (Partner API, batch; sólo para quienes retiran, máx. 100). netwin positivo = perdió.
+    const stats = async (usernames, from, to) => { const out = new Map(); const r = await girox.getPlayersStatsBatch(usernames, from, to, 'fraude'); if (r && r.success) for (const [k, v] of Object.entries(r.players || {})) out.set(k, v); return out; };
+    const data = await fraudRadar.scan({ User, Transaction, PendingPayout, BankMovement, stats }, { days });
+    data.rules = fraudRadar.RULES; data.generatedAt = new Date().toISOString();
+    _fraudCache = { at: Date.now(), days, data };
+    res.json(data);
+  } catch (e) { logger.error('[fraude] alerts: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/admin/fraud/case/:id', authMiddleware, adminMiddleware, _fraudGate, async (req, res) => {
+  try {
+    const c = await fraudRadar.caseFile({ User, Transaction, PendingPayout, BankMovement }, String(req.params.id));
+    if (!c) return res.status(404).json({ error: 'Cliente no encontrado' });
+    res.json(c);
+  } catch (e) { logger.error('[fraude] caso: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.post('/api/admin/fraud/review/:id', authMiddleware, adminMiddleware, _fraudGate, async (req, res) => {
+  try {
+    const st = String((req.body && req.body.status) || ''); if (!['legit', 'watch', 'clear'].includes(st)) return res.status(400).json({ error: 'Estado inválido.' });
+    const note = String((req.body && req.body.note) || '').slice(0, 300);
+    const set = { fraudReview: { status: st === 'clear' ? null : st, by: req.user.username, at: new Date(), note } };
+    const r = await User.updateOne({ id: String(req.params.id) }, { $set: set, $push: { fraudNotes: { at: new Date(), note: `[${req.user.username}] ${st === 'legit' ? 'revisado: legítimo' : (st === 'watch' ? 'en observación' : 'revisión borrada')}${note ? ' — ' + note : ''}` } } });
+    if (!(r.matchedCount || r.n)) return res.status(404).json({ error: 'Cliente no encontrado' });
+    _fraudCache = { at: 0, days: 0, data: null };
+    logger.info(`[fraude] ${req.user.username} marcó ${req.params.id} como ${st}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+
+// ============================================================
+// #223 DATOS IA (réplica #459…#499/#590/#665 de PICA ROJA — src/services/datosIaService.js, sin IA externa)
+// ============================================================
+// Medidor de sesiones de la app (POST /api/activity/ping) + análisis por reglas + comparativa con "la otra página" +
+// panorama de inversión + cierre diario de la base retenida + historial/calibración. SOLO admin general y, si está
+// cargada, la CLAVE propia (Config['datosIaPinHash'], header `x-datos-pin`). Interruptor `featureFlags.datosIa`:
+// apagado ⇒ 404 FEATURE_OFF y el ping de la app responde { ok:false, off:true } (la app deja de pinguear).
+const AppSession = require('./src/models/AppSession');
+const DatosIaSnapshot = require('./src/models/DatosIaSnapshot');
+const datosIa = require('./src/services/datosIaService');
+const _datosIaModels = () => ({ Transaction, User, RefundClaim, DailyRouletteSpin: require('./src/models/DailyRouletteSpin'), Message, AppSession, BankMovement, PendingPayout });
+// Condiciones promocionales VIGENTES (lo que se regala hoy) para el informe y el calculador. Adaptado a ESTA página: no hay
+// bono fijo de 1ª carga ni bono automático por carga (apagados por flags) ⇒ 0; el "reembolso diario" es el reembolso en vivo
+// acumulativo (Config['instantCashback'].pct, si está prendido); semanal/mensual = el rango más alto de refundTiersByPeriod;
+// el extra por instalar es Config['installBonusPct'] con el tope global de bonusCap (capArs + restPct). Cada lectura va en
+// su propio try/catch: si un getter no existe o falla, queda 0 y el informe sigue.
+async function _diaPromoConfig() {
+  const out = { firstDepositBonusPct: 0, autoLoadBonusPct: 0, dailyRefundPct: 0, weeklyRefundPct: 0, monthlyRefundPct: 0, installGiftPct: 0, roulettePct: 0, capArs: 0, restPct: 0 };
+  try { const tbp = await getRefundTiersByPeriod(); const mx = (ts) => (ts || []).reduce((m, t) => (t && t.pct > m ? t.pct : m), 0); out.weeklyRefundPct = mx(tbp.weekly); out.monthlyRefundPct = mx(tbp.monthly); } catch (_) {}
+  try { const ic = await getInstantCashbackConfig(); if (ic && ic.enabled) out.dailyRefundPct = Number(ic.pct) || 0; } catch (_) {}
+  try { out.installGiftPct = Number(await getInstallBonusPct()) || 0; } catch (_) {}
+  try { const cap = await getBonusCapConfig(); if (cap && cap.enabled !== false) { out.capArs = Number(cap.capArs) || 0; out.restPct = Number(cap.restPct) || 0; } } catch (_) {}
+  // ruleta = % extra promedio por giro (Σ peso × % / Σ pesos, sólo premios en %)
+  try { const rc = await getDailyRouletteConfig(); const ps = (rc && rc.enabled && rc.prizes) || []; const W = ps.reduce((s, p) => s + (Number(p.weight) || 0), 0); out.roulettePct = W > 0 ? Math.round(ps.reduce((s, p) => s + (p.type === 'percent' ? (Number(p.weight) || 0) * (Number(p.value) || 0) : 0), 0) / W * 10) / 10 : 0; } catch (_) { out.roulettePct = 0; }
+  return out;
+}
+// Cotización USDT para ver todo en dólares. Manual (panel) o automática desde criptoya (mediana del "ask" de los exchanges; público, sin clave).
+async function _diaUsdt(fetchNow) {
+  let cur = null; try { cur = (await getConfig('usdtRate', null)) || null; } catch (_) {}
+  if (!fetchNow) return cur;
+  try {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 7000);
+    const r = await fetch('https://criptoya.com/api/usdt/ars/1', { signal: ctl.signal, headers: { 'User-Agent': 'cargas1girox-panel' } }); clearTimeout(tm);
+    const j = await r.json(); const vals = Object.values(j || {}).map((x) => Number(x && (x.totalAsk || x.ask))).filter((v) => v > 100 && v < 100000).sort((a, b) => a - b);
+    if (!vals.length) throw new Error('sin cotizaciones');
+    const rate = Math.round(vals[Math.floor(vals.length / 2)]);
+    const doc = { rate, updatedAt: new Date().toISOString(), source: 'criptoya (mediana de ' + vals.length + ' exchanges)' };
+    await Config.set('usdtRate', doc, 'system'); return doc;
+  } catch (e) { return cur ? { ...cur, fetchError: e.message } : { rate: 0, fetchError: e.message }; }
+}
+function _diaMoneyOpts(q) { const cur = q && q.cur === 'usd' ? 'usd' : 'ars'; const usdRate = Number(q && q.usdRate) > 0 ? Number(q.usdRate) : 0; return { cur, usdRate }; }
+// CLAVE propia (además del login del panel). Config['datosIaPinHash'] = sha256 de la clave (NUNCA en el código: repo público);
+// el panel manda `x-datos-pin` (la guarda por sesión). Sin clave configurada no se exige. Se carga/cambia en COMANDOS → 🔒 Clave de Datos IA.
+let _datosPinCache = { at: 0, hash: null };
+async function _datosPinHash() { if (Date.now() - _datosPinCache.at < 60000) return _datosPinCache.hash; let h = null; try { h = await getConfig('datosIaPinHash', null); } catch (_) {} _datosPinCache = { at: Date.now(), hash: h || null }; return _datosPinCache.hash; }
+const _sha256Hex = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+// Seguridad: primero login + rol (401/403), recién después la clave: sin sesión no se puede ni probar claves. 6 fallos ⇒ 15 min bloqueado (por IP, por proceso).
+const _datosPinFails = new Map();
+app.use('/api/admin/datos-ia', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    if (!(await featureFlags.isOn('datosIa'))) return res.status(404).json({ error: 'Datos IA está apagado (COMANDOS → Funciones).', code: 'FEATURE_OFF' });
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
+    const h = await _datosPinHash(); if (!h) return next();
+    const ipk = String(req.ip || ''); const f = _datosPinFails.get(ipk);
+    if (f && f.n >= 6 && Date.now() - f.at < 15 * 60 * 1000) return res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.', code: 'PIN_LOCKED' });
+    const pin = String(req.get('x-datos-pin') || '');
+    if (pin && _sha256Hex(pin) === h) { _datosPinFails.delete(ipk); return next(); }
+    if (pin) _datosPinFails.set(ipk, { n: ((f && Date.now() - f.at < 15 * 60 * 1000) ? f.n : 0) + 1, at: Date.now() });
+    return res.status(423).json({ error: 'Datos IA está protegido con clave.', code: 'PIN_REQUIRED' });
+  } catch (_) { return res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/admin/datos-ia-pin', authMiddleware, adminMiddleware, async (req, res) => { res.json({ enabled: !!(await _datosPinHash()), canEdit: req.user.role === 'admin', featureOn: await featureFlags.isOn('datosIa') }); });
+app.post('/api/admin/datos-ia-pin', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo el administrador general.' });
+    const pin = String((req.body && req.body.pin) || '').trim();
+    if (pin && !/^\S{4,32}$/.test(pin)) return res.status(400).json({ error: 'La clave tiene que tener entre 4 y 32 caracteres, sin espacios.' });
+    await Config.set('datosIaPinHash', pin ? _sha256Hex(pin) : null, req.user.username); _datosPinCache = { at: 0, hash: null };
+    logger.info(`[datos-ia] clave ${pin ? 'cargada' : 'quitada'} por ${req.user.username}`);
+    res.json({ success: true, enabled: !!pin });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/admin/datos-ia/usdt', async (req, res) => { try { const d = await _diaUsdt(req.query.fetch === '1'); res.json({ success: true, rate: (d && Number(d.rate)) || 0, updatedAt: d && d.updatedAt || null, source: d && d.source || null, fetchError: d && d.fetchError || null }); } catch (e) { res.status(500).json({ error: 'Error' }); } });
+app.post('/api/admin/datos-ia/usdt', async (req, res) => {
+  try {
+    const rate = Math.round(Number(req.body && req.body.rate)); if (!(rate > 0)) return res.status(400).json({ error: 'Cotización inválida' });
+    await Config.set('usdtRate', { rate, updatedAt: new Date().toISOString(), source: 'manual (' + req.user.username + ')' }, req.user.username); res.json({ success: true, rate });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+// Base "desde el inicio" = desde la primera carga real registrada (tope 400 días)
+async function _diaFirstDepositDate() {
+  try { const d = await Transaction.findOne({ type: 'deposit', status: { $nin: ['failed', 'cancelled'] }, 'metadata.source': { $nin: ['install_bonus', 'welcome_gift', 'payout_refund'] } }).sort({ timestamp: 1 }).select('timestamp').lean(); return d ? new Date(d.timestamp) : null; } catch (_) { return null; }
+}
+// Medidor: la PWA pinguea cada 60 s mientras está abierta y visible. Gap > 3 min = sesión nueva. También guarda qué
+// teléfono usa (lastDevice) y el ID propio del celular (deviceIds, últimos 6) que cruzan las Alertas de estafa.
+app.post('/api/activity/ping', authMiddleware, async (req, res) => {
+  try {
+    if (!(await featureFlags.isOn('datosIa'))) return res.json({ ok: false, off: true });
+    const userId = req.user.userId; const now = new Date();
+    try {
+      const d = req.body && req.body.device;
+      if (d && typeof d === 'object') {
+        const did = /^[A-Za-z0-9-]{8,64}$/.test(String(d.id || '')) ? String(d.id) : null;
+        const dev = { os: String(d.os || '').slice(0, 10), model: String(d.model || '').slice(0, 60), w: Math.round(Number(d.w) || 0), h: Math.round(Number(d.h) || 0), dpr: Math.round((Number(d.dpr) || 0) * 100) / 100, app: d.app === true, id: did, at: now };
+        await User.updateOne({ id: userId, $or: [{ lastDevice: null }, { 'lastDevice.model': { $ne: dev.model } }, { 'lastDevice.app': { $ne: dev.app } }, { 'lastDevice.id': { $ne: did } }, { 'lastDevice.at': { $lt: new Date(now - 86400000) } }] }, { $set: { lastDevice: dev } });
+        if (did) await User.updateOne({ id: userId, deviceIds: { $ne: did } }, { $push: { deviceIds: { $each: [did], $slice: -6 } } });
+      }
+    } catch (_) {}
+    const last = await AppSession.findOne({ userId }).sort({ lastPingAt: -1 }).select('id lastPingAt').lean();
+    if (last && now - new Date(last.lastPingAt) < 3 * 60 * 1000) {
+      await AppSession.updateOne({ id: last.id }, { $set: { lastPingAt: now, mode: String((req.body && req.body.mode) || '').slice(0, 10) || null }, $inc: { pings: 1 } });
+    } else {
+      await AppSession.create({ id: uuidv4(), userId, username: req.user.username, dateKey: datosIa.dateKeyART(now), startedAt: now, lastPingAt: now, pings: 1, installed: !!(req.body && req.body.installed), mode: String((req.body && req.body.mode) || '').slice(0, 10) || null });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false }); }
+});
+async function _diaSnapshot(kind, by, params, result, summary) {
+  // historial — misma clase + mismos parámetros dentro de 15 min → se actualiza en vez de duplicar.
+  try {
+    const since = new Date(Date.now() - 15 * 60 * 1000);
+    const prev = await DatosIaSnapshot.findOne({ kind, createdAt: { $gte: since }, 'params.key': params.key }).select('id').lean();
+    if (prev) { await DatosIaSnapshot.updateOne({ id: prev.id }, { $set: { result, summary, by } }); return prev.id; }
+    const doc = await DatosIaSnapshot.create({ id: uuidv4(), kind, by, params, summary, result });
+    return doc.id;
+  } catch (e) { logger.warn('[datos-ia] snapshot: ' + e.message); return null; }
+}
+// El gasto cargado por rango se reparte POR DÍA (monto / días del rango) y se suma sólo lo que cae dentro del período analizado.
+async function _diaSpendByDay(from, to, campaign) {
+  const byDay = {}; let total = 0;
+  try {
+    const arr = (await getConfig('adSpend', [])) || [];
+    const f = datosIa.dateKeyART(from), t = datosIa.dateKeyART(to);
+    for (const e of arr) {
+      if (!e || (campaign && (e.campaign || '') !== String(campaign).toUpperCase())) continue;
+      if (e.to < f || e.from > t) continue;
+      const d0 = new Date(e.from + 'T12:00:00Z'), d1 = new Date(e.to + 'T12:00:00Z');
+      const nDays = Math.max(1, Math.round((d1 - d0) / 86400000) + 1); const perDay = (Number(e.amount) || 0) / nDays;
+      for (let x = d0.getTime(); x <= d1.getTime(); x += 86400000) { const k = new Date(x).toISOString().slice(0, 10); if (k >= f && k <= t) { byDay[k] = (byDay[k] || 0) + perDay; total += perDay; } }
+    }
+  } catch (_) {}
+  return { byDay, total: Math.round(total) };
+}
+async function _diaSpendFor(from, to, campaign) { return (await _diaSpendByDay(from, to, campaign)).total; }
+app.get('/api/admin/datos-ia/analysis', async (req, res) => {
+  try {
+    const q = req.query || {};
+    const to = q.to ? new Date(q.to) : new Date(); const from = q.from ? new Date(q.from) : new Date(to.getTime() - 29 * 86400000);
+    if (isNaN(from) || isNaN(to) || from > to) return res.status(400).json({ error: 'Fechas inválidas' });
+    if ((to - from) > 400 * 86400000) return res.status(400).json({ error: 'Máximo 400 días' });
+    const sb = await _diaSpendByDay(from, to, q.campaign);
+    let spendByDay = sb.byDay, spend = sb.total;
+    if (Number(q.spend) > 0) { // gasto indicado a mano para el rango → se reparte parejo por día
+      spend = Number(q.spend); spendByDay = {}; const nd = Math.max(1, Math.round((to - from) / 86400000) + 1);
+      for (let x = from.getTime(); x <= to.getTime(); x += 86400000) spendByDay[datosIa.dateKeyART(new Date(x))] = spend / nd;
+    }
+    const _t0 = Date.now();
+    const out = await datosIa.analyze(_datosIaModels(), { from, to, granularity: q.granularity, campaign: q.campaign, spend, spendByDay, promoConfig: await _diaPromoConfig(), ..._diaMoneyOpts(q) });
+    out.ms = Date.now() - _t0; logger.info('[datos-ia] analysis ' + out.from + '→' + out.to + ' ' + out.granularity + ' en ' + out.ms + ' ms ' + JSON.stringify(out.timings || {}));
+    const params = { key: [out.from, out.to, out.granularity, out.campaign || '', spend].join('|'), from: out.from, to: out.to, granularity: out.granularity, campaign: out.campaign, spend };
+    const summary = { registros: out.totals.registros, primerasCargas: out.totals.primerasCargas, cargas: out.totals.cargas, montoCargas: out.totals.montoCargas, netwin: out.totals.netwin, d30: out.retention.d30, pctSiguieron: out.repeat.pctSiguieron, veredicto: out.informe.veredicto.nivel };
+    const snapshotId = q.nosave ? null : await _diaSnapshot('analysis', req.user.username, params, { totals: out.totals, retention: out.retention, repeat: out.repeat, growth: out.growth, informe: out.informe }, summary);
+    res.json({ success: true, snapshotId, ...out });
+  } catch (e) { logger.error('[datos-ia] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/admin/datos-ia/spend', async (req, res) => { try { res.json({ success: true, items: (await getConfig('adSpend', [])) || [] }); } catch (e) { res.status(500).json({ error: 'Error' }); } });
+app.post('/api/admin/datos-ia/spend', async (req, res) => {
+  try {
+    const b = req.body || {}; const arr = (await getConfig('adSpend', [])) || [];
+    if (b.deleteId) { await Config.set('adSpend', arr.filter((e) => e.id !== b.deleteId), req.user.username); return res.json({ success: true }); }
+    if (!b.from || !b.to || !(Number(b.amount) > 0)) return res.status(400).json({ error: 'Faltan fechas o monto' });
+    arr.push({ id: uuidv4(), from: String(b.from).slice(0, 10), to: String(b.to).slice(0, 10), campaign: String(b.campaign || '').toUpperCase().slice(0, 40), amount: Math.round(Number(b.amount)), note: String(b.note || '').slice(0, 120), createdAt: new Date().toISOString() });
+    await Config.set('adSpend', arr.slice(-500), req.user.username); res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.get('/api/admin/datos-ia/other', async (req, res) => { try { res.json({ success: true, items: (await getConfig('otherPageStats', [])) || [] }); } catch (e) { res.status(500).json({ error: 'Error' }); } });
+app.post('/api/admin/datos-ia/other', async (req, res) => {
+  try {
+    const b = req.body || {}; const arr = (await getConfig('otherPageStats', [])) || [];
+    if (b.deleteId) { await Config.set('otherPageStats', arr.filter((e) => e.id !== b.deleteId), req.user.username); return res.json({ success: true }); }
+    if (!b.from || !b.to) return res.status(400).json({ error: 'Faltan las fechas' });
+    const num = (v) => (v == null || v === '' ? null : Number(v));
+    arr.push({ id: uuidv4(), label: String(b.label || 'Otra página').slice(0, 60), from: String(b.from).slice(0, 10), to: String(b.to).slice(0, 10), firstDeposits: num(b.firstDeposits), usersEntered: num(b.usersEntered), deposits: num(b.deposits), depositsSum: num(b.depositsSum), avgSessionMin: num(b.avgSessionMin), retentionPct: num(b.retentionPct), note: String(b.note || '').slice(0, 160), createdAt: new Date().toISOString() });
+    await Config.set('otherPageStats', arr.slice(-300), req.user.username); res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.post('/api/admin/datos-ia/compare', async (req, res) => {
+  try {
+    const b = req.body || {}; let other = b.other || null;
+    if (!other && b.otherId) other = ((await getConfig('otherPageStats', [])) || []).find((e) => e.id === b.otherId) || null;
+    if (!other) return res.status(400).json({ error: 'Falta la otra página (entrada guardada o números)' });
+    const from = new Date(b.day || b.from || other.from), to = new Date(b.day || b.to || other.to);
+    if (isNaN(from) || isNaN(to) || from > to) return res.status(400).json({ error: 'Fechas inválidas' });
+    const ours = await datosIa.analyze(_datosIaModels(), { from, to, granularity: 'day', campaign: b.campaign });
+    const comparison = datosIa.compare(ours, other);
+    const params = { key: ['cmp', other.id || other.label, b.day || '', ours.from, ours.to, b.campaign || ''].join('|'), otherId: other.id || null, otherLabel: other.label, day: b.day || null, from: ours.from, to: ours.to, campaign: b.campaign || null };
+    const snapshotId = await _diaSnapshot('compare', req.user.username, params, { comparison, oursTotals: ours.totals, oursRetention: ours.retention }, { verdict: comparison.verdict, nivel: comparison.nivel });
+    res.json({ success: true, snapshotId, ours, comparison, day: b.day || null });
+  } catch (e) { logger.error('[datos-ia/compare] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+// #468: GASTO TOTAL desde que empezó la página → costo promedio por cliente (gasto total / clientes que cargaron alguna vez).
+app.get('/api/admin/datos-ia/spend-total', async (req, res) => {
+  try {
+    const st = (await getConfig('adSpendTotal', null)) || null;
+    const clients = await Transaction.distinct('userId', { type: 'deposit', status: { $nin: ['failed', 'cancelled'] }, 'metadata.source': { $nin: ['install_bonus', 'welcome_gift', 'payout_refund'] } });
+    const n = clients.length; const amount = st ? Number(st.amount) || 0 : 0;
+    res.json({ success: true, amount, amountUsd: st && st.amountUsd || null, rate: st && st.rate || null, since: st ? st.since || null : null, updatedAt: st ? st.updatedAt : null, clientesTotales: n, costoPromedio: amount > 0 && n ? Math.round(amount / n) : null });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.post('/api/admin/datos-ia/spend-total', async (req, res) => {
+  try {
+    const amount = Math.max(0, Math.round(Number(req.body && req.body.amount) || 0)); // siempre en PESOS
+    // #487: si el owner lo cargó en dólares, se guarda también el monto en USD y la cotización usada (trazabilidad)
+    const amountUsd = Math.max(0, Math.round(Number(req.body && req.body.amountUsd) || 0)) || null, rate = Number(req.body && req.body.rate) > 0 ? Math.round(Number(req.body.rate)) : null;
+    await Config.set('adSpendTotal', { amount, amountUsd, rate, since: String((req.body && req.body.since) || '').slice(0, 10) || null, updatedAt: new Date().toISOString(), by: req.user.username }, req.user.username);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.get('/api/admin/datos-ia/projection', async (req, res) => {
+  try {
+    const q = req.query || {};
+    // #477: la base es "desde el inicio" (primera carga real, tope 400 días) o los últimos N días. El gasto de la base:
+    // escrito a mano > gasto total desde el inicio (Config adSpendTotal, si la base es desde el inicio) > gasto por día guardado.
+    const to = new Date(); let from, baseMode = q.baseMode === 'dias' ? 'dias' : 'inicio';
+    const st = (await getConfig('adSpendTotal', null)) || null;
+    if (baseMode === 'inicio') { // #484: siempre desde que la plataforma empezó a recibir clientes (primera carga real). Una fecha más vieja se recorta a esa.
+      const fd = await _diaFirstDepositDate(); const since = st && st.since ? new Date(st.since) : null;
+      from = since && !isNaN(since) ? since : (fd || new Date(to.getTime() - 29 * 86400000)); if (fd && from < fd) from = fd;
+      if (to - from > 400 * 86400000) from = new Date(to.getTime() - 400 * 86400000); }
+    else { const bd = Math.max(7, Math.min(400, parseInt(q.base, 10) || 30)); from = new Date(to.getTime() - (bd - 1) * 86400000); }
+    let spendBase = Number(q.baseSpend) > 0 ? Number(q.baseSpend) : 0, spendOrigen = spendBase ? 'escrito' : null;
+    if (!spendBase && baseMode === 'inicio' && st && Number(st.amount) > 0) { spendBase = Number(st.amount); spendOrigen = 'gasto total desde el inicio'; }
+    if (!spendBase) { spendBase = await _diaSpendFor(from, to, q.campaign); spendOrigen = spendBase ? 'gasto por día guardado' : 'sin gasto'; }
+    const promoConfig = await _diaPromoConfig(); const money = _diaMoneyOpts(q);
+    const base = await datosIa.analyze(_datosIaModels(), { from, to, granularity: 'day', campaign: q.campaign, spend: spendBase, promoConfig, ...money });
+    let calibration = 1; try { const c = await getConfig('projectionCalibration', null); if (c && Number(c.factor) > 0) calibration = Number(c.factor); } catch (_) {}
+    let cacIn = Number(q.cac) > 0 ? Number(q.cac) : null, cacOrigen = cacIn ? 'indicado' : null;
+    if (!cacIn && !(base.totals.cac > 0)) { // #468: costo promedio histórico (gasto total / clientes que cargaron alguna vez)
+      const n = base.totals.baseCargadores; if (st && Number(st.amount) > 0 && n) { cacIn = Math.round(Number(st.amount) / n); cacOrigen = 'promedio histórico (gasto total / clientes de siempre)'; }
+    }
+    const projection = datosIa.project(base, { spend: q.spend, days: q.days, cac: cacIn, calibration, organicPct: q.organicPct, promoConfig, futBonus: q.futBonus, futRefund: q.futRefund, futRec: q.futRec, ...money });
+    if (cacOrigen) projection.supuestos.cacOrigen = cacOrigen;
+    projection.supuestos.gastoBaseOrigen = spendOrigen; projection.supuestos.baseMode = baseMode;
+    const baseDays = base.totals.dias;
+    const params = { key: ['proj', q.spend || 0, q.days || 30, baseMode, baseDays, spendBase, q.cac || '', q.campaign || '', q.organicPct || '', q.futBonus || '', q.futRefund || '', q.futRec || '', money.cur].join('|'), baseMode, baseFrom: base.from, baseTo: base.to, baseSpend: spendBase, organicPct: q.organicPct || null, futBonus: q.futBonus || null, futRefund: q.futRefund || null, futRec: q.futRec || null, cur: money.cur, usdRate: money.usdRate || null, spend: Number(q.spend) || 0, days: Math.max(1, parseInt(q.days, 10) || 30), baseDays, cac: Number(q.cac) || null, campaign: q.campaign || null, calibration, startsAt: datosIa.dateKeyART(new Date()) };
+    const snapshotId = q.nosave ? null : await _diaSnapshot('projection', req.user.username, params, projection, { clientesNuevos: projection.base.clientesNuevos, venta: projection.base.total.venta, netwin: projection.base.netwin, neto: projection.base.total.neto, resultado: projection.base.resultado, roi: projection.base.roi });
+    res.json({ success: true, snapshotId, calibration, base: { from: base.from, to: base.to, totals: base.totals, repeat: base.repeat }, projection });
+  } catch (e) { logger.error('[datos-ia/projection] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+// #499: CIERRE DIARIO de la base retenida (ayer por defecto; sin clientes nuevos). Costo por cliente = el promedio histórico (#468).
+app.get('/api/admin/datos-ia/daily', async (req, res) => {
+  try {
+    const q = req.query || {}; let cac = Number(q.cac) > 0 ? Number(q.cac) : null;
+    if (!cac) { try { const st = (await getConfig('adSpendTotal', null)) || null; if (st && Number(st.amount) > 0) { const n = (await Transaction.distinct('userId', { type: 'deposit', status: { $nin: ['failed', 'cancelled'] }, 'metadata.source': { $nin: ['install_bonus', 'welcome_gift', 'payout_refund'] } })).length; if (n) cac = Math.round(Number(st.amount) / n); } } catch (_) {}
+    }
+    const _t0 = Date.now();
+    const out = await datosIa.dailyRetained(_datosIaModels(), { day: q.day || null, cac, ..._diaMoneyOpts(q) });
+    out.ms = Date.now() - _t0; logger.info('[datos-ia] daily ' + out.dia + ' en ' + out.ms + ' ms ' + JSON.stringify(out.timings || {}));
+    const params = { key: ['daily', out.dia, cac || '', _diaMoneyOpts(q).cur].join('|'), day: out.dia, cac, cur: _diaMoneyOpts(q).cur };
+    const snapshotId = q.nosave ? null : await _diaSnapshot('daily', req.user.username, params, { hoy: out.hoy, porAntiguedad: out.porAntiguedad, historico: out.historico, promedio30: out.promedio30, lectura: out.lectura }, { retenidos: out.hoy.retenidos, nuevos: out.hoy.nuevos, ventaRetenidos: out.hoy.ventaRetenidos, netoRetenidos: out.hoy.netoRetenidos });
+    res.json({ success: true, snapshotId, ...out });
+  } catch (e) { logger.error('[datos-ia/daily] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+// #461: historial de cálculos + revisión de proyecciones contra lo real + calibración
+app.get('/api/admin/datos-ia/history', async (req, res) => {
+  try {
+    const kind = ['analysis', 'projection', 'compare', 'daily'].includes(req.query.kind) ? req.query.kind : null;
+    const items = await DatosIaSnapshot.find(kind ? { kind } : {}).sort({ createdAt: -1 }).limit(60).select('id kind createdAt by params summary review note notedAt').lean();
+    const calib = await getConfig('projectionCalibration', null);
+    res.json({ success: true, items, calibration: calib || { factor: 1 } });
+  } catch (e) { res.status(500).json({ error: 'Error del servidor' }); }
+});
+app.get('/api/admin/datos-ia/history/:id', async (req, res) => {
+  try { const d = await DatosIaSnapshot.findOne({ id: String(req.params.id) }).lean(); if (!d) return res.status(404).json({ error: 'No encontrado' }); res.json({ success: true, item: d }); } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.post('/api/admin/datos-ia/history/:id/review', async (req, res) => {
+  try {
+    const snap = await DatosIaSnapshot.findOne({ id: String(req.params.id) }).lean();
+    if (!snap || snap.kind !== 'projection') return res.status(400).json({ error: 'Sólo se revisan proyecciones' });
+    const start = new Date(snap.createdAt); const end = new Date(Math.min(Date.now(), start.getTime() + (snap.params.days || 30) * 86400000));
+    const elapsed = Math.max(1, Math.round((end - start) / 86400000));
+    const real = await datosIa.analyze(_datosIaModels(), { from: start, to: end, granularity: 'day', campaign: snap.params.campaign, spend: snap.params.spend });
+    const review = datosIa.review(snap, real, elapsed);
+    await DatosIaSnapshot.updateOne({ id: snap.id }, { $set: { review } });
+    res.json({ success: true, review, real: { from: real.from, to: real.to, totals: real.totals, repeat: real.repeat } });
+  } catch (e) { logger.error('[datos-ia/review] ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+// #466: nota del owner sobre un cálculo guardado ("qué se analizó / cómo terminó")
+app.post('/api/admin/datos-ia/history/:id/note', async (req, res) => {
+  try {
+    const note = String((req.body && req.body.note) || '').trim().slice(0, 1500);
+    const r = await DatosIaSnapshot.updateOne({ id: String(req.params.id) }, { $set: { note, notedAt: new Date(), notedBy: req.user.username } });
+    if (!(r.matchedCount || r.n)) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+app.post('/api/admin/datos-ia/calibration', async (req, res) => {
+  try {
+    const b = req.body || {}; let factor = Number(b.factor);
+    if (!(factor > 0)) { // automático: promedio de las últimas 5 revisiones
+      const revs = await DatosIaSnapshot.find({ kind: 'projection', 'review.factor': { $gt: 0 } }).sort({ 'review.reviewedAt': -1 }).limit(5).select('review').lean();
+      if (!revs.length) return res.status(400).json({ error: 'No hay proyecciones revisadas todavía' });
+      factor = Math.round((revs.reduce((s, r) => s + r.review.factor, 0) / revs.length) * 100) / 100;
+    }
+    factor = Math.max(0.2, Math.min(3, factor));
+    await Config.set('projectionCalibration', { factor, updatedAt: new Date().toISOString(), by: req.user.username, basedOn: b.factor ? 'manual' : 'promedio de revisiones' }, req.user.username);
+    res.json({ success: true, factor });
+  } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
 app.post('/api/admin/users/:id/block', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;

@@ -5,9 +5,9 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-26** — réplica de PICA ROJA tanda 1: interruptores de funciones
+> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-2: interruptores de funciones
 > (`featureFlags`, `Config['features']`), registro abierto / sólo con invitación, sistema de notificaciones
-> anterior apagado por flag (§7, §9, §10; WORKLOG #222).
+> anterior apagado por flag, Alertas de estafa y Datos IA (§7, §9, §10, §10.1; WORKLOG #222-#223).
 > Antes: 2026-10-20 — PUBLICIDAD solo para DUEÑOS (`User.isOwner`,
 > `ownerMiddleware`, `stripPublicity`, card 👑 en COMANDOS; §3, §9; WORKLOG #221).
 > Antes: 2026-10-19 — rollover GLOBAL de bonos editable desde COMANDOS
@@ -1139,3 +1139,18 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   campaña activa. Aviso `/sys_register_invite`. `GET /api/config/access` (público, nuevo en este repo) publica
   `registrationMode`, `registerInviteText` y `features.stories`; la PWA (`auth.js`) guarda `VIP.publicConfig`,
   dispara el evento `vip:public-config` y pone `body.reg-invite`.
+
+### 10.1 Alertas de estafa y Datos IA (#223)
+
+- **Alertas de estafa:** `src/services/fraudRadar.js` (`scan(deps,{days})`, `caseFile(deps,userId)`, `RULES`). Rutas
+  `/api/admin/fraud/alerts|case/:id|review/:id`, gate `_fraudGate` (flag `fraudRadar` + admin general). Campos de
+  `User`: `fraudFlags`, `fraudNotes`, `fraudReview{status legit|watch|null,by,at,note}`, `lastDevice`, `deviceIds`.
+  Un cliente `legit` no vuelve a aparecer. Usa `PendingPayout`, `BankMovement`, `Transaction` y las stats batch de 1girox.
+- **Datos IA:** `src/services/datosIaService.js` (`analyze`, `compare`, `project`, `review`, `dailyRetained`,
+  `dayTotals`, `dateKeyART`; cache 5 min por proceso), modelos `AppSession` (TTL 180 d) y `DatosIaSnapshot` (TTL 2 años).
+  `app.use('/api/admin/datos-ia')` = flag `datosIa` → admin general → clave (`Config['datosIaPinHash']`, header
+  `x-datos-pin`, 423/429). Config: `datosIaPinHash`, `usdtRate`, `adSpend`, `adSpendTotal`, `otherPageStats`,
+  `projectionCalibration`. `_diaPromoConfig` lee los getters de ESTA página (`getInstantCashbackConfig`,
+  `getRefundTiersByPeriod`, `getInstallBonusPct`, `getBonusCapConfig`, `getDailyRouletteConfig`), cada uno en try/catch.
+  `POST /api/activity/ping` (rol user) arma las sesiones y escribe `lastDevice`/`deviceIds`; apagado ⇒
+  `{ok:false, off:true}`. Cliente: `public/js/activity.js` + `window.VIP_DEVICE` (index.html).

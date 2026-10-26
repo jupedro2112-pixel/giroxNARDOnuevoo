@@ -2233,6 +2233,21 @@
     <script src="/js/notifsurvey.js"></script>
     <script src="/js/publisherwelcome.js"></script>
     <script src="/js/apptest.js"></script>
+    <!-- #223: qué teléfono usa (modelo/OS/pantalla) para Datos IA y las Alertas de estafa; lo manda activity.js en cada ping -->
+    <script>(function () { try {
+      var ua = navigator.userAgent || '';
+      var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1), and = /Android/.test(ua);
+      var app = (window.navigator.standalone === true) || !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      var w = Math.min(screen.width, screen.height), h = Math.max(screen.width, screen.height), model = '';
+      if (ios) {
+        var M = { '320x568': 'iPhone SE (1ª)', '375x667': 'iPhone SE / 6-8', '414x736': 'iPhone 6-8 Plus', '375x812': 'iPhone X / 11 Pro / 12-13 mini', '414x896': 'iPhone XR / 11 / 11 Pro Max',
+          '390x844': 'iPhone 12-14', '428x926': 'iPhone 12-14 Pro Max / Plus', '393x852': 'iPhone 14 Pro-16', '430x932': 'iPhone 14 Pro Max-16 Plus', '402x874': 'iPhone 16 Pro / 17 / 17 Pro', '440x956': 'iPhone 16-17 Pro Max', '420x912': 'iPhone Air' };
+        model = M[w + 'x' + h] || ('iPhone ' + w + 'x' + h);
+      } else if (and) { var mm = /Android [\d.]+;\s*([^;)]+)\)/.exec(ua); model = mm && mm[1] && mm[1] !== 'K' ? mm[1].trim() : 'Android'; }
+      window.VIP_DEVICE = { os: ios ? 'ios' : (and ? 'android' : 'otro'), model: model, w: w, h: h, dpr: window.devicePixelRatio || 1, app: app };
+      if (and && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) navigator.userAgentData.getHighEntropyValues(['model']).then(function (v) { if (v && v.model) window.VIP_DEVICE.model = v.model; }).catch(function () {});
+    } catch (e) {} })();</script>
+    <script src="/js/activity.js"></script>
     <script src="/js/app.js"></script>
     
     <!-- ============================================
