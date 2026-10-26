@@ -286,6 +286,8 @@
         .notif-banner-close:hover {
             background: rgba(255, 255, 255, 0.2);
         }
+        /* #222 registro sólo con invitación */
+        body.reg-invite #registerBtnWrap, body.reg-invite #adServiceRegisterBtn { display: none !important; }
     </style>
 </head>
 <body>
@@ -455,7 +457,9 @@
                 <p style="color: #b0b0b0; font-size: 11px; margin: 0; line-height: 1.4;">Es opcional, pero te da seguridad total: vas a poder iniciar sesión con tu número por SMS y recuperar tu cuenta si olvidás la clave.</p>
             </div>
 
-            <div style="margin: 8px 0; text-align: center;">
+            <!-- #222: registro sólo con invitación → se esconde "Registrarse" y se muestra el aviso del panel (/sys_register_invite) -->
+            <p id="lgInviteNote" style="display:none;background:rgba(212,175,55,.08);border:1px solid rgba(212,175,55,.35);border-radius:10px;padding:9px 11px;margin:8px 0;color:#e8d9a0;font-size:12px;line-height:1.45;text-align:left;"></p>
+            <div id="registerBtnWrap" style="margin: 8px 0; text-align: center;">
                 <span style="color: #888; font-size: 13px;">¿No tienes cuenta?</span>
                 <button id="registerBtn" class="btn btn-secondary" style="margin-top: 6px; width: 100%;">📝 Registrarse</button>
             </div>

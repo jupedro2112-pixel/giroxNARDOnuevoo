@@ -4,7 +4,54 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-10-20**
+> **Última actualización: 2026-10-26**
+
+## Sesión 2026-10-26
+
+### 222. RÉPLICA DE PICA ROJA (PICAROJA30) — tanda 1: interruptores en COMANDOS, registro abierto / sólo con invitación, sistema de notificaciones anterior APAGADO y al fondo del menú — SW v117
+- **Owner:** replicar de `PICAROJA30` seis cosas (Datos IA, Centro de avisos, Alertas de estafa, notificaciones
+  programadas nuevas, registro activado/desactivado, historias) en este repo igual que en CARGASGIROX (#208–#211 de
+  allá), **todo en OFF** salvo el registro (ON = abierto) y **todo prendible/apagable desde COMANDOS**. Las
+  notificaciones automáticas que hoy corren en esta página quedan apagadas y su menú abajo de todo. Se hace en 4
+  tandas; esta es la primera.
+- **Hallazgo clave (heredado de CARGASGIROX):** ni "Datos IA" ni las "notificaciones con IA" usan inteligencia
+  artificial: son reglas sobre los datos de la base. No hay claves, SSM ni dependencias npm nuevas.
+- **Interruptores** — `src/services/featureFlags.js` (nuevo, copiado tal cual de CARGASGIROX): `Config['features']` =
+  `{ datosIa, fraudRadar, notifCenter, autopilot, stories, legacyNotifs }`, **todos `false` por default**, cache 30 s
+  por proceso. Rutas `GET/POST /api/admin/features` (POST solo admin general; `onFeaturesChanged(fn)` para hooks, p. ej.
+  borrar las campañas futuras del piloto automático al apagarlo). Panel → COMANDOS → card **"🧩 Funciones (réplica de
+  PICA ROJA)"** con un tilde por función (`loadFeaturesCard` / `saveFeatures`, se carga desde `loadCommands`, misma
+  estética `cbu-form` de las cards 🎁/🎯/👑 de este panel). Un ítem del menú con `data-feature="x"` se ve sólo si `x`
+  está ON (`applyFeatureNav`, se llama desde `setupRoleBasedUI` y al guardar).
+- **Sistema de notificaciones ANTERIOR apagado** (`legacyNotifs`, default OFF): `_runNotifRulesEvaluator` (reglas),
+  `_runEncuestaTick` (encuesta) y `_runDueSchedules` (estrategia programada `ScheduledNotif`, en
+  `notificationRoutes.js`) retornan sin hacer nada mientras el flag esté apagado. Inactividad y estrategia de bonos ya
+  estaban apagadas por constante (`INACTIVIDAD_DISABLED`, `BONUS_STRATEGY_DISABLED`). **Lo manual sigue funcionando**
+  (compositor, lotes con regalo, campañas del cronograma creadas a mano): no depende del flag. Menú: "Notificaciones
+  (manual)", "Encuesta" e "Inactivos" bajaron al grupo "No se usa (sistema anterior · apagado en COMANDOS)";
+  **Cronograma queda arriba** porque va a alojar el piloto automático nuevo (tanda 4).
+- **Registro de clientes** — `Config['registrationMode']` = `'open'` (default, como hasta ahora) | `'invite'`.
+  `_inviteOnlyBlocks(referralCode, campaignCode)`: con `invite`, `POST /api/auth/register` **y**
+  `POST /api/auth/send-register-otp` (para no gastar el SMS) responden `403 {code:'INVITE_ONLY', error:<aviso>}` salvo
+  que venga un código de referido de un cliente real o una campaña activa. Iniciar sesión siempre abierto. Aviso
+  editable: `/sys_register_invite` (sembrado en `initializeData`). Panel → COMANDOS → card **"👤 Registro de
+  clientes"** (`loadRegistrationMode` / `saveRegistrationMode`, `GET/POST /api/admin/registration-mode`).
+- **Diferencia con CARGASGIROX:** este repo NO tenía `GET /api/config/access` (allá lo trajo el #197 con el prefijo
+  de usuarios), así que se creó acá (público, `Cache-Control: no-store`, sólo `registrationMode`, `registerInviteText`
+  y `features.stories`; sin `usernamePrefix` porque esta página no tiene esa función) y `auth.js` lo pide al cargar
+  (antes no pedía nada al arrancar): guarda `VIP.publicConfig`, dispara el evento `vip:public-config` (lo van a usar
+  las historias en la tanda 3) y aplica `_applyRegistrationMode` → `body.reg-invite` esconde "Registrarse"
+  (`#registerBtnWrap` y el botón del modal de publicidad) y muestra `#lgInviteNote`, salvo que haya `?ref=`/código de
+  referido cargado o atribución de publicidad (`VIP.campaign.getActive()`). El OTP manda `referralCode` y
+  `campaignCode`. Tampoco hay `admin-sw.js` en este repo (el panel no cachea), así que sólo se bumpea el SW de la PWA.
+- **Herramienta nueva:** `scripts/check-tdz.js` (copiado de CARGASGIROX) — chequeo estático de usos antes del
+  `require` y rutas antes de `authMiddleware` en server.js; queda en el flujo de trabajo de CLAUDE.md.
+- SW `v117`. Sin cambios de modelos. `node --check` + `check-tdz` OK. **Back + panel + PWA necesitan redeploy.**
+  PROBAR: (1) COMANDOS → card 🧩 con las 6 funciones apagadas; (2) card 👤 → tildar "sólo con invitación" → abrir la
+  PWA sin `?ref=`: no aparece "Registrarse" y se ve el aviso; con `?ref=CODIGO` se ve igual que siempre; (3) pegar el
+  OTP a mano sin código → 403 `INVITE_ONLY`; (4) destildar → todo como antes.
+- **Pendiente de las próximas tandas:** 2) Alertas de estafa + Datos IA · 3) Historias · 4) Centro de avisos +
+  piloto automático.
 
 ## Sesión 2026-10-20
 

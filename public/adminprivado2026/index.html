@@ -151,21 +151,9 @@ document.addEventListener('change', function (ev) {
                     <span>Reembolsos reclamados</span>
                 </a>
                 <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#d4af37;text-transform:uppercase;opacity:.7;">Notificaciones</div>
-                <a href="#" class="nav-item" data-section="notifications">
-                    <span class="icon icon-bell"></span>
-                    <span>Notificaciones</span>
-                </a>
-                <a href="#" class="nav-item" data-section="cronograma">
+                <a href="#" class="nav-item" data-section="cronograma" title="Campañas programadas (y el piloto automático cuando está prendido en COMANDOS)">
                     <span>📅</span>
                     <span>Cronograma</span>
-                </a>
-                <a href="#" class="nav-item" data-section="encuesta">
-                    <span>📊</span>
-                    <span>Encuesta</span>
-                </a>
-                <a href="#" class="nav-item" data-section="inactivos">
-                    <span>💤</span>
-                    <span>Inactivos</span>
                 </a>
                 <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#d4af37;text-transform:uppercase;opacity:.7;">Nuevo</div>
                 <a href="#" class="nav-item" data-section="roulette">
@@ -198,7 +186,21 @@ document.addEventListener('change', function (ev) {
                     <span>📱</span>
                     <span>SMS Masivo</span>
                 </a>
-                <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#888;text-transform:uppercase;opacity:.6;">No se usa (limpiar)</div>
+                <div class="nav-group-title" style="padding:13px 16px 5px;font-size:9.5px;font-weight:900;letter-spacing:1.2px;color:#888;text-transform:uppercase;opacity:.6;">No se usa (sistema anterior · apagado en COMANDOS)</div>
+                <!-- #222: el sistema de notificaciones automáticas ANTERIOR (estrategia programada, encuesta, inactivos, reglas) queda abajo y apagado
+                     hasta que se prenda "Sistema anterior" en COMANDOS → Funciones. Los envíos manuales siguen funcionando. -->
+                <a href="#" class="nav-item" data-section="notifications" style="opacity:.6;" title="Envíos manuales + estrategia programada (apagada desde COMANDOS)">
+                    <span class="icon icon-bell"></span>
+                    <span>Notificaciones (manual)</span>
+                </a>
+                <a href="#" class="nav-item" data-section="encuesta" style="opacity:.6;">
+                    <span>📊</span>
+                    <span>Encuesta</span>
+                </a>
+                <a href="#" class="nav-item" data-section="inactivos" style="opacity:.6;">
+                    <span>💤</span>
+                    <span>Inactivos</span>
+                </a>
                 <a href="#" class="nav-item" data-section="automations" style="opacity:.6;">
                     <span>🤖</span>
                     <span>Automatización</span>
@@ -649,6 +651,37 @@ document.addEventListener('change', function (ev) {
                             <button type="button" class="btn-primary btn-small" id="brSaveBtn" onclick="saveBonusRollover()">
                                 <span class="icon icon-save"></span> Guardar rollover global
                             </button>
+                        </div>
+                        <!-- #222 FUNCIONES replicadas de PICA ROJA: interruptores (solo admin general). Todo arranca APAGADO. -->
+                        <div class="cbu-form" id="featuresForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">🧩 Funciones (réplica de PICA ROJA) — prender / apagar</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 10px;">
+                                Cada función replicada tiene su interruptor. <b>Apagada</b> = sus pantallas se esconden del menú, sus rutas responden "función apagada"
+                                y sus motores automáticos no hacen nada (sin pushes, sin regalos, sin historias). <b>Todo arranca apagado</b>; prendé de a una y mirá cómo rinde.
+                                Los cambios tardan hasta 30 segundos en tomar en todas las instancias.
+                            </p>
+                            <div id="featuresList" style="display:flex;flex-direction:column;gap:8px;"></div>
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;">
+                                <button type="button" class="btn-primary btn-small" id="featuresSaveBtn" onclick="saveFeatures()">💾 Guardar funciones</button>
+                                <span id="featuresState" style="font-size:11.5px;color:#9ab;"></span>
+                            </div>
+                        </div>
+                        <!-- #222 REGISTRO de clientes: abierto o sólo con invitación (réplica #748 de PICA ROJA; solo admin general) -->
+                        <div class="cbu-form" id="registrationModeForm" style="display:none;margin-bottom:14px;">
+                            <h3 style="margin:0 0 6px;">👤 Registro de clientes</h3>
+                            <p style="color:#aaa;font-size:12px;line-height:1.5;margin:0 0 10px;">
+                                <b>Registro ABIERTO</b> (como hasta ahora): cualquiera crea su cuenta desde la app con usuario, clave y celular verificado por SMS.<br>
+                                <b>🔒 SÓLO CON INVITACIÓN</b>: desde la app sólo se registra quien trae el <b>código de referido</b> de un cliente real o llega por un
+                                <b>link de publicidad</b> con campaña activa. <b>Iniciar sesión sigue abierto</b> para los que ya son clientes.
+                                El aviso que ve la gente se edita en Comandos → <code>/sys_register_invite</code>.
+                            </p>
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <label style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer;flex:1 0 100%;padding:8px 10px;border:1px solid rgba(212,175,55,.35);border-radius:10px;background:rgba(212,175,55,.05);">
+                                    <input type="checkbox" id="regInviteChk" style="width:auto;"> <b>🔒 Registro SÓLO CON INVITACIÓN</b> (desmarcado = registro abierto)
+                                </label>
+                                <button type="button" class="btn-primary btn-small" id="regModeSaveBtn" onclick="saveRegistrationMode()">💾 Guardar registro</button>
+                                <span id="regModeState" style="font-size:11.5px;color:#9ab;"></span>
+                            </div>
                         </div>
                         <!-- DUEÑOS: quiénes ven PUBLICIDAD (#221; solo admin general ve la card) -->
                         <div class="cbu-form" id="ownersForm" style="display:none;margin-bottom:14px;">

@@ -546,6 +546,7 @@ function showPasswordChangeModal() {
 }
 
 function setupRoleBasedUI() {
+    loadFeatureNav(); // #222: esconde del menú las funciones replicadas que están apagadas
     const role = currentAdmin?.role;
 
     // ============================================================
@@ -5711,10 +5712,87 @@ async function loadCommands() {
         loadBonusRolloverCfg();
         // Dueños que ven Publicidad (#221)
         loadOwnersCard();
+        // #222 Funciones replicadas de PICA ROJA (interruptores) + modo de registro (solo admin general)
+        loadFeaturesCard();
+        loadRegistrationMode();
     } catch (error) {
         console.error('Error loading commands:', error);
     }
 }
+
+// ====== #222 Funciones replicadas de PICA ROJA: interruptores en COMANDOS + menú según lo prendido ======
+// Config['features'] (server: src/services/featureFlags.js). Un ítem del menú con data-feature="x" se ve sólo si x está ON.
+let _featuresCache = null;
+function applyFeatureNav(features) {
+    if (features) _featuresCache = features;
+    const f = _featuresCache || {};
+    document.querySelectorAll('.nav-item[data-feature]').forEach((el) => {
+        const on = el.dataset.feature.split(',').some((k) => f[k.trim()] === true);
+        el.style.display = on ? '' : 'none';
+    });
+}
+async function loadFeatureNav() {
+    try { const r = await authFetch('/api/admin/features'); if (!r.ok) return; const j = await r.json(); applyFeatureNav(j.features || {}); } catch (_) {}
+}
+async function loadFeaturesCard() {
+    const form = document.getElementById('featuresForm');
+    if (!form) return;
+    try {
+        const r = await authFetch('/api/admin/features');
+        if (!r.ok) { form.style.display = 'none'; return; }
+        const j = await r.json(); const f = j.features || {}; const labels = j.labels || {};
+        applyFeatureNav(f);
+        if (!j.canEdit) { form.style.display = 'none'; return; }
+        form.style.display = '';
+        const list = document.getElementById('featuresList');
+        if (list) list.innerHTML = Object.keys(j.defaults || f).map((k) => `
+            <label style="margin:0;display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:8px 10px;border:1px solid ${f[k] ? 'rgba(76,175,80,.45)' : 'rgba(255,255,255,.08)'};border-radius:10px;background:${f[k] ? 'rgba(76,175,80,.07)' : 'rgba(255,255,255,.02)'};">
+                <input type="checkbox" class="featureChk" data-key="${escapeHtml(k)}" ${f[k] ? 'checked' : ''} style="width:auto;margin-top:2px;">
+                <span style="font-size:12.5px;line-height:1.4;"><b>${f[k] ? '🟢 ON' : '⚪ OFF'}</b> · ${escapeHtml(labels[k] || k)}</span>
+            </label>`).join('');
+        const st = document.getElementById('featuresState');
+        const on = Object.keys(f).filter((k) => f[k]);
+        if (st) st.textContent = on.length ? ('Prendidas: ' + on.join(', ')) : 'Todas apagadas.';
+    } catch (_) { form.style.display = 'none'; }
+}
+async function saveFeatures() {
+    const features = {};
+    document.querySelectorAll('#featuresList .featureChk').forEach((c) => { features[c.dataset.key] = !!c.checked; });
+    const btn = document.getElementById('featuresSaveBtn'); if (btn) btn.disabled = true;
+    try {
+        const r = await authFetch('/api/admin/features', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ features }) });
+        const j = await r.json(); if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        showToast(j.changed && j.changed.length ? ('Funciones guardadas: ' + j.changed.join(', ')) : 'Sin cambios', 'success');
+        applyFeatureNav(j.features || features);
+        loadFeaturesCard();
+    } catch (_) { showToast('Error de conexión', 'error'); }
+    finally { if (btn) btn.disabled = false; }
+}
+// #222 Registro de clientes: abierto / sólo con invitación (réplica #748 de PICA ROJA)
+async function loadRegistrationMode() {
+    const form = document.getElementById('registrationModeForm');
+    if (!form) return;
+    try {
+        const r = await authFetch('/api/admin/registration-mode');
+        if (!r.ok) { form.style.display = 'none'; return; }
+        const j = await r.json();
+        if (!j.canEdit) { form.style.display = 'none'; return; }
+        form.style.display = '';
+        const chk = document.getElementById('regInviteChk'); if (chk) chk.checked = j.mode === 'invite';
+        const st = document.getElementById('regModeState');
+        if (st) st.textContent = j.mode === 'invite' ? 'Ahora: 🔒 SÓLO CON INVITACIÓN (referidos + publicidad; iniciar sesión abierto)' : 'Ahora: registro ABIERTO (usuario + clave + SMS)';
+    } catch (_) { form.style.display = 'none'; }
+}
+async function saveRegistrationMode() {
+    const chk = document.getElementById('regInviteChk'); const mode = (chk && chk.checked) ? 'invite' : 'open';
+    try {
+        const r = await authFetch('/api/admin/registration-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+        const j = await r.json(); if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }
+        showToast(mode === 'invite' ? '🔒 Registro SÓLO CON INVITACIÓN activado' : 'Registro ABIERTO', 'success');
+        loadRegistrationMode();
+    } catch (_) { showToast('Error de conexión', 'error'); }
+}
+window.saveFeatures = saveFeatures; window.saveRegistrationMode = saveRegistrationMode; window.applyFeatureNav = applyFeatureNav;
 
 // ====== % del bono por instalar la app (COMANDOS, solo admin general edita) ======
 async function loadInstallBonusPct() {
