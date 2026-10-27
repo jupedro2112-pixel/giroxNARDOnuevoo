@@ -110,8 +110,11 @@ function buildUserData(userInfo = {}, requestCtx = {}) {
   const dobHash = sha256(userInfo.dateOfBirth);
   if (dobHash) user_data.db = [dobHash];
 
-  if (requestCtx.ip) user_data.client_ip_address = requestCtx.ip;
-  if (requestCtx.userAgent) user_data.client_user_agent = requestCtx.userAgent;
+  // #227: sin request (auto-carga del banco, crons) se usa la IP/navegador del JUGADOR persistidos en su registro (userInfo.clientIp / clientUserAgent).
+  const clientIp = requestCtx.ip || userInfo.clientIp;
+  const clientUa = requestCtx.userAgent || userInfo.clientUserAgent;
+  if (clientIp) user_data.client_ip_address = clientIp;
+  if (clientUa) user_data.client_user_agent = clientUa;
   // fbp / fbc — identificadores de Meta Ads (fbp = navegador, fbc = clic del
   // anuncio, clave para atribuir conversiones a la pauta).
   // Prioridad: la cookie viva del request (eventos browser-side / self-service).

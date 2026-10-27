@@ -8,6 +8,18 @@
 
 ## Sesión 2026-10-26
 
+### 227. 📣 Meta: la CARGA AUTOMÁTICA del banco ahora manda el `Purchase` (antes el píxel recibía el registro pero no la venta)
+- **Qué pasaba:** `hgcashAutoCarga` (transferís y se acredita sola) no llamaba a `metaCapi.track('Purchase')` ni al aviso de fb-ads:
+  sólo lo hacían la carga manual del agente y la autogestionada. Como casi todas las cargas entran por el banco, Meta (píxel propio y
+  píxeles de publicistas) veía registros y casi ninguna compra. PAUTANUEVAsantino lo había arreglado el 2026-08-24; acá nunca se pasó.
+- **Fix (réplica del de PAUTA):** en el camino de éxito de `hgcashAutoCarga`, `Purchase` con `content_name 'deposit_hgcash'`, `value/currency`,
+  `order_id` = id de la operación, `externalId` del cliente (así va al píxel de SU publicista según el alcance), **IP y navegador del registro**
+  (`metaCapiService.buildUserData` ahora usa `userInfo.clientIp/clientUserAgent` cuando no hay request) y `eventSourceUrl` = su landing.
+  Esta página no tiene `_isFirstDeposit` ni filtro FTD en el servicio ⇒ se manda cada carga.
+  Fire-and-forget dentro de try/catch: nunca frena la acreditación. Sólo servidor (sin SW). Archivos: `server.js`, `src/services/metaCapiService.js`.
+- **Ojo (Meta):** si un píxel tiene cargado un "código de prueba" (`META_TEST_EVENT_CODE_n` o el campo del panel), TODOS sus eventos salen como
+  prueba y no cuentan como conversiones: dejarlo vacío fuera de las pruebas.
+
 ### 226. FIX Alertas de estafa: "No se pudo cargar: JSON.parse: unexpected character" (504 de nginx por las stats de 1girox)
 - **Qué pasaba (primera prueba en producción, 2026-10-26):** `GET /api/admin/fraud/alerts` pedía las estadísticas de juego a 1girox
   (`getPlayersStatsBatch`, 56 jugadores, 30 días) y la Partner API no respondía: timeout de 20 s + reintentos 2/5/15 s ≈ 100 s.
