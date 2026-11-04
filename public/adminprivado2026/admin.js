@@ -648,6 +648,10 @@ function setupRoleBasedUI() {
         btnBonus.style.display = ['admin', 'depositor', 'comunidad'].includes(role) ? '' : 'none';
     }
 
+    // #230 Bancos — Configuración: solo admin general (credenciales, cuentas, movimientos)
+    const banksCfgNav = document.querySelector('.nav-item-banks-config');
+    if (banksCfgNav) banksCfgNav.style.display = role === 'admin' ? '' : 'none';
+
     // SMS Masivo: solo visible para admin general
     const smsNavItem = document.querySelector('.nav-item-sms-masivo');
     if (smsNavItem) {
@@ -4951,6 +4955,7 @@ function switchSection(section) {
         }
     }
     if (section === 'commands') loadCommands();
+    if (section === 'banksConfig') { if (currentAdmin?.role !== 'admin') { showToast('No tienes permiso para acceder a esta sección', 'error'); return; } loadBanksConfigSection(); } // #230
     if (section === 'fraud') { if (!_featureOnOrToast('fraudRadar', 'Alertas de estafa')) return; loadFraud(); } // #223
     if (section === 'stories') { if (!_featureOnOrToast('stories', 'Historias')) return; loadAppStories(); } // #224
     if (section === 'cronohist') { if (!_featureOnOrToast('stories', 'Historias')) return; loadStoriesAuto(); } // #224
@@ -5710,7 +5715,7 @@ async function loadCommands() {
         availableCommands = commandsData.filter(cmd => cmd.isActive !== false);
         renderCommands(commandsData);
         
-        // Cargar CBU
+        // Resto de la configuración (comunidad, bonos, reembolsos…). Lo de bancos vive en su sección (#230).
         loadCBUConfig();
         // % del bono por instalar la app (variable {pct} de los /sys_install_bonus*)
         loadInstallBonusPct();
@@ -6825,8 +6830,7 @@ async function loadCBUConfig() {
     loadCommunityConfig();
     // Cargar la config del código de bienvenida (admin general y depositor)
     loadWelcomeCodeConfig();
-    // Cargar la config del banco automático (hgcash)
-    loadHgcashConfig();
+    // (#230) La config de bancos (hgcash, cuentas, movimientos) se carga en su propia sección: loadBanksConfigSection().
     // Cargar los porcentajes de reembolso (solo admin general)
     loadRefundTiers();
     // Cargar el reembolso acumulativo de por vida (solo admin general)
@@ -7293,7 +7297,7 @@ async function activateHgcashAccount(key, from) {
         _hgAccState = j;
         if (document.getElementById('hgAccList')) _hgAccRender(j);
         _bankAccountSwitchRender(j);
-        try { if (document.getElementById('hgAccList')) { loadHgcashBalance(); loadHgcashConfig(); loadCBUConfig(); } } catch (_) {} // la card de CBU del cliente cambia con la cuenta activa
+        try { if (document.getElementById('banksConfigSection') && document.getElementById('banksConfigSection').classList.contains('active')) { loadHgcashBalance(); loadHgcashConfig(); loadCBUConfigOnly(); } } catch (_) {} // la card de CBU del cliente cambia con la cuenta activa (#230)
     } catch (_) { if (m) { m.style.color = '#ff8080'; m.textContent = '❌ Error de conexión'; } }
 }
 async function clearHgcashCredentials() {
@@ -7443,6 +7447,21 @@ async function clearHgcashFanout() {
 }
 window.loadHgcashFanout = loadHgcashFanout; window.saveHgcashFanout = saveHgcashFanout; window.clearHgcashFanout = clearHgcashFanout;
 
+// #230 Sección "🏛️ Bancos — Configuración" (solo admin general): CBU del cliente + todo lo de bancos (réplica #224 de CARGASGIROXactivo).
+async function loadBanksConfigSection() {
+    loadCBUConfigOnly();
+    loadHgcashConfig();
+}
+async function loadCBUConfigOnly() {
+    try {
+        const r = await fetch(`${API_URL}/api/admin/cbu`, { headers: { 'Authorization': `Bearer ${currentToken}` } });
+        if (!r.ok) return;
+        const data = await r.json();
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+        set('cbuBank', data.bank); set('cbuTitular', data.titular); set('cbuNumber', data.number); set('cbuAlias', data.alias);
+    } catch (_) {}
+}
+window.loadBanksConfigSection = loadBanksConfigSection;
 async function loadHgcashConfig() {
     const form = document.getElementById('hgcashConfigForm');
     const movPanel = document.getElementById('hgcashMovementsPanel');
@@ -7580,7 +7599,7 @@ async function loadHgcashBalance() {
 }
 
 function _hgcashPanelVisible() {
-    const sec = document.getElementById('commandsSection');
+    const sec = document.getElementById('banksConfigSection'); // #230 (antes vivía en COMANDOS)
     const panel = document.getElementById('hgcashMovementsPanel');
     return !!(sec && sec.classList.contains('active') && panel && panel.style.display !== 'none');
 }

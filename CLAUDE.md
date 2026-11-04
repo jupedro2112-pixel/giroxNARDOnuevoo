@@ -147,7 +147,7 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   `HGCASH_FANOUT_URL`. Rotar `JWT_SECRET` ⇒ recargar las credenciales en el panel.
 - **Cuentas hgcash (hasta 3, #229 — réplica #223/#223b de CARGASGIROXactivo):** hasta 3 cuentas cargadas desde el
   panel (cifradas en `Config['hgcashAccounts']` con clave derivada de JWT_SECRET; panel > SSM; lo de una sola cuenta de antes se
-  migra solo a `a1`) y UNA activa que se rota con el botón "USAR ESTA" (card "🏦 Cuentas hgcash" de Comandos → Banco automático;
+  migra solo a `a1`) y UNA activa que se rota con el botón "USAR ESTA" (card "🏦 Cuentas hgcash" de la sección **🏛️ Bancos — Configuración** del panel, #230, debajo de Comandos, solo admin general;
   la pueden tocar admin/depositor/withdrawer). La activa paga y es lo que ve el cliente (al activar se reescribe `Config['cbu']`);
   **las cargas entran por TODAS** (el webhook acepta cualquiera de los secretos y etiqueta `BankMovement.accountKey`) salvo que el
   panel diga "solo la en uso" o pause una cuenta (`incomingMode` / `incomingEnabled` → `_hgAccountReceives`; lo pausado queda pendiente en Movimientos del banco,
