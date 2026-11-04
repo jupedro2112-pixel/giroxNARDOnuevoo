@@ -5,7 +5,10 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
+> Última actualización: **2026-11-04** — **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
+> CARGASGIROXactivo; ver "Cuentas hgcash múltiples" en la auto-carga del banco)**. Antes: **2026-10-29** — **PÁGINA DEL CASINO desde COMANDOS (#228)**: `/sys_casino_url` re-apunta el
+> dominio del link de SSO y suma ese dominio al `frame-src` del CSP (§4.9, §9).
+> Antes: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
 > (`featureFlags`, `Config['features']`), registro abierto / sólo con invitación, sistema de notificaciones
 > anterior apagado por flag, Alertas de estafa, Datos IA, Historias, Centro de avisos y piloto automático
 > (§7, §9, §10-§10.3; WORKLOG #222-#225).
@@ -611,6 +614,12 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   igual la bloquearon, se navega en la pestaña actual. Si el SSO falla, se cierra la
   pestaña y se cae al modal de acceso manual. Hay guard anti-doble-click
   (`_casinoOpening`). **No mover el `window.open` después del `await`.**
+- **Página del casino desde COMANDOS (#228):** `/sys_casino_url` (vacío = `GIROX_PLAY_URL` / 1girox.com; solo
+  https, `_cleanCasinoUrl`). `_refreshCasinoUrl()` (arranque + cada 60 s + al guardar/vaciar el comando) →
+  `girox.setPlayUrlOverride(url)` + `_setCasinoFrameOrigin(origin)`. `createSession` devuelve el `redirect_url` con
+  ESE protocolo+dominio (`applyPlayDomain`: camino `/auth/sso?code=…` intacto) y `platformRedirectUrl` = el original.
+  Tiene que ser un dominio espejo del MISMO casino de 1girox. La PWA toma `playUrl` de `GET /api/config/access` para
+  el respaldo sin SSO. Test: `node scripts/test-casino-url.js`.
 - **Auto-reparación**: si 1girox responde `player_not_found` (usuario que el script de
   migración no alcanzó, o creado mientras la migración corría), el backend lo crea al
   vuelo con una contraseña random, actualiza `giroxSyncStatus` y reintenta UNA vez.
@@ -859,6 +868,22 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   responder (mensaje/comando/carga/retiro/CBU) o cerrar lo resuelve; sobre-umbral →
   ChatDelay. Reporte `GET /api/admin/chat-delays` (solo admin).
 
+  **Cuentas hgcash múltiples (#229, réplica #223/#223b de CARGASGIROXactivo):** `Config['hgcashAccounts'] = { accounts: [{ key, label,
+  tokenEnc, secretEnc, …Last4, accountId, accountName, cbu, alias, bank, titular, incomingEnabled }], activeKey, switchedBy/At, incomingMode }`,
+  cifrado igual que antes; cada instancia lo descifra en memoria a los 8 s y cada **15 s** (`_hgAccounts`, `_hgActiveKey`, `_hgIncomingMode`).
+  `Config['hgcashCredentials']` (una sola cuenta) se migra solo a `a1` la primera vez; panel > SSM (`HGCASH_API_TOKEN` / `HGCASH_WEBHOOK_SECRET`
+  valen solo sin cuentas en el panel). La **ACTIVA** paga (`hgcashPay.setTokenOverride`), responde el saldo y define lo que ve el cliente
+  (`_hgApplyActiveToConfigs` → `hgcash.accountName/cbu/accountId` y `Config['cbu']`). **TODAS reciben:** `_hgcashWebhookSecretEntries()` → el
+  webhook acepta la firma de cualquiera y guarda por cuál entró en `BankMovement.accountKey`; `_comprobanteToOurBank` reconoce el CBU/titular
+  de cualquiera que RECIBA. **Qué cuentas cargan solas:** `incomingMode 'all'|'active'` + `accounts[].incomingEnabled` → `_hgAccountReceives(a)`;
+  `_hgMovementAutoOff(m)` da el motivo y el movimiento queda `pending` con `chargeError` (`hgcashMatchFromMovement` lo saltea,
+  `hgcashMatchFromComprobante` no lo toma de candidato). **Cada pago recuerda su cuenta** (`PendingPayout.hgAccountKey`):
+  `hgcashService` acepta `token` opcional en todas las llamadas y las consultas de estado/recibo pasan `_hgTokenFor(key)`; el pago recarga las
+  cuentas antes de resolver (`_loadHgcashCredentials()`). Endpoints: `GET/POST /api/admin/hgcash/accounts`, `DELETE /:key`, `POST /:key/activate`,
+  `POST /accounts/incoming-mode`, `POST /:key/incoming` (ver/rotar/modo/pausa: admin, depositor, withdrawer; credenciales: solo admin); legacy
+  `POST/DELETE /api/admin/hgcash/credentials` siguen (escriben sobre la activa / borran todas). Panel: card "🏦 Cuentas hgcash (hasta 3)" en
+  Comandos → Banco automático; movimientos llevan `hgAccount {key,label,active}`.
+
 ## 6. Front-end: PWA cliente y panel admin
 
 ### PWA (`public/`)
@@ -1093,6 +1118,9 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
 - **`Campaign.hasGiroxKey` es un espejo** de `giroxApiKey` (que es `select:false`):
   cualquier camino que escriba o limpie la key TIENE que actualizar el booleano, o el
   panel muestra el badge equivocado.
+- **CSP del casino embebido (#228):** el `frame-src` se arma con `_buildCspHeader(extra)`; el dominio de
+  `/sys_casino_url` entra por `_setCasinoFrameOrigin`. Un dominio de casino nuevo que no pase por ahí deja el
+  iframe en blanco. No volver a una CSP `const`.
 - **Trampa del pop-up blocker en el botón CASINO**: la pestaña se abre ANTES del fetch,
   dentro del gesto del usuario. Mover el `window.open` después del `await` rompe el SSO
   en mobile (§4.9).

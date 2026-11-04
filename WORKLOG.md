@@ -4,7 +4,71 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-10-26**
+> **Última actualización: 2026-10-29**
+
+## Sesión 2026-11-04
+
+### 229. Hasta 3 cuentas hgcash a la vez + cuenta ACTIVA rotable con un botón + qué cuentas cargan solas (réplica #223/#223b de CARGASGIROXactivo) — admin-sw v61
+- **Owner:** "replicá lo de hgcash nuevo de poner más de 1 hgcash disponible en los 8 repos; prolijo, sin romper nada". Antes había UNA sola
+  cuenta hgcash cargada desde el panel (un token, un secreto, un titular/CBU) y rotar era pegar credenciales nuevas cada vez.
+- **Modelo:** `Config['hgcashAccounts'] = { accounts: [{ key 'a1'|'a2'|'a3', label, tokenEnc/tokenLast4, secretEnc/secretLast4, accountId,
+  accountName, cbu, alias, bank, titular, incomingEnabled, updatedBy/At }], activeKey, switchedBy, switchedAt, incomingMode 'all'|'active' }`
+  (cifrado con la misma clave derivada de JWT_SECRET que las credenciales de antes). **Migración automática:** la primera lectura sin
+  `hgcashAccounts` convierte `Config['hgcashCredentials']` + `hgcash.accountName/cbu/accountId` + `Config['cbu']` en la cuenta `a1` activa →
+  no hay que reconfigurar nada tras el deploy.
+- **Qué manda la cuenta ACTIVA:** `hgcashPay.setTokenOverride(activa.token)` (retiros, saldo, alias-lookup); al activar,
+  `_hgApplyActiveToConfigs` escribe `hgcash.accountName/cbu/accountId` (matcheo) y `Config['cbu']` (titular/banco/CBU/alias que ve el cliente).
+  Si la cuenta no tiene titular/CBU/alias cargados, avisa y deja el CBU anterior.
+- **Las cargas entran por TODAS (default):** `_hgcashWebhookSecretEntries()` devuelve `[{key, secret}]` de todas las cuentas (sin ninguna → SSM,
+  regla de siempre); el webhook identifica por cuál secreto entró (`matchedKey`) y lo guarda en `BankMovement.accountKey` (campo nuevo);
+  `ensureHgcashAccountIdSaved(accountId, key)` guarda el `accountId` en ESE perfil y solo cachea en `hgcash.accountId` si es la activa;
+  `_comprobanteToOurBank` reconoce el CBU/titular de cualquiera. **Qué cuentas cargan solas:** `incomingMode` `'all'` | `'active'` (solo la en
+  uso) y `accounts[].incomingEnabled` (pausa por cuenta) → `_hgAccountReceives(a)`; `_hgMovementAutoOff(m)` da el motivo: la transferencia a una
+  cuenta que no recibe se registra igual pero queda `pending` en Movimientos del banco con `chargeError` explicativo (`hgcashMatchFromMovement` no la carga,
+  `hgcashMatchFromComprobante` no la toma de candidata, `_comprobanteToOurBank` ignora su CBU/titular); cargarla a mano desde el chat sigue andando.
+- **Pagos atados a su cuenta:** `PendingPayout.hgAccountKey` (campo nuevo) guarda qué perfil pagó; `hgcashService`
+  acepta `token` opcional en TODAS las llamadas y las consultas de estado/recibo pasan `_hgTokenFor(hgAccountKey)` → un pago hecho desde A se
+  sigue consultando con el token de A aunque se rote a B. El pago llama `_loadHgcashCredentials()` antes de resolver la cuenta (el
+  cambio desde otra instancia aplica al instante; la recarga periódica bajó de 60 s a **15 s**). `resolveHgcashAccountId` usa el `accountId` del
+  perfil activo como fallback y lo cachea ahí cuando lo resuelve por API.
+- **Endpoints:** `GET /api/admin/hgcash/accounts` (admin/depositor/withdrawer; `canEdit` solo admin), `POST` (admin: upsert con `key?`, label,
+  token?, webhookSecret?, titular, cbu 22 díg. o vacío, alias, bank; prueba el token contra `GET /accounts` y toma `accountId`; máximo 3; cuenta
+  nueva exige token; sin secreto avisa), `DELETE /:key` (admin; la activa no se borra si hay otras), `POST /:key/activate` (admin/depositor/withdrawer
+  = **el encargado rota**), `POST /accounts/incoming-mode {mode}` y `POST /:key/incoming {enabled}` (avisan si no queda ninguna cuenta recibiendo).
+  Legacy `POST /api/admin/hgcash/credentials` escribe sobre la activa (o crea `a1`); `DELETE` borra TODAS y vuelve a SSM. Los movimientos del
+  panel llevan `hgAccount {key,label,active}`.
+- **Panel:** la card 🔐 de una sola cuenta pasó a **"🏦 Cuentas hgcash (hasta 3)"** (mismo lugar, Comandos → Banco automático): lista con ● ACTIVA,
+  token/secreto …últimos 4, datos de pago, estado de cargas (⚡ recibe / ⏸️ pausada / ⚪ no carga sola por el modo), botones **🔁 USAR ESTA** /
+  ⏸️ Pausar cargas / ▶️ Reanudar / ✏️ Editar / 🗑️, radio "⚡ Cargas automáticas: por todas / solo por la cuenta en uso", formulario Agregar/Editar y
+  "Borrar todas y volver a AWS".
+  Movimientos del banco muestran una etiqueta con la cuenta por la que entró (`_hgAccountTag`, verde = en uso).
+- **Pendiente del owner tras el deploy:** cada cuenta hgcash nueva necesita el webhook dado de alta en hgcash apuntando a la MISMA URL
+  (`/api/hgcash/webhook`) con su propio secreto; cargar titular/CBU/alias en cada cuenta para que el cliente vea los datos correctos al rotar.
+- Validado con `node --check` (server.js, hgcashService, modelos, admin.js, admin-sw) + `check-tdz`. Docs: ARCHITECTURE (auto-carga hgcash),
+  CLAUDE.md (gotcha de cuentas hgcash).
+
+## Sesión 2026-10-29
+
+### 228. 🎰 La página del CASINO se cambia desde COMANDOS (`/sys_casino_url`) y el cliente sigue entrando LOGUEADO (réplica #247 de SANTINOGANAMOS, igual que #223 de BUFFALOGIROX) — SW v121
+- **Owner:** el link principal del casino puede cambiar (bloqueo, dominio nuevo); un encargado lo tiene que poder cambiar desde COMANDOS y
+  que todos los clientes entren al nuevo. En SANTINOGANAMOS (GANAMOS, sin SSO) solo cambia el link; acá el botón entra por el **login único
+  de 1girox**, así que se cambia el DOMINIO y el SSO sigue igual.
+- **Cómo:** comando **`/sys_casino_url`** (tipo info, arranca vacío = la de siempre: `GIROX_PLAY_URL` o `https://1girox.com`). Solo https
+  (el casino se abre embebido: un http lo bloquea el navegador) — `_cleanCasinoUrl` rechaza con 400 lo que no sea una dirección. Lo edita
+  solo el admin general (candado de siempre de los `/sys_*`).
+  `giroxService`: `setPlayUrlOverride` / `getPlayUrlOverride` / `applyPlayDomain`; `getPlayUrl()` = override → env → default.
+  **`createSession` re-apunta el `redirect_url` de `/session`** (`https://<casino>/auth/sso?code=…`) al protocolo+dominio de COMANDOS,
+  conservando camino y código (devuelve además `platformRedirectUrl` = el original). ⚠️ Tiene que ser un dominio del MISMO casino de 1girox
+  (espejo): otra página no reconoce el código de un uso.
+- **CSP:** el `frame-src` solo permitía `1girox.com`: con otro dominio el casino embebido quedaba en blanco. Ahora `_buildCspHeader(extra)`
+  + `_setCasinoFrameOrigin(origin)` (suma el origen y `*.dominio`); se rearma solo cuando cambia el comando.
+- `_refreshCasinoUrl()` al arrancar, cada 60 s (las otras instancias de EB) y al guardar/vaciar el comando (esta, al instante). Toman la
+  nueva: el botón PÁGINA CASINO AQUÍ (SSO), `/api/admin/girox/test-sso` (muestra `paginaDelCasino` + `linkOriginalDe1girox`), el health
+  (`sitioDeJuego`) y el respaldo sin SSO de la PWA (`VIP.config.PLATFORM_URL` ← `playUrl` de `GET /api/config/access`).
+- **No cambia:** los textos de COMANDOS que dicen "https://1girox.com" (`/sys_deposit*`, `/sys_bonus`, `/sys_welcome`): se editan a mano.
+- Test en frío: `node scripts/test-casino-url.js` (13). `node --check` + `check-tdz` + tests de siempre OK. **Necesita deploy EB.** PROBAR:
+  COMANDOS → `/sys_casino_url` = el dominio espejo → esperar 1 min → PÁGINA CASINO AQUÍ entra logueado en el dominio nuevo; vaciar →
+  vuelve a 1girox.com.
 
 ## Sesión 2026-10-26
 
