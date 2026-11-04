@@ -173,9 +173,28 @@ function _pickPublisherKey(pool) {
   }
   return best;
 }
+// #228 (réplica #247 de SANTINOGANAMOS): la página del casino se cambia desde COMANDOS
+// (`/sys_casino_url`). server.js la lee y la deja acá; vacía = GIROX_PLAY_URL (o el default).
+// A diferencia de GANAMOS, acá el botón entra por SSO: el link que devuelve /session se
+// re-apunta a ESE dominio (applyPlayDomain) conservando `/auth/sso?code=…`, así el cliente
+// sigue entrando logueado. Sirve para un dominio ESPEJO del mismo casino de 1girox.
+let _playUrlOverride = null;
+function setPlayUrlOverride(url) { _playUrlOverride = url ? String(url).trim().replace(/\/+$/, '') : null; }
+function getPlayUrlOverride() { return _playUrlOverride; }
 /** URL pública del casino (la que ve el usuario). */
 function getPlayUrl() {
-  return (process.env.GIROX_PLAY_URL || 'https://1girox.com').replace(/\/+$/, '');
+  return (_playUrlOverride || process.env.GIROX_PLAY_URL || 'https://1girox.com').replace(/\/+$/, '');
+}
+/** Cambia protocolo + dominio del link al de COMANDOS (si hay); camino y código quedan igual. */
+function applyPlayDomain(url) {
+  if (!_playUrlOverride || !url) return url;
+  try {
+    const target = new URL(_playUrlOverride);
+    const u = new URL(url);
+    u.protocol = target.protocol;
+    u.host = target.host;
+    return u.toString();
+  } catch (_) { return url; }
 }
 /** true si el cliente está configurado y puede operar. */
 function isEnabled() {
@@ -837,7 +856,8 @@ async function createSession(username, password = null) {
     logger.error(`[girox] session(${username}) — respuesta sin redirect_url: ${JSON.stringify(r.data).slice(0, 200)}`);
     return { success: false, error: 'La plataforma no devolvió el link de acceso.', code: 'no_redirect_url' };
   }
-  return { success: true, redirectUrl, token: (r.data && r.data.token) || null };
+  // #228: dominio de COMANDOS (si hay); `platformRedirectUrl` = el link tal cual vino (diagnóstico).
+  return { success: true, redirectUrl: applyPlayDomain(redirectUrl), platformRedirectUrl: redirectUrl, token: (r.data && r.data.token) || null };
 }
 
 // ============================================================
@@ -1581,6 +1601,9 @@ module.exports = {
   // config
   isEnabled,
   getPlayUrl,
+  setPlayUrlOverride,
+  getPlayUrlOverride,
+  applyPlayDomain,
   getBaseUrl,
   validateUsername,
   // diagnóstico: cuántas keys de consultas cargó (log de arranque en server.js)

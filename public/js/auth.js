@@ -31,6 +31,8 @@ VIP.auth = (function () {
                 if (!j) return;
                 VIP.publicConfig = j;
                 _applyRegistrationMode(j);
+                // #228: página del casino de COMANDOS (/sys_casino_url) — respaldo cuando el SSO falla.
+                try { if (j && typeof j.playUrl === 'string' && /^https:\/\//i.test(j.playUrl)) VIP.config.PLATFORM_URL = j.playUrl; } catch (_) {}
                 // #224: historias públicas en la pantalla de ingreso (sólo con la función prendida)
                 try { if (j.features && j.features.stories && VIP.stories && VIP.stories.loadPublic) VIP.stories.loadPublic('lgStoriesRing'); } catch (_) {}
                 try { document.dispatchEvent(new CustomEvent('vip:public-config', { detail: j })); } catch (_) {}
