@@ -9,6 +9,64 @@
 // CONFIGURATION
 // ============================================
 const API_URL = '';
+
+// #231 (réplica BUFFALOGIROX #246) HUELLA DEL DISPOSITIVO del staff (seguridad interna). Cada llamada del panel a /api lleva:
+//  - X-Device-Id: id al azar guardado en este navegador (aguanta VPN y cambio de red; incógnito lo reinicia).
+//  - X-Device-Fp: huella del EQUIPO (pantalla, placa de video, zona horaria, idioma, núcleos, memoria, dibujo de prueba en canvas):
+//    la misma con VPN y casi siempre la misma en incógnito. El server la guarda en el registro de 🛡️ Seguridad y avisa
+//    cuando dos cuentas distintas del staff se usan desde el mismo dispositivo.
+(function setupDeviceFingerprint() {
+    function h53(str, seed) { // cyrb53: hash rápido y estable (no es criptográfico, no hace falta)
+        let h1 = 0xdeadbeef ^ (seed || 0), h2 = 0x41c6ce57 ^ (seed || 0);
+        for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+    }
+    let deviceId = '';
+    try { deviceId = localStorage.getItem('vipAdminDeviceId') || ''; } catch (_) {}
+    if (!/^[a-z0-9]{10,40}$/.test(deviceId)) {
+        try { const a = new Uint8Array(12); crypto.getRandomValues(a); deviceId = Array.from(a, (b) => b.toString(36).padStart(2, '0')).join('').slice(0, 20); }
+        catch (_) { deviceId = (Date.now().toString(36) + Math.random().toString(36).slice(2)).slice(0, 20); }
+        try { localStorage.setItem('vipAdminDeviceId', deviceId); } catch (_) {}
+    }
+    const parts = [];
+    try {
+        const sc = window.screen || {};
+        parts.push([sc.width, sc.height, sc.colorDepth, window.devicePixelRatio].join('x'));
+        parts.push(Intl.DateTimeFormat().resolvedOptions().timeZone || '');
+        parts.push((navigator.languages || [navigator.language]).join(','));
+        parts.push(navigator.platform || '', navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || 0);
+    } catch (_) {}
+    try {
+        const gl = document.createElement('canvas').getContext('webgl');
+        const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+        if (ext) parts.push(gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+    } catch (_) {}
+    try {
+        const c = document.createElement('canvas'); c.width = 240; c.height = 60;
+        const x = c.getContext('2d');
+        x.textBaseline = 'top'; x.font = '16px Arial'; x.fillStyle = '#f60'; x.fillRect(100, 1, 62, 20);
+        x.fillStyle = '#069'; x.fillText('VIPCARGAS 🛡️ seguridad 1.0', 2, 15);
+        x.fillStyle = 'rgba(102,204,0,0.7)'; x.fillText('VIPCARGAS 🛡️ seguridad 1.0', 4, 17);
+        parts.push(h53(c.toDataURL()));
+    } catch (_) {}
+    const fp = h53(parts.join('|'), 7);
+    window.VIP_ADMIN_DEVICE = { id: deviceId, fp };
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+        try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (url.startsWith('/api/') || url.startsWith(location.origin + '/api/')) {
+                init = Object.assign({}, init || {});
+                const hd = new Headers(init.headers || (typeof input !== 'string' && input && input.headers) || {});
+                hd.set('X-Device-Id', deviceId); hd.set('X-Device-Fp', fp);
+                init.headers = hd;
+            }
+        } catch (_) {}
+        return _origFetch(input, init);
+    };
+})();
 const SOCKET_OPTIONS = {
     // Allow both WebSocket and HTTP long-polling so the connection works even when
     // WebSocket is blocked (e.g. Cloudflare without WebSocket enabled) when
@@ -634,7 +692,7 @@ function setupRoleBasedUI() {
     // Depositor y withdrawer pueden ver "Usuarios" pero NO pueden exportar CSV
     const usersNavItem = document.querySelector('.nav-item[data-section="users"]');
     if (usersNavItem) {
-        usersNavItem.style.display = ['admin', 'depositor', 'withdrawer'].includes(role) ? '' : 'none';
+        usersNavItem.style.display = ['admin', 'depositor'].includes(role) ? '' : 'none'; // #231 (réplica #245): el withdrawer no crea clientes
     }
     // Solo el admin general puede exportar usuarios
     const exportCsvBtn = document.getElementById('exportUsersCSVBtn');
@@ -675,6 +733,14 @@ function setupRoleBasedUI() {
     }
 
     // Demoras de respuesta (SLA): sólo admin general
+    // #231 (réplica #245/#245b) 🛡️ Seguridad: solo el dueño de Seguridad (PANEL_OWNER de SSM; lo decide el server: isPanelOwner).
+    // ⚠️ No confundir con currentAdmin.isOwner (= dueño de PUBLICIDAD, #221).
+    const secNavItem = document.querySelector('.nav-item-security');
+    if (secNavItem) {
+        const owner = currentAdmin && currentAdmin.isPanelOwner === true;
+        secNavItem.style.display = owner ? '' : 'none';
+        if (owner) setTimeout(() => { try { loadSecurityShared(true); } catch (_) {} }, 4000);
+    }
     const cdNavItem = document.querySelector('.nav-item-chat-delays');
     if (cdNavItem) {
         cdNavItem.style.display = role === 'admin' ? '' : 'none';
@@ -4912,9 +4978,14 @@ window.handleUnblockFromChat = handleUnblockFromChat;
 // UI HELPERS
 // ============================================
 function switchSection(section) {
-    // CORREGIDO: Solo admin general puede acceder a "Usuarios"
-    if (section === 'users' && currentAdmin?.role !== 'admin') {
+    // #231 (réplica #245): "Usuarios" (y Crear Usuario) = admin general y depositor. Antes solo admin, aunque el menú se la
+    // mostraba al depositor ⇒ el depositor no podía crear clientes.
+    if (section === 'users' && !['admin', 'depositor'].includes(currentAdmin?.role)) {
         showToast('No tienes permiso para acceder a esta sección', 'error');
+        return;
+    }
+    if (section === 'security' && !(currentAdmin && currentAdmin.isPanelOwner === true)) { // #231 (réplica #245b)
+        showToast('Solo el admin dueño', 'error');
         return;
     }
     // Solo admin general puede ver el reporte de demoras
@@ -4978,6 +5049,7 @@ function switchSection(section) {
     if (section === 'suspiciousAccounts') loadSuspiciousAccounts();
     if (section === 'reembolsos') loadReembolsos();
     if (section === 'chatDelays') loadChatDelays();
+    if (section === 'security') loadSecuritySection(); // #231
     if (section === 'reviews') loadReviews();
     if (section === 'campaigns') loadCampaigns();
     if (section === 'publisherAdmins') {
@@ -15316,3 +15388,132 @@ async function _notifMaybeSchedule(payload) {
     return true;
 }
 window.updateNotifScheduleUI = updateNotifScheduleUI;
+
+
+// ============================================
+// #231 (réplica BUFFALOGIROX #245/#246) 🛡️ SEGURIDAD INTERNA (solo el dueño de Seguridad = PANEL_OWNER, isPanelOwner)
+// ============================================
+const SEC_ACTION_LABELS = {
+    login: '🟢 Ingresó', login_failed: '🔴 Clave incorrecta', login_blocked: '⛔ Ingreso bloqueado',
+    password_change: '🔑 Cambió clave', password_change_denied: '🚫 Intento de cambio de clave',
+    session_revoke: '✂️ Cerró sesiones', staff_disable: '⛔ Desactivó cuenta', staff_enable: '✅ Activó cuenta', api: '⚙️ Acción'
+};
+function _secEsc(v) { return escapeHtml(v == null ? '' : String(v)); }
+function _secWhen(d) { if (!d) return '—'; const x = new Date(d); return x.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+function _secDevLink(d) { return d ? `<a href="#" onclick="secFilterDevice(${_secEsc(JSON.stringify(d))});return false;" title="Ver todo lo hecho desde este dispositivo" style="color:#f472b6;font-family:monospace;">📱${_secEsc(String(d).slice(0, 8))}</a>` : '—'; }
+function _secIpLink(ip) { return ip ? `<a href="#" onclick="secFilterIp(${_secEsc(JSON.stringify(ip))});return false;" style="color:#60a5fa;font-family:monospace;">${_secEsc(ip)}</a>` : '—'; }
+function _secActLabel(r) {
+    if (r.action !== 'api') return SEC_ACTION_LABELS[r.action] || r.action;
+    const p = r.path || '';
+    if (/\/admin\/deposit$/.test(p)) return '💳 Carga';
+    if (/\/admin\/withdrawal$/.test(p)) return '💸 Retiro';
+    if (/\/admin\/bonus$/.test(p)) return '🎁 Bono';
+    if (/\/payouts\/[^/]+\/pay/.test(p)) return '🏦 Pagó retiro';
+    if (/\/payouts\/[^/]+\/cancel/.test(p)) return '↩️ Rechazó retiro';
+    if (/\/admin\/users$/.test(p)) return '👤 Creó usuario';
+    if (/access-link/.test(p)) return '🔗 Link de acceso';
+    return '⚙️ ' + _secEsc(p.replace('/api/', ''));
+}
+async function _secFetch(url, opts) {
+    const r = await fetch(`${API_URL}${url}`, Object.assign({ headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentToken}` }, credentials: 'include' }, opts || {}));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+}
+async function loadSecuritySection() {
+    await Promise.all([loadSecurityShared(false), loadSecurityAudit(1)]);
+}
+async function loadSecurityShared(badgeOnly) {
+    try {
+        const d = await _secFetch('/api/admin/security/staff');
+        const badge = document.getElementById('securitySharedBadge');
+        if (badge) { const n = (d.sharedIps || []).length + (d.sharedDevices || []).length; badge.textContent = n; badge.classList.toggle('hidden', !n); }
+        if (badgeOnly) return;
+        const sd = document.getElementById('securitySharedDevices'); // #246
+        if (sd) sd.innerHTML = (d.sharedDevices || []).length
+            ? (d.sharedDevices || []).map((x) => `<div style="background:rgba(236,72,153,0.12);border:1px solid rgba(236,72,153,0.55);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:12.5px;color:#eee;">
+                🚨 <strong>${x.accounts.map(_secEsc).join(' · ')}</strong> entraron desde el mismo dispositivo
+                <span style="color:${x.byId ? '#f472b6' : '#fbbf24'};font-weight:700;">(${x.byId ? 'mismo navegador — casi seguro' : 'misma huella del equipo'})</span><br>
+                <span style="color:#aaa;font-size:11.5px;">Dispositivo: ${[...(x.fps || []), ...(x.deviceIds || [])].slice(0, 3).map(_secDevLink).join(' ')} · IPs: ${(x.ips || []).map(_secIpLink).join(' · ') || '—'} · último ${_secWhen(x.last)}${x.userAgent ? '<br>' + _secEsc(x.userAgent.slice(0, 110)) : ''}</span></div>`).join('')
+            : '<div style="color:#22c55e;font-size:12.5px;">✅ Ningún dispositivo fue usado por más de una cuenta del staff en los últimos 30 días.</div>';
+        const sh = document.getElementById('securityShared');
+        if (sh) sh.innerHTML = (d.sharedIps || []).length
+            ? (d.sharedIps || []).map((x) => `<div style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.45);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:12.5px;color:#eee;">IP ${_secIpLink(x.ip)} → entraron <strong>${x.accounts.map(_secEsc).join(', ')}</strong> <span style="color:#999;">(último ${_secWhen(x.last)})</span></div>`).join('')
+            : '<div style="color:#22c55e;font-size:12.5px;">✅ Ninguna IP fue usada por más de una cuenta del staff en los últimos 30 días.</div>';
+        const st = document.getElementById('securityStaff');
+        if (st) {
+            const rows = (d.staff || []).map((u) => {
+                const pc = u.lastPasswordChange ? `${_secWhen(u.lastPasswordChange.at)}<br><span style="color:#aaa;">por ${_secEsc(u.lastPasswordChange.by)} · ${_secIpLink(u.lastPasswordChange.ip)}</span>` : (u.passwordChangedAt ? _secWhen(u.passwordChangedAt) + '<br><span style="color:#777;">(antes del registro)</span>' : '—');
+                const state = u.isActive ? '<span style="color:#22c55e;">activa</span>' : '<span style="color:#ef4444;font-weight:700;">DESACTIVADA</span>';
+                const me = currentAdmin && (currentAdmin.userId || currentAdmin.id) === u.id;
+                return `<tr>
+                    <td><strong>${_secEsc(u.username)}</strong>${u.team ? ' <span style="color:#a78bfa;">🏢 ' + _secEsc(u.team) + '</span>' : ''}</td>
+                    <td>${_secEsc(getRoleLabel ? getRoleLabel(u.role) : u.role)}</td>
+                    <td>${state}</td>
+                    <td>${_secWhen(u.lastLoginAudit || u.lastLogin)}<br>${_secIpLink(u.lastIp)}</td>
+                    <td>${u.logins30d}</td>
+                    <td style="max-width:260px;">${(u.ips30d || []).map(_secIpLink).join(' · ') || '—'}</td>
+                    <td style="max-width:200px;">${(u.devices30d || []).map(_secDevLink).join(' ') || '—'}</td>
+                    <td>${pc}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="action-btn-small" title="Ver todo lo que hizo" onclick="secFilterActor(${_secEsc(JSON.stringify(u.username))})">📜</button>
+                        <button class="action-btn-small" title="Cerrar todas sus sesiones" onclick="secRevoke(${_secEsc(JSON.stringify(u.id))}, ${_secEsc(JSON.stringify(u.username))})">✂️</button>
+                        ${me ? '' : `<button class="action-btn-small" title="${u.isActive ? 'Desactivar cuenta' : 'Activar cuenta'}" onclick="secToggleActive(${_secEsc(JSON.stringify(u.id))}, ${_secEsc(JSON.stringify(u.username))}, ${u.isActive ? 'false' : 'true'})">${u.isActive ? '⛔' : '✅'}</button>`}
+                    </td></tr>`;
+            }).join('');
+            st.innerHTML = `<table class="data-table" style="width:100%;font-size:12px;"><thead><tr><th>Cuenta</th><th>Rol</th><th>Estado</th><th>Último ingreso / IP</th><th>Ingresos 30 d</th><th>IPs usadas (30 d)</th><th>Dispositivos (30 d)</th><th>Último cambio de clave</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="9">Sin cuentas</td></tr>'}</tbody></table>`;
+        }
+    } catch (e) { if (!badgeOnly) showToast('Seguridad: ' + e.message, 'error'); }
+}
+let _secPage = 1;
+async function loadSecurityAudit(page) {
+    _secPage = page || 1;
+    const el = document.getElementById('securityAudit');
+    if (!el) return;
+    el.innerHTML = '<div style="color:#888;">Cargando…</div>';
+    const v = (id) => ((document.getElementById(id) || {}).value || '').trim();
+    const qs = new URLSearchParams({ page: _secPage, days: v('secFDays') || '7' });
+    if (v('secFActor')) qs.set('actor', v('secFActor'));
+    if (v('secFIp')) qs.set('ip', v('secFIp'));
+    if (v('secFTarget')) qs.set('target', v('secFTarget'));
+    if (v('secFDevice')) qs.set('device', v('secFDevice'));
+    const act = v('secFAction');
+    if (act === 'money') { qs.set('action', 'api'); qs.set('onlyMoney', '1'); } else if (act) qs.set('action', act);
+    try {
+        const d = await _secFetch('/api/admin/security/audit?' + qs.toString());
+        const rows = (d.rows || []).map((r) => {
+            const det = r.details ? Object.entries(r.details).filter(([k]) => !['userId'].includes(k)).slice(0, 6).map(([k, val]) => `${_secEsc(k)}: ${_secEsc(typeof val === 'object' ? JSON.stringify(val) : val)}`).join(' · ') : '';
+            const bad = ['login_failed', 'login_blocked', 'password_change_denied'].includes(r.action) || (r.status && r.status >= 400);
+            return `<tr style="${bad ? 'background:rgba(239,68,68,0.08);' : (r.action === 'password_change' ? 'background:rgba(212,175,55,0.10);' : '')}">
+                <td style="white-space:nowrap;">${_secWhen(r.at)}</td>
+                <td><a href="#" onclick="secFilterActor(${_secEsc(JSON.stringify(r.actorUsername || ''))});return false;" style="color:#fff;font-weight:700;">${_secEsc(r.actorUsername || '—')}</a><br><span style="color:#888;">${_secEsc(r.actorRole || '')}${r.actorTeam ? ' · ' + _secEsc(r.actorTeam) : ''}</span></td>
+                <td>${_secActLabel(r)}${r.status ? ' <span style="color:' + (r.status >= 400 ? '#ef4444' : '#666') + ';">(' + r.status + ')</span>' : ''}</td>
+                <td>${_secEsc(r.targetUsername || r.targetId || '')}${r.targetRole && r.targetRole !== 'user' ? ' <span style="color:#f59e0b;">[' + _secEsc(r.targetRole) + ']</span>' : ''}</td>
+                <td>${_secIpLink(r.ip)}<br>${_secDevLink(r.fp || r.deviceId)}</td>
+                <td style="max-width:320px;color:#aaa;font-size:11px;">${det}${r.userAgent ? '<br><span style="color:#666;">' + _secEsc(r.userAgent.slice(0, 90)) + '</span>' : ''}</td></tr>`;
+        }).join('');
+        el.innerHTML = `<div style="color:#888;font-size:11.5px;margin-bottom:6px;">${d.total} registros</div><table class="data-table" style="width:100%;font-size:12px;"><thead><tr><th>Cuándo</th><th>Quién</th><th>Qué</th><th>Sobre quién</th><th>IP / dispositivo</th><th>Detalle</th></tr></thead><tbody>${rows || '<tr><td colspan="6">Sin registros con esos filtros</td></tr>'}</tbody></table>`;
+        const pg = document.getElementById('securityAuditPager');
+        if (pg) pg.innerHTML = d.pages > 1
+            ? `<button class="btn btn-secondary btn-sm" ${_secPage <= 1 ? 'disabled' : ''} onclick="loadSecurityAudit(${_secPage - 1})">◀</button><span style="color:#aaa;font-size:12px;">Página ${_secPage} de ${d.pages}</span><button class="btn btn-secondary btn-sm" ${_secPage >= d.pages ? 'disabled' : ''} onclick="loadSecurityAudit(${_secPage + 1})">▶</button>`
+            : '';
+    } catch (e) { el.innerHTML = '<div style="color:#ef4444;">' + _secEsc(e.message) + '</div>'; }
+}
+function secFilterDevice(dv) { ['secFIp', 'secFActor', 'secFTarget'].forEach((id) => { const e = document.getElementById(id); if (e) e.value = ''; }); const a = document.getElementById('secFDevice'); if (a) a.value = dv; loadSecurityAudit(1); document.getElementById('securityAudit')?.scrollIntoView({ behavior: 'smooth' }); }
+window.secFilterDevice = secFilterDevice;
+function secFilterIp(ip) { const dv = document.getElementById('secFDevice'); if (dv) dv.value = ''; const a = document.getElementById('secFIp'); if (a) a.value = ip; const b = document.getElementById('secFActor'); if (b) b.value = ''; loadSecurityAudit(1); document.getElementById('securityAudit')?.scrollIntoView({ behavior: 'smooth' }); }
+function secFilterActor(u) { const dv = document.getElementById('secFDevice'); if (dv) dv.value = ''; const a = document.getElementById('secFActor'); if (a) a.value = u; const b = document.getElementById('secFIp'); if (b) b.value = ''; loadSecurityAudit(1); document.getElementById('securityAudit')?.scrollIntoView({ behavior: 'smooth' }); }
+const _secConfirm = {};
+async function secRevoke(id, username) {
+    if (_secConfirm['r' + id] !== true) { _secConfirm['r' + id] = true; setTimeout(() => { delete _secConfirm['r' + id]; }, 5000); showToast(`Tocá ✂️ otra vez para cerrar TODAS las sesiones de ${username}`, 'info'); return; }
+    delete _secConfirm['r' + id];
+    try { const d = await _secFetch(`/api/admin/security/staff/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: '{}' }); showToast(d.message, 'success'); loadSecurityShared(false); } catch (e) { showToast(e.message, 'error'); }
+}
+async function secToggleActive(id, username, active) {
+    const k = 'a' + id;
+    if (_secConfirm[k] !== true) { _secConfirm[k] = true; setTimeout(() => { delete _secConfirm[k]; }, 5000); showToast(`Tocá otra vez para ${active ? 'ACTIVAR' : 'DESACTIVAR'} a ${username}`, 'info'); return; }
+    delete _secConfirm[k];
+    try { const d = await _secFetch(`/api/admin/security/staff/${encodeURIComponent(id)}/active`, { method: 'POST', body: JSON.stringify({ active }) }); showToast(d.message, 'success'); loadSecurityShared(false); } catch (e) { showToast(e.message, 'error'); }
+}
+window.loadSecuritySection = loadSecuritySection; window.loadSecurityAudit = loadSecurityAudit; window.secFilterIp = secFilterIp;
+window.secFilterActor = secFilterActor; window.secRevoke = secRevoke; window.secToggleActive = secToggleActive;

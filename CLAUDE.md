@@ -133,6 +133,11 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   publicidad ⇒ `ownerMiddleware`; respuesta con datos de publicista ⇒ `stripPublicity`.
   Se marca desde COMANDOS → "👑 Dueños" (sin dueños marcados, todo admin general ve
   Publicidad y puede marcar al primero). Detalle: ARCHITECTURE §3 y §9.
+- **SEGURIDAD INTERNA (#231, réplica BUFFALOGIROX #245–#248):** solo el admin general (`_isGeneralAdminReq`) cambia claves; el staff no
+  entra ni recupera la clave por SMS. Todo lo que hace el staff queda en `StaffAudit` con IP y huella del dispositivo (middleware global +
+  ingresos + cambios de clave) → panel 🛡️ Seguridad, que ve SOLO el dueño de Seguridad (`_isPanelOwnerUser` / `isPanelOwner`: username en
+  `PANEL_OWNER` de SSM, varios por coma). ⚠️ `isOwner` sigue siendo el dueño de PUBLICIDAD (#221): son cosas distintas. Vía nueva que cambie
+  una clave ⇒ `_isGeneralAdminReq` + `_auditPasswordChange`.
 - **Auth:** JWT por header Authorization O por cookie httpOnly `admin_api_session`
   (el panel admin usa cookie).
 - **Mensajes automáticos al usuario** son editables desde la sección COMANDOS

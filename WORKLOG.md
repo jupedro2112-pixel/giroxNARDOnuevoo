@@ -4,7 +4,48 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-10-29**
+> **Última actualización: 2026-11-11**
+
+## Sesión 2026-11-11
+
+### 231. 🛡️ SEGURIDAD INTERNA entre admins — réplica 1:1 de BUFFALOGIROX #245 / #245b / #245c / #246 / #247 / #248 — admin-sw v63
+- **Owner:** "replicá todo lo que hicimos hoy de seguridad en BUFFALOGIROX, tal cual". Allá hubo un incidente: un empleado le cambiaba la clave
+  a otros admins, entraba con esas cuentas, le cargaba saldo a un usuario suyo y retiraba. **Este repo tenía EL MISMO agujero** (verificado
+  handler por handler antes de tocar): cualquier staff podía `PUT /api/users/:id` con `{phone}` sobre la cuenta de otro admin →
+  `POST /api/admin/users/:id/verify-phone` → entrar por SMS (`/api/auth/login-otp-*`) o recuperar la clave por SMS; y
+  `/api/auth/change-password(/pending)` cambiaba la clave de una sesión abierta sin pedir la actual.
+- **Cerrado (igual que allá):** `PUT /api/users/:id` = solo admin general (el panel no lo usa: solo hace GET a esa ruta); `verify-phone` sobre staff =
+  solo admin general; el staff NO entra ni recupera clave por SMS ni por código temporal (403/401 + registro); `/api/auth/change-password(/pending)`
+  rechaza al staff (cambia la suya con `change-own-password`, que pide la actual); **cambiar claves (`/api/admin/change-password`,
+  `reset-password`) = SOLO admin general** (`_isGeneralAdminReq`) — el depositor ya NO cambia ni la de clientes (para eso el 🔗 link de acceso;
+  el botón 🔑 de la tabla sigue visible para el depositor como allá y el server responde 403 con ese aviso). Crear usuarios = admin/depositor
+  (el withdrawer ya no). Fix de paso (mismo que allá): la sección **Usuarios** rebotaba al depositor aunque el menú se la mostraba ⇒ ahora entran
+  admin y depositor; el withdrawer ya no la ve.
+- **Registro `StaffAudit`** (`src/models/StaffAudit.js`, copiado tal cual, permanente): `_staffAuditMiddleware` (global, toda escritura en `/api/*`
+  de staff, body saneado sin claves/tokens), `_auditStaffLogin` (IP nueva / compartida con otra cuenta / mismo dispositivo), ingresos fallidos y
+  bloqueados, `_auditPasswordChange` quién→quién (incluye publicistas). IP real con `_reqIpInfo` (#245c: x-forwarded-for de derecha a izquierda
+  salteando internas; `cf-connecting-ip` solo si el salto es de Cloudflare).
+- **Huella del dispositivo (#246):** wrapper de `window.fetch` al principio de `admin.js` → `X-Device-Id` (id en `localStorage.vipAdminDeviceId`) +
+  `X-Device-Fp` (huella del equipo) en toda llamada a `/api/`; CORS los suma. Seguridad muestra "🚨 mismo dispositivo en varias cuentas",
+  dispositivos por cuenta y filtro por dispositivo. (Único cambio en el código copiado: el texto del dibujo de canvas dice "VIPCARGAS" en vez de "BUFFALO".)
+- **Telegram:** se copió `src/services/telegramAlertService.js` de BUFFALO (acá no existía). Avisa claves de staff cambiadas, ingresos de staff
+  desde IP nueva/compartida o mismo dispositivo y cuentas desactivadas. **Solo si están `TELEGRAM_ALERT_BOT_TOKEN` + `TELEGRAM_ALERT_CHAT_ID` en
+  SSM**; sin eso no hace nada. Efecto lateral: el aviso de "campaña programada NO salió" del cronograma (que ya chequeaba `typeof telegramAlert`)
+  también empieza a llegar a ese grupo.
+- **Sección 🛡️ Seguridad** (panel, debajo de Chats): solo el **dueño de Seguridad** = username(s) en **`PANEL_OWNER`** de SSM (varios separados por
+  coma; sin la variable nadie la ve, fail-closed). Rutas `GET /api/admin/security/audit|staff`, `POST /api/admin/security/staff/:id/revoke|active`.
+- ⚠️ **ÚNICA ADAPTACIÓN de nombre:** allá el login y `/api/admin/me` mandan `isOwner` para Seguridad; acá `isOwner` YA es el **dueño de PUBLICIDAD**
+  (#221, `User.isOwner`), así que el de Seguridad se llama **`isPanelOwner`** (server: `_isPanelOwnerUser`; panel: `currentAdmin.isPanelOwner`).
+  Son dos cosas distintas: un dueño de Publicidad no ve Seguridad salvo que esté en `PANEL_OWNER`.
+- **No se trajo:** el registro de `ADMIN_PASSWORD_SYNC` (acá esa función no existe). Equipos (`team`): acá no hay; `_isGeneralAdminReq` = rol admin.
+- Validado: `node --check` (server, admin.js, admin-sw, modelo, servicio) + `check-tdz` + tests de siempre (bonus-cap 12, cashback 10, casino-url 13)
+  + prueba en frío de `_reqIpInfo` / `_reqDevice` / `_auditSafeBody` / `_isPanelOwnerUser` (14 chequeos). Sin ids nuevos duplicados en el HTML.
+- **Pendiente del owner:** (1) cargar `PANEL_OWNER` en SSM (mismo path, ej. `ignite1000` o `juan,pedro`) y reiniciar la app; (2) opcional:
+  `TELEGRAM_ALERT_BOT_TOKEN` + `TELEGRAM_ALERT_CHAT_ID`; (3) deploy EB. ⚠️ Lo de ANTES del deploy no tiene IP en la base (para rastrear: logs de
+  nginx de EB). PROBAR: entrar con un depositor → intentar cambiar una clave (403, aparece "🚫 Intento" en Seguridad) → Usuarios abre → crear un
+  cliente → cargar → ver la carga con IP; entrar con 2 cuentas desde el mismo navegador → "🚨 mismo dispositivo".
+- ⚠️ **Hallazgo aparte (NO tocado):** el HTML del panel tiene ~36 ids `hgAcc*`/`hgcash*` DUPLICADOS (las cards de bancos quedaron en COMANDOS **y** en
+  🏛️ Bancos tras el #230) — es el mismo bug que BUFFALO arregló en su #239. Pendiente si el owner lo pide.
 
 ## Sesión 2026-11-04
 

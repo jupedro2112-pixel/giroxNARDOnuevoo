@@ -5,7 +5,7 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
+> Última actualización: **2026-11-11** — **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
 > CARGASGIROXactivo; ver "Cuentas hgcash múltiples" en la auto-carga del banco)**. Antes: **2026-10-29** — **PÁGINA DEL CASINO desde COMANDOS (#228)**: `/sys_casino_url` re-apunta el
 > dominio del link de SSO y suma ese dominio al `frame-src` del CSP (§4.9, §9).
 > Antes: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
@@ -286,6 +286,18 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `GET/POST/DELETE /api/admin/owners[/:userId]`. `/api/admin/me` y el login mandan
   `isOwner / canSeePublicity / ownersConfigured`; el panel oculta los 3 ítems del sidebar
   y `switchSection` los rechaza.
+- **Seguridad interna (#231, réplica BUFFALOGIROX #245/#245b/#245c/#246/#247/#248):** cambiar claves (`/api/admin/change-password`,
+  `reset-password`, `PUT /api/users/:id`) = SOLO admin general (`_isGeneralAdminReq`: rol admin); `verify-phone` sobre staff también. El
+  staff NO entra por SMS, código temporal ni recupera la clave por SMS, y `/api/auth/change-password(/pending)` lo rechaza (usa
+  `change-own-password`, pide la actual). Crear usuarios = admin/depositor. **`StaffAudit`** (permanente): `_staffAuditMiddleware` (global,
+  justo después de `isAdminRole`) registra toda escritura en `/api/*` de staff (body saneado con `_auditSafeBody`), `_auditStaffLogin` los
+  ingresos (IP nueva / compartida / mismo dispositivo → Telegram vía `telegramAlertService`, si está `TELEGRAM_ALERT_*`), `_auditPasswordChange`
+  quién→quién. IP = `_reqIp`/`_reqIpInfo` (x-forwarded-for de DERECHA a izquierda salteando internas; `cf-connecting-ip` solo si el salto es
+  de Cloudflare — nunca tomar la 1ª de XFF: la inventa el cliente). **Huella:** el panel manda `X-Device-Id`/`X-Device-Fp` en todo fetch a
+  `/api/` (wrapper de `window.fetch` al principio de admin.js) → `StaffAudit.deviceId/fp` (`_reqDevice`); `/security/staff` devuelve
+  `sharedIps` y `sharedDevices`. Panel 🛡️ Seguridad + `/api/admin/security/*` (`_secOnly`) = **solo el dueño de Seguridad**:
+  `_isPanelOwnerUser` = rol admin con `username` en `PANEL_OWNER` de SSM (varios por coma; sin valor nadie). Login y `/api/admin/me` mandan
+  **`isPanelOwner`** — ⚠️ distinto de `isOwner` (= dueño de PUBLICIDAD, #221): no mezclarlos.
 - **`src/middlewares/auth.js` es OTRO sistema de auth** (access 15m + refresh 7d,
   blacklist EN MEMORIA no compartida entre instancias) usado SOLO por las rutas de
   referidos. Lazy getters de JWT_SECRET (SSM carga después del require).
@@ -585,6 +597,8 @@ tenían los 4 clientes viejos.
 | `GIROX_PLAY_URL` | `https://1girox.com` | Sitio del jugador (fallback si el SSO falla) |
 | `GIROX_NETWIN_SCOPE` | `casino` | `casino` \| `total` (incluiría sports) en reembolsos/comisiones |
 | `GIROX_MAX_RPM` | `55` | Techo local de requests/min **por instancia** |
+| `PANEL_OWNER` | — | #231: username(s) del dueño de 🛡️ Seguridad separados por coma (`juan,pedro`), los únicos que ven el registro con IPs/dispositivos. Sin valor nadie la ve |
+| `TELEGRAM_ALERT_BOT_TOKEN` / `TELEGRAM_ALERT_CHAT_ID` | — | #231: bot y grupo de Telegram para las alertas de seguridad interna (y el aviso de campaña programada fallida). Sin las dos, no se manda nada |
 | `GIROX_REFERRAL_COMMISSION_PCT` | `8` | % de netwin que es owner-revenue (el proveedor ya no la informa) |
 | `GIROX_GIFT_AS_BONUS` | `1` | `0/false/off` = kill switch: los regalos vuelven a acreditarse por depósito libre (como antes del 2026-09-07) |
 | `VIP_USD_ARS_RATE` | `1500` | Tasa USD→ARS de los umbrales VIP (los umbrales de Stake están en USD) |
@@ -1024,6 +1038,10 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   `username_taken_foreign` en ese caso y TODOS los altas (registro, panel,
   publicista) FALLAN sin dejar cuenta local — jamás crear una cuenta 'linked' a un
   jugador que la key no puede leer.
+- **Seguridad interna (#231):** toda vía NUEVA que cambie una clave tiene que exigir `_isGeneralAdminReq(req)` (o ser la propia con la
+  clave actual) y llamar `_auditPasswordChange(req, target, via)`. Ninguna cuenta de staff entra ni recupera clave por SMS: no abrir eso.
+  `StaffAudit` es la evidencia — no ponerle TTL ni guardar claves/tokens en `details`. El dueño de Seguridad es `isPanelOwner`
+  (`PANEL_OWNER`), NO `isOwner` (Publicidad).
 - **DOS `connectDB`**: el real es `config/database.js`; el de `src/models/index.js` NO
   se usa. No definir schemas en config/database.js.
 - **Secrets por SSM**: no leer `process.env.X` al require; lazy getters. Los módulos

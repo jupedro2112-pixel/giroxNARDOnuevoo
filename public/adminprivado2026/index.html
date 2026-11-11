@@ -103,6 +103,11 @@ document.addEventListener('change', function (ev) {
                     <span>Chats</span>
                     <span id="unreadBadge" class="badge hidden">0</span>
                 </a>
+                <a href="#" class="nav-item nav-item-security" data-section="security" style="display:none">
+                    <span>🛡️</span>
+                    <span>Seguridad</span>
+                    <span id="securitySharedBadge" class="badge hidden">0</span>
+                </a>
                 <a href="#" class="nav-item nav-item-chat-delays" data-section="chatDelays" style="display:none">
                     <span>⏱️</span>
                     <span>Demoras</span>
@@ -2034,6 +2039,59 @@ document.addEventListener('change', function (ev) {
                     <div style="color:#aaa;padding:14px;">⏳ Cargando…</div>
                 </div>
                 <div id="chatDelaysPagination" style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px;"></div>
+            </section>
+
+            <!-- #231 (réplica BUFFALOGIROX #245/#246/#247) 🛡️ SEGURIDAD INTERNA (solo el dueño de Seguridad = PANEL_OWNER de SSM; isPanelOwner) -->
+            <section id="securitySection" class="section">
+                <div class="panel-header">
+                    <h2>🛡️ Seguridad interna del staff</h2>
+                    <button class="refresh-btn" onclick="loadSecuritySection()" title="Refrescar">🔄</button>
+                </div>
+                <div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.35);border-radius:10px;padding:12px;margin-bottom:14px;color:#ccc;font-size:12px;line-height:1.6;">
+                    Cada ingreso del staff, cada cambio de clave (quién a quién) y cada acción que mueve algo (cargas, retiros, bonos, pagos, altas) queda registrado con la <strong>IP real</strong>.
+                    Las <strong>IPs compartidas</strong> son las desde donde entraron VARIAS cuentas distintas del staff: si alguien usa cuentas ajenas, aparece ahí.
+                    Solo el admin general puede cambiar claves; las cuentas del staff ya no entran ni recuperan la clave por SMS.
+                    Si cargaste el bot de Telegram de alertas, llega un aviso al instante por cada clave de staff cambiada, por cada ingreso desde una IP nueva y por cada IP compartida.
+                </div>
+
+                <h3 style="color:#ef4444;font-size:14px;margin:6px 0 8px;">🚨 MISMO DISPOSITIVO usado por varias cuentas (últimos 30 días)</h3>
+                <div style="color:#999;font-size:11.5px;margin-bottom:6px;line-height:1.5;">La señal más fuerte: el mismo celular o PC entró con cuentas distintas del staff, <strong>aunque use VPN</strong> (la IP cambia, el dispositivo no). "Mismo navegador" = lo reconoció por el ID guardado en ese navegador (casi seguro). "Misma huella" = mismo equipo por sus características (pantalla, placa de video, etc.): en una oficina con PCs idénticas puede coincidir — confirmá con IP y horarios.</div>
+                <div id="securitySharedDevices" style="margin-bottom:16px;"></div>
+
+                <h3 style="color:#ef4444;font-size:14px;margin:6px 0 8px;">⚠️ IPs compartidas por varias cuentas (últimos 30 días)</h3>
+                <div id="securityShared" style="margin-bottom:16px;"></div>
+
+                <h3 style="color:#d4af37;font-size:14px;margin:6px 0 8px;">👥 Cuentas del staff</h3>
+                <div id="securityStaff" style="overflow-x:auto;margin-bottom:18px;"></div>
+
+                <h3 style="color:#d4af37;font-size:14px;margin:6px 0 8px;">📜 Registro</h3>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+                    <input id="secFActor" placeholder="Quién (cuenta del staff)" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;width:170px;">
+                    <input id="secFIp" placeholder="IP" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;width:130px;">
+                    <input id="secFDevice" placeholder="Dispositivo (huella)" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;width:140px;">
+                    <input id="secFTarget" placeholder="Sobre quién (usuario)" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;width:160px;">
+                    <select id="secFAction" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;">
+                        <option value="">Todo</option>
+                        <option value="login">Ingresos</option>
+                        <option value="login_failed">Ingresos fallidos</option>
+                        <option value="login_blocked">Ingresos bloqueados (SMS / código)</option>
+                        <option value="password_change">Cambios de clave</option>
+                        <option value="password_change_denied">Intentos de cambio de clave rechazados</option>
+                        <option value="api">Acciones</option>
+                        <option value="money">💰 Solo plata (cargas, retiros, bonos, pagos)</option>
+                        <option value="session_revoke">Sesiones cerradas</option>
+                    </select>
+                    <select id="secFDays" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;">
+                        <option value="1">Hoy / 24 h</option>
+                        <option value="7" selected>7 días</option>
+                        <option value="30">30 días</option>
+                        <option value="90">90 días</option>
+                        <option value="365">1 año</option>
+                    </select>
+                    <button class="btn btn-secondary btn-sm" onclick="loadSecurityAudit(1)">🔎 Buscar</button>
+                </div>
+                <div id="securityAudit" style="overflow-x:auto;"></div>
+                <div id="securityAuditPager" style="display:flex;gap:10px;justify-content:center;align-items:center;margin-top:10px;"></div>
             </section>
 
             <!-- ============================================================

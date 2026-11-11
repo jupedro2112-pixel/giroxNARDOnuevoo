@@ -74,6 +74,8 @@ const comprobanteAi = require('./src/services/comprobanteAiService');
 const BankMovement = require('./src/models/BankMovement');
 const HgcashCharge = require('./src/models/HgcashCharge');
 const PendingPayout = require('./src/models/PendingPayout');
+const telegramAlert = require('./src/services/telegramAlertService'); // #231 Telegram de alertas (réplica BUFFALOGIROX #183/#245; sin TELEGRAM_ALERT_* no hace nada)
+const StaffAudit = require('./src/models/StaffAudit'); // #231 auditoría del staff (IP, ingresos, cambios de clave, acciones) — réplica BUFFALOGIROX #245
 const hgcashPay = require('./src/services/hgcashService');
 const pdfImage = require('./src/services/pdfImageService');
 const { generateReferralCode } = require('./src/utils/referralCode');
@@ -748,7 +750,7 @@ const _corsMw = cors({
   origin: corsOriginFn,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Device-Id', 'X-Device-Fp'], // #231 (réplica #246)
   exposedHeaders: ['X-Total-Count', 'X-RateLimit-Remaining']
 });
 app.use((req, res, next) => {
@@ -793,6 +795,172 @@ const USER_PUBLIC_FIELDS = 'id username email phone phoneVerified phoneVerificat
 // detection, mustChangePassword forzado, Meta CAPI tracking, etc.
 const ADMIN_ROLES = ['admin', 'depositor', 'withdrawer', 'publisher_admin', 'comunidad'];
 const isAdminRole = (role) => ADMIN_ROLES.includes(role);
+
+// ============================================
+// #245 SEGURIDAD INTERNA ENTRE ADMINS — auditoría con IP
+// (#231 de este repo: réplica 1:1 de BUFFALOGIROX #245/#245b/#245c/#246/#247/#248. Única adaptación: el dueño de
+// SEGURIDAD se llama `_isPanelOwnerUser` / `isPanelOwner` porque acá `isOwner` YA es el dueño de PUBLICIDAD (#221).)
+// ============================================
+// Todo lo que hace una cuenta de staff queda en StaffAudit (permanente) con la IP REAL. Fire-and-forget: un
+// fallo del registro NUNCA frena la operación. Nunca se guardan claves/tokens (`_auditSafeBody`).
+// #245c IP REAL a prueba de encabezados falsos. Los encabezados `x-forwarded-for` / `cf-connecting-ip` los puede inventar
+// el que manda el pedido: NO se toma el primero. Se recorre la cadena DE DERECHA A IZQUIERDA (lo de la derecha lo
+// agregaron nuestros propios proxies: nginx de EB / ALB), se saltean las IPs internas, y la primera pública es la que se
+// conectó a nosotros. Si esa es de Cloudflare, recién ahí vale `cf-connecting-ip` (lo pone Cloudflare, no el cliente).
+const _netMod = require('net');
+const _PRIVATE_NETS = new _netMod.BlockList();
+for (const [a, b] of [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16], ['127.0.0.0', 8], ['169.254.0.0', 16], ['100.64.0.0', 10], ['0.0.0.0', 8]]) _PRIVATE_NETS.addSubnet(a, b, 'ipv4');
+for (const [a, b] of [['::1', 128], ['fc00::', 7], ['fe80::', 10]]) _PRIVATE_NETS.addSubnet(a, b, 'ipv6');
+const _CF_NETS = new _netMod.BlockList(); // rangos publicados por Cloudflare (cloudflare.com/ips)
+for (const c of ['173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22']) { const [a, b] = c.split('/'); _CF_NETS.addSubnet(a, Number(b), 'ipv4'); }
+for (const c of ['2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32']) { const [a, b] = c.split('/'); _CF_NETS.addSubnet(a, Number(b), 'ipv6'); }
+function _ipClean(v) { let x = String(v || '').trim(); if (x.startsWith('::ffff:')) x = x.slice(7); if (/^\[.*\]/.test(x)) x = x.slice(1, x.indexOf(']')); else if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(x)) x = x.split(':')[0]; return _netMod.isIP(x) ? x : null; }
+function _ipIn(list, ip) { const t = _netMod.isIP(ip); return t ? list.check(ip, t === 6 ? 'ipv6' : 'ipv4') : false; }
+function _reqIpInfo(req) {
+  const h = (req && req.headers) || {};
+  const chain = String(h['x-forwarded-for'] || '').split(',').map(_ipClean).filter(Boolean);
+  const sock = _ipClean(req && req.socket && req.socket.remoteAddress);
+  if (sock) chain.push(sock);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const ip = chain[i];
+    if (_ipIn(_PRIVATE_NETS, ip)) continue;
+    if (_ipIn(_CF_NETS, ip)) {
+      const cf = _ipClean(h['cf-connecting-ip']);
+      return { ip: cf || ip, via: cf ? 'cloudflare' : 'cloudflare_sin_header' };
+    }
+    return { ip, via: 'directo' };
+  }
+  return { ip: chain[0] || null, via: 'interna' };
+}
+function _reqIp(req) { return _reqIpInfo(req).ip; }
+// #246 huella del dispositivo que manda el panel (solo formato seguro; lo que no cumple = null).
+function _reqDevice(req) {
+  const h = (req && req.headers) || {};
+  const ok = (v) => { const x = String(v || '').trim(); return /^[A-Za-z0-9_-]{6,40}$/.test(x) ? x : null; };
+  return { deviceId: ok(h['x-device-id']), fp: ok(h['x-device-fp']) };
+}
+const _AUDIT_SECRET_RX = /pass|token|secret|apikey|api_key|key$|otp|code$|pin|cookie|authorization/i;
+function _auditSafeBody(body) {
+  if (!body || typeof body !== 'object') return null;
+  const out = {};
+  let n = 0;
+  for (const [k, v] of Object.entries(body)) {
+    if (n++ >= 25) break;
+    if (_AUDIT_SECRET_RX.test(k)) { out[k] = '***'; continue; }
+    if (v == null || typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+    else if (typeof v === 'string') out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v;
+    else out[k] = '[' + (Array.isArray(v) ? 'lista' : 'objeto') + ']';
+  }
+  return out;
+}
+function _staffAudit(req, action, opts = {}) {
+  try {
+    const actor = opts.actor || (req && req.user) || {};
+    const t = opts.target || null;
+    StaffAudit.create({
+      at: new Date(),
+      action,
+      actorId: actor.userId || actor.id || null,
+      actorUsername: actor.username || null,
+      actorRole: actor.role || null,
+      actorTeam: actor.team || null,
+      targetId: t ? (t.id || t.userId || null) : null,
+      targetUsername: t ? (t.username || null) : null,
+      targetRole: t ? (t.role || null) : null,
+      ip: req ? _reqIp(req) : null,
+      ipChain: req && req.headers ? ((String(req.headers['x-forwarded-for'] || '') + (req.headers['cf-connecting-ip'] ? ' | cf=' + req.headers['cf-connecting-ip'] : '') + ' | via=' + _reqIpInfo(req).via).slice(0, 300)) : null,
+      userAgent: req && req.headers ? String(req.headers['user-agent'] || '').slice(0, 300) || null : null,
+      deviceId: req ? _reqDevice(req).deviceId : null,
+      fp: req ? _reqDevice(req).fp : null,
+      method: req ? req.method : null,
+      path: req ? String(req.originalUrl || req.url || '').split('?')[0].slice(0, 200) : null,
+      status: opts.status != null ? opts.status : null,
+      details: opts.details || null
+    }).catch((e) => logger.warn(`[audit] no se pudo guardar ${action}: ${e.message}`));
+  } catch (e) { logger.warn(`[audit] ${action}: ${e.message}`); }
+}
+// Aviso inmediato al Telegram de alertas (#183) para lo grave: clave de una cuenta de staff, ingreso de staff
+// desde una IP que esa cuenta nunca usó, IP compartida por varias cuentas de staff.
+function _staffSecurityAlert(lines) {
+  try {
+    if (!telegramAlert.isEnabled()) return;
+    const e = telegramAlert.esc;
+    telegramAlert.send('🛡️ <b>SEGURIDAD INTERNA</b>\n' + lines.map((l) => e(String(l))).join('\n')).catch(() => {});
+  } catch (_) { /* nunca frena */ }
+}
+// Ingreso de staff: registra y avisa si la IP es nueva para esa cuenta o si OTRA cuenta de staff ya entró desde ella.
+async function _auditStaffLogin(req, user, via) {
+  try {
+    const ip = _reqIp(req);
+    const { deviceId, fp } = _reqDevice(req);
+    const actor = { userId: user.id, username: user.username, role: user.role, team: user.team || null };
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const others = (q) => StaffAudit.distinct('actorUsername', Object.assign({ action: 'login', actorId: { $ne: user.id }, at: { $gte: since } }, q));
+    const [seenByMe, ipOthers, devOthers, fpOthers] = await Promise.all([
+      ip ? StaffAudit.exists({ action: 'login', actorId: user.id, ip }) : null,
+      ip ? others({ ip }) : [],
+      deviceId ? others({ deviceId }) : [],
+      fp ? others({ fp }) : []
+    ]);
+    // #246: mismo DISPOSITIVO que otra cuenta del staff = la señal fuerte (no la engaña una VPN).
+    const sameDevice = [...new Set([...(devOthers || []), ...(fpOthers || [])])].slice(0, 10);
+    _staffAudit(req, 'login', { actor, details: { via, newIp: !!(ip && !seenByMe), sharedWith: (ipOthers || []).slice(0, 10), sameDeviceAs: sameDevice } });
+    if ((ip && (!seenByMe || (ipOthers && ipOthers.length))) || sameDevice.length) {
+      _staffSecurityAlert([
+        `Ingreso de ${user.username} (${user.role}${user.team ? ' · equipo ' + user.team : ''})`,
+        `IP: ${ip || '-'}${ip && !seenByMe ? ' — NUEVA para esta cuenta' : ''}`,
+        ipOthers && ipOthers.length ? `⚠️ Desde esa IP también entraron (30 días): ${ipOthers.slice(0, 10).join(', ')}` : null,
+        sameDevice.length ? `🚨 MISMO DISPOSITIVO que: ${sameDevice.join(', ')} (aunque use VPN)` : null
+      ].filter(Boolean));
+    }
+  } catch (e) { logger.warn(`[audit] login ${user && user.username}: ${e.message}`); }
+}
+// Middleware global: toda escritura (POST/PUT/PATCH/DELETE) en /api/* hecha por una cuenta de staff queda registrada
+// al terminar la respuesta (req.user lo deja authMiddleware dentro de la ruta). Los GET no (volumen).
+const _AUDIT_SKIP_PATHS = /^\/api\/(notifications\/register-token|messages\/read\/|activity\/ping|admin\/me$)/;
+function _staffAuditMiddleware(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS' || !String(req.path || '').startsWith('/api/')) return next();
+  res.on('finish', () => {
+    try {
+      const u = req.user;
+      if (!u || !isAdminRole(u.role) || _AUDIT_SKIP_PATHS.test(req.path)) return;
+      const b = req.body || {};
+      const tgt = b.userId || b.username || b.targetUserId || (req.params && (req.params.id || req.params.userId)) || null;
+      _staffAudit(req, 'api', {
+        status: res.statusCode,
+        target: tgt ? { id: String(tgt).slice(0, 80) } : null,
+        details: _auditSafeBody(b)
+      });
+    } catch (_) { /* nunca frena */ }
+  });
+  next();
+}
+// Cambiar claves = SOLO el admin general (rol admin SIN equipo). Owner 2026-11-11: ningún depositor/withdrawer/
+// comunidad ni cajero de equipo cambia una clave (ni de clientes: para eso está el 🔗 link de acceso).
+function _isGeneralAdminReq(req) { return !!(req && req.user && req.user.role === 'admin' && !req.user.team); }
+// #245b/#247 ADMIN DUEÑO = la cuenta cuyo username está en `PANEL_OWNER` (SSM, se lee en runtime: cambiarla en SSM + reiniciar).
+// Es el ÚNICO que ve el registro de seguridad con IPs y dispositivos. Sin PANEL_OWNER nadie lo ve (fail-closed).
+// Separado de ADMIN_USERNAME (que es solo el admin que siembra una base nueva).
+// #248: PANEL_OWNER admite VARIOS usuarios separados por coma (ej. "juan,pedro") — todos son dueños.
+function _panelOwners() {
+  return String(process.env.PANEL_OWNER || '').split(/[,;\s]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+function _isPanelOwnerUser(u) {
+  const owners = _panelOwners();
+  return !!(owners.length && u && u.role === 'admin' && !u.team && owners.includes(String(u.username || '').trim().toLowerCase()));
+}
+function _denyPasswordChange(req, res, target) {
+  _staffAudit(req, 'password_change_denied', { target, status: 403 });
+  return res.status(403).json({ error: 'Solo el administrador general puede cambiar contraseñas. Para un cliente usá el 🔗 link de acceso.' });
+}
+function _auditPasswordChange(req, target, via) {
+  _staffAudit(req, 'password_change', { target, details: { via } });
+  if (target && isAdminRole(target.role)) {
+    const by = (req && req.user && req.user.username) || 'desconocido';
+    _staffSecurityAlert([`Clave de la cuenta de STAFF ${target.username} (${target.role}) cambiada`, `Por: ${by} · vía ${via}`, `IP: ${req ? _reqIp(req) : '-'}`]);
+  }
+}
+app.use(_staffAuditMiddleware); // #245
 
 // Rutas que un publisher_admin puede tocar. Cualquier otra ruta devuelve 403.
 // El authMiddleware aplica este lockdown sólo para ese rol; admin / depositor /
@@ -4431,6 +4599,10 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       // se ignora la contraseña y el SMS por completo.
       logger.info(`Login sin clave (habilitado por admin) para ${loginIdentifier}`);
       isValidPassword = true;
+    } else if (temporaryCode && !password && isAdminRole(userObj.role)) {
+      // #245: el staff entra solo con contraseña.
+      _staffAudit(req, 'login_blocked', { actor: { userId: userObj.id, username: userObj.username, role: userObj.role }, details: { via: 'temporary_code' } });
+      return res.status(401).json({ error: 'Credenciales inválidas' });
     } else if (temporaryCode && !password) {
       // Login con código temporal de acceso: fallback para usuarios que entraron
       // en "modo temporal" al cambiar la contraseña y todavía no verificaron su
@@ -4465,6 +4637,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     
     if (!isValidPassword) {
       logger.debug(`Wrong password for ${loginIdentifier}`);
+      if (isAdminRole(userObj.role)) _staffAudit(req, 'login_failed', { actor: { userId: userObj.id, username: userObj.username, role: userObj.role, team: userObj.team || null } }); // #245
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
     
@@ -4559,6 +4732,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         { expiresIn: '8h' }
       );
       res.setHeader('Set-Cookie', buildAdminSessionCookieHeaders(adminCookieToken));
+      _auditStaffLogin(req, userObj, 'password'); // #245 (fire-and-forget)
     }
 
     // Meta CAPI — Login (custom event) sólo para usuarios finales, no admins.
@@ -4597,6 +4771,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         isOwner: userObj.role === 'admin' && userObj.isOwner === true,
         canSeePublicity: isAdminRole(userObj.role) ? await canSeePublicity({ role: userObj.role, isOwner: userObj.isOwner === true }) : false,
         ownersConfigured: isAdminRole(userObj.role) ? await ownersConfigured() : false,
+        isPanelOwner: _isPanelOwnerUser(userObj), // #231 (réplica #245b): dueño de 🛡️ Seguridad = PANEL_OWNER de SSM (≠ isOwner de Publicidad)
         // Leemos del doc vivo `user` (no del snapshot `userObj`) para reflejar
         // la auto-limpieza recién hecha. Sólo queda true si un admin reseteó
         // manualmente la contraseña a una nueva (distinta de "asd123").
@@ -4774,7 +4949,8 @@ app.get('/api/admin/me', async (req, res) => {
         // Dueño (#221): el panel oculta Publicidad si no puede verla.
         isOwner: user.role === 'admin' && user.isOwner === true,
         canSeePublicity: await canSeePublicity({ role: user.role, isOwner: user.isOwner === true }),
-        ownersConfigured: await ownersConfigured()
+        ownersConfigured: await ownersConfigured(),
+        isPanelOwner: _isPanelOwnerUser(user) // #231 (réplica #245b): dueño de 🛡️ Seguridad = PANEL_OWNER de SSM
       },
       token: freshToken
     });
@@ -4887,6 +5063,12 @@ async function syncPasswordToJugaygana(user, newPassword, context) {
 app.post('/api/auth/change-password', authMiddleware, authLimiter, async (req, res) => {
   try {
     const { newPassword, whatsapp, phone, otpCode, closeAllSessions } = req.body;
+    // #245: una cuenta de STAFF cambia SU clave solo desde el panel (pide la actual: /api/admin/change-own-password).
+    // Este camino no la pide: con una sesión olvidada abierta cualquiera le cambiaba la clave a otro admin.
+    if (isAdminRole(req.user.role)) {
+      _staffAudit(req, 'password_change_denied', { target: { id: req.user.userId, username: req.user.username, role: req.user.role }, status: 403, details: { via: 'auth-change-password' } });
+      return res.status(403).json({ error: 'Las cuentas del staff cambian su contraseña desde el panel (🔑 Cambiar mi contraseña), con la contraseña actual.' });
+    }
 
     // Buscar por 'id' primero, luego por '_id' como fallback
     let user = await User.findOne({ id: req.user.userId });
@@ -5099,6 +5281,12 @@ app.post('/api/auth/change-password/send-otp', authMiddleware, sensitiveLimiter,
 app.post('/api/auth/change-password/pending', authMiddleware, authLimiter, async (req, res) => {
   try {
     const { newPassword, whatsapp, phone, closeAllSessions } = req.body;
+    // #245: una cuenta de STAFF cambia SU clave solo desde el panel (pide la actual: /api/admin/change-own-password).
+    // Este camino no la pide: con una sesión olvidada abierta cualquiera le cambiaba la clave a otro admin.
+    if (isAdminRole(req.user.role)) {
+      _staffAudit(req, 'password_change_denied', { target: { id: req.user.userId, username: req.user.username, role: req.user.role }, status: 403, details: { via: 'auth-change-password' } });
+      return res.status(403).json({ error: 'Las cuentas del staff cambian su contraseña desde el panel (🔑 Cambiar mi contraseña), con la contraseña actual.' });
+    }
 
     let user = await User.findOne({ id: req.user.userId });
     if (!user) {
@@ -5372,7 +5560,9 @@ app.post('/api/auth/login-otp-request', authLimiter, smsIpLimiter, async (req, r
     const user = await User.findOne({ phone: normalizedPhone, phoneVerified: true }).lean();
 
     // ANTI-ENUMERATION: Always respond the same way
-    if (user) {
+    // #245: una cuenta de STAFF nunca entra por SMS (era la vía para tomar la cuenta de otro admin).
+    if (user && isAdminRole(user.role)) _staffAudit(req, 'login_blocked', { actor: { userId: user.id, username: user.username, role: user.role }, details: { via: 'sms_login_request' } });
+    if (user && !isAdminRole(user.role)) {
       try {
         await generateAndSendOTP(normalizedPhone, 'login');
       } catch (err) {
@@ -5410,6 +5600,10 @@ app.post('/api/auth/login-otp-verify', authLimiter, async (req, res) => {
     const user = await User.findOne({ phone: normalizedPhone, phoneVerified: true });
     if (!user) {
       return res.status(400).json({ error: 'Código incorrecto o expirado' });
+    }
+    if (isAdminRole(user.role)) { // #245
+      _staffAudit(req, 'login_blocked', { actor: { userId: user.id, username: user.username, role: user.role }, details: { via: 'sms_login' } });
+      return res.status(403).json({ error: 'Las cuentas del staff entran SOLO con usuario y contraseña. Si la olvidaste, pedile al administrador general que te la cambie.' });
     }
 
     // Update last login
@@ -5477,7 +5671,8 @@ app.post('/api/auth/request-password-reset', sensitiveLimiter, smsIpLimiter, asy
       const normalizedPhone = phone.trim();
       if (validateInternationalPhone(normalizedPhone)) {
         const user = await User.findOne({ phone: normalizedPhone, phoneVerified: true }).lean();
-        if (user) {
+        if (user && isAdminRole(user.role)) _staffAudit(req, 'password_change_denied', { target: user, details: { via: 'sms_reset_request' } }); // #245
+        if (user && !isAdminRole(user.role)) {
           try {
             await generateAndSendOTP(normalizedPhone, 'reset');
           } catch (err) {
@@ -5519,6 +5714,10 @@ app.post('/api/auth/verify-reset-otp', sensitiveLimiter, async (req, res) => {
 
     if (!user) {
       return res.status(400).json({ error: 'Código incorrecto o expirado' });
+    }
+    if (isAdminRole(user.role)) { // #245: la clave de una cuenta de staff no se recupera por SMS
+      _staffAudit(req, 'password_change_denied', { target: user, details: { via: 'sms_reset' } });
+      return res.status(403).json({ error: 'Las cuentas del staff entran SOLO con usuario y contraseña. Si la olvidaste, pedile al administrador general que te la cambie.' });
     }
 
     // Generar JWT temporal de 5 minutos solo para reset. Lleva el tokenVersion
@@ -5576,6 +5775,10 @@ app.post('/api/auth/complete-password-reset', sensitiveLimiter, async (req, res)
     // del usuario, ya fue usado (o las sesiones se cerraron) → se rechaza.
     if ((user.tokenVersion || 0) !== (decoded.tokenVersion || 0)) {
       return res.status(400).json({ error: 'Token de reset ya utilizado o expirado' });
+    }
+    if (isAdminRole(user.role)) { // #245
+      _staffAudit(req, 'password_change_denied', { target: user, details: { via: 'sms_reset_complete' } });
+      return res.status(403).json({ error: 'Las cuentas del staff entran SOLO con usuario y contraseña. Si la olvidaste, pedile al administrador general que te la cambie.' });
     }
 
     // Cambiar contraseña
@@ -5930,10 +6133,8 @@ app.post('/api/admin/verify-sms-password', authMiddleware, async (req, res) => {
 
 app.post('/api/admin/users/:id/reset-password', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    // Resetear contraseñas (incluida la de otros admins) es poder de admin general.
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Solo el administrador principal puede resetear contraseñas' });
-    }
+    // Resetear contraseñas (incluida la de otros admins) es poder de admin general (#245: sin equipo).
+    if (!_isGeneralAdminReq(req)) return _denyPasswordChange(req, res, { id: req.params.id });
     const { id } = req.params;
     const { newPassword } = req.body;
     
@@ -5957,6 +6158,7 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminMiddleware,
     await user.save();
     
     logger.info(`Admin ${req.user.username} reset password for ${user.username}`);
+    _auditPasswordChange(req, user, 'reset-password'); // #245
 
     await syncPasswordToJugaygana(user, newPassword, `admin-reset-password by ${req.user.username}`);
 
@@ -6512,6 +6714,12 @@ app.get('/api/admin/girox/test-sso', authMiddleware, adminMiddleware, async (req
 app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    // #245: SOLO el admin general. Antes cualquier staff le cambiaba el TELÉFONO a la cuenta de otro admin y con el
+    // SMS entraba a esa cuenta. El panel no usa este endpoint.
+    if (!_isGeneralAdminReq(req)) {
+      _staffAudit(req, 'password_change_denied', { target: { id }, status: 403, details: { via: 'put-users', fields: Object.keys(req.body || {}).slice(0, 10) } });
+      return res.status(403).json({ error: 'Solo el administrador general puede editar cuentas.' });
+    }
 
     // Whitelist of fields any admin role can update
     const ALLOWED_FIELDS = ['email', 'phone', 'whatsapp', 'isActive', 'balance'];
@@ -6557,6 +6765,8 @@ app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
       }
       updates.password = await bcrypt.hash(String(req.body.password), 10);
       updates.passwordChangedAt = new Date();
+      const _tgt = await User.findOne({ id }).select('id username role').lean().catch(() => null);
+      _auditPasswordChange(req, _tgt || { id }, 'put-users'); // #245
     }
 
     if (Object.keys(updates).length === 0) {
@@ -13958,6 +14168,7 @@ app.post('/api/admin/publisher-admin/users/:userId/change-password', authMiddlew
 
     target.password = newPassword; // pre-save hook hashea
     target.passwordChangedAt = new Date();
+    _auditPasswordChange(req, target, 'publisher-admin-client'); // #245
     target.tokenVersion = (target.tokenVersion || 0) + 1; // invalida sesiones existentes del cliente
     target.mustChangePassword = false; // por si tenía el flag de antes
     await target.save();
@@ -14169,6 +14380,7 @@ app.put('/api/admin/publisher-admins/:id', authMiddleware, adminMiddleware, owne
       }
       target.password = password; // pre-save hook hashea
       target.passwordChangedAt = new Date();
+      _auditPasswordChange(req, target, 'publisher-admins-edit'); // #245
       target.tokenVersion = (target.tokenVersion || 0) + 1; // invalida sesiones existentes
     }
 
@@ -15717,13 +15929,9 @@ app.post('/api/admin/change-password', authMiddleware, adminMiddleware, async (r
     // enumeraban 'withdrawer' y 'depositor', y el rol 'comunidad' —creado
     // después— caía al else SIN restricción → podía cambiarle la contraseña al
     // ADMIN GENERAL y tomar la sala. Ahora solo pasan los roles previstos.
-    if (adminRole !== 'admin' && adminRole !== 'depositor') {
-      return res.status(403).json({ error: 'No tienes permiso para cambiar contraseñas' });
-    }
-
-    if (adminRole !== 'admin' && user.role !== 'user') {
-      return res.status(403).json({ error: 'Solo puedes cambiar contraseñas de usuarios, no de administradores' });
-    }
+    // #245 (owner 2026-11-11): SOLO el admin general (rol admin sin equipo). Antes el depositor podía cambiar la
+    // clave de los clientes; ahora ningún depositor/withdrawer/comunidad/cajero de equipo cambia claves.
+    if (!_isGeneralAdminReq(req)) return _denyPasswordChange(req, res, user);
 
     user.password = newPassword;
     user.passwordChangedAt = new Date();
@@ -15731,6 +15939,7 @@ app.post('/api/admin/change-password', authMiddleware, adminMiddleware, async (r
     // seguía operando con su JWT viejo (30-90 días) pese al cambio de clave.
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+    _auditPasswordChange(req, user, 'change-password'); // #245
     
     // Solo enviar mensaje y sincronizar con JUGAYGANA si el objetivo es un usuario regular (no admin)
     if (user.role === 'user') {
@@ -15807,11 +16016,143 @@ app.post('/api/admin/change-own-password', authMiddleware, async (req, res) => {
     await admin.save();
 
     logger.info(`Admin ${admin.username} cambió su propia contraseña`);
+    _auditPasswordChange(req, admin, 'change-own-password'); // #245
     res.json({ success: true, message: 'Contraseña cambiada correctamente' });
   } catch (error) {
     console.error('Error cambiando contraseña de admin:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
+});
+
+// ============================================
+// #245 🛡️ SEGURIDAD INTERNA — registro de auditoría del staff (SOLO el ADMIN DUEÑO, #245b)
+// ============================================
+// #245b/#247: SOLO el ADMIN DUEÑO (PANEL_OWNER de SSM; #231 acá = `_isPanelOwnerUser`). Un intento de otro admin queda registrado.
+const _secOnly = (req, res, next) => {
+  if (_isPanelOwnerUser(req.user)) return next();
+  _staffAudit(req, 'security_denied', { status: 403 });
+  return res.status(403).json({ error: 'Solo el admin dueño.' });
+};
+const _rxSafe = (v) => String(v || '').trim().slice(0, 60).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Registro filtrable: ?actor= ?ip= ?action= ?target= ?days= (1..365, default 7) ?page=
+app.get('/api/admin/security/audit', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(365, parseInt(req.query.days, 10) || 7));
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const PAGE = 100;
+    const q = { at: { $gte: new Date(Date.now() - days * 24 * 3600 * 1000) } };
+    if (req.query.actor) q.actorUsername = { $regex: '^' + _rxSafe(req.query.actor), $options: 'i' };
+    if (req.query.ip) q.ip = { $regex: '^' + _rxSafe(req.query.ip) };
+    if (req.query.device) { const d = _rxSafe(req.query.device); q.$and = [{ $or: [{ deviceId: d }, { fp: d }] }]; } // #246
+    if (req.query.action) q.action = String(req.query.action).slice(0, 40);
+    if (req.query.target) {
+      const t = _rxSafe(req.query.target);
+      q.$or = [{ targetUsername: { $regex: '^' + t, $options: 'i' } }, { targetId: t }];
+    }
+    if (req.query.onlyMoney === '1') q.path = { $regex: '^/api/admin/(deposit|withdrawal|bonus|payouts/|bank/movements/)' };
+    const [total, rows] = await Promise.all([
+      StaffAudit.countDocuments(q),
+      StaffAudit.find(q).sort({ at: -1 }).skip((page - 1) * PAGE).limit(PAGE).lean()
+    ]);
+    // Completa el username del objetivo cuando el middleware solo tenía el id.
+    const ids = [...new Set(rows.filter((r) => r.targetId && !r.targetUsername).map((r) => r.targetId))].slice(0, 200);
+    if (ids.length) {
+      const us = await User.find({ $or: [{ id: { $in: ids } }, { username: { $in: ids } }] }).select('id username role').lean();
+      const m = new Map(); for (const u of us) { m.set(u.id, u); m.set(u.username, u); }
+      for (const r of rows) if (r.targetId && !r.targetUsername && m.get(r.targetId)) { r.targetUsername = m.get(r.targetId).username; r.targetRole = m.get(r.targetId).role; }
+    }
+    res.json({ total, page, pages: Math.max(1, Math.ceil(total / PAGE)), rows });
+  } catch (e) { logger.error('[security] audit: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+
+// Cuentas del staff: último ingreso, IPs usadas (30 d) y las IPs que comparten VARIAS cuentas (= una persona usando cuentas ajenas).
+app.get('/api/admin/security/staff', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const _sharedBy = (field) => StaffAudit.aggregate([ // #246 dispositivos usados por VARIAS cuentas del staff
+      { $match: { action: 'login', at: { $gte: since }, [field]: { $ne: null } } },
+      { $group: { _id: '$' + field, accounts: { $addToSet: '$actorUsername' }, ips: { $addToSet: '$ip' }, last: { $max: '$at' }, ua: { $last: '$userAgent' } } },
+      { $match: { 'accounts.1': { $exists: true } } },
+      { $sort: { last: -1 } }, { $limit: 50 }
+    ]);
+    const [sharedFp, sharedDev] = await Promise.all([_sharedBy('fp'), _sharedBy('deviceId')]);
+    const [staff, byActor, shared, pwd] = await Promise.all([
+      User.find({ role: { $in: ADMIN_ROLES } }).select('id username role team isActive isBlocked lastLogin passwordChangedAt').lean(),
+      StaffAudit.aggregate([
+        { $match: { action: 'login', at: { $gte: since } } },
+        { $sort: { at: -1 } },
+        { $group: { _id: '$actorId', last: { $first: '$at' }, lastIp: { $first: '$ip' }, lastFp: { $first: '$fp' }, logins: { $sum: 1 }, ips: { $addToSet: '$ip' }, fps: { $addToSet: '$fp' } } }
+      ]),
+      StaffAudit.aggregate([
+        { $match: { action: 'login', at: { $gte: since }, ip: { $ne: null } } },
+        { $group: { _id: '$ip', accounts: { $addToSet: '$actorUsername' }, last: { $max: '$at' } } },
+        { $match: { 'accounts.1': { $exists: true } } },
+        { $sort: { last: -1 } }, { $limit: 50 }
+      ]),
+      StaffAudit.aggregate([
+        { $match: { action: 'password_change', targetRole: { $in: ADMIN_ROLES } } },
+        { $sort: { at: -1 } },
+        { $group: { _id: '$targetId', at: { $first: '$at' }, by: { $first: '$actorUsername' }, ip: { $first: '$ip' } } }
+      ])
+    ]);
+    const am = new Map(byActor.map((r) => [r._id, r]));
+    const pm = new Map(pwd.map((r) => [r._id, r]));
+    const rows = staff.map((u) => {
+      const a = am.get(u.id) || {};
+      const p = pm.get(u.id) || null;
+      return {
+        id: u.id, username: u.username, role: u.role, team: u.team || null,
+        isActive: u.isActive !== false, isBlocked: !!u.isBlocked, lastLogin: u.lastLogin || null,
+        lastLoginAudit: a.last || null, lastIp: a.lastIp || null, logins30d: a.logins || 0,
+        ips30d: (a.ips || []).filter(Boolean).slice(0, 15),
+        lastFp: a.lastFp || null, devices30d: (a.fps || []).filter(Boolean).slice(0, 15), // #246
+        passwordChangedAt: u.passwordChangedAt || null,
+        lastPasswordChange: p ? { at: p.at, by: p.by, ip: p.ip } : null
+      };
+    }).sort((x, y) => new Date(y.lastLoginAudit || 0) - new Date(x.lastLoginAudit || 0));
+    // #246: un mismo dispositivo puede aparecer por las dos señales (huella e id): se juntan por grupo de cuentas.
+    const devMap = new Map();
+    for (const [kind, list] of [['fp', sharedFp], ['id', sharedDev]]) for (const r of list) {
+      const key = [...r.accounts].sort().join('|');
+      const cur = devMap.get(key) || { accounts: [...r.accounts].sort(), fps: [], ids: [], ips: new Set(), last: r.last, ua: r.ua };
+      (kind === 'fp' ? cur.fps : cur.ids).push(r._id);
+      for (const ip of r.ips || []) if (ip) cur.ips.add(ip);
+      if (new Date(r.last) > new Date(cur.last)) cur.last = r.last;
+      devMap.set(key, cur);
+    }
+    const sharedDevices = [...devMap.values()].map((d) => ({ accounts: d.accounts, fps: d.fps, deviceIds: d.ids, ips: [...d.ips].slice(0, 10), last: d.last, userAgent: d.ua || null, byId: d.ids.length > 0 }))
+      .sort((x, y) => new Date(y.last) - new Date(x.last));
+    res.json({ staff: rows, sharedIps: shared.map((r) => ({ ip: r._id, accounts: r.accounts, last: r.last })), sharedDevices });
+  } catch (e) { logger.error('[security] staff: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+
+// Cerrar TODAS las sesiones de una cuenta de staff (sube tokenVersion: sus cookies/JWT dejan de valer al instante).
+app.post('/api/admin/security/staff/:id/revoke', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+  try {
+    const u = await User.findOneAndUpdate({ id: req.params.id, role: { $in: ADMIN_ROLES } }, { $inc: { tokenVersion: 1 } }, { new: true }).select('id username role').lean();
+    if (!u) return res.status(404).json({ error: 'Cuenta de staff no encontrada' });
+    _staffAudit(req, 'session_revoke', { target: u });
+    res.json({ success: true, message: `Sesiones de ${u.username} cerradas.` + (u.id === req.user.userId ? ' (También la tuya: volvé a entrar.)' : '') });
+  } catch (e) { logger.error('[security] revoke: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+});
+
+// Activar / desactivar una cuenta de staff (desactivada = no entra ni opera; corta sus sesiones).
+app.post('/api/admin/security/staff/:id/active', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+  try {
+    const active = !!(req.body && req.body.active === true);
+    if (!active && req.params.id === req.user.userId) return res.status(400).json({ error: 'No podés desactivar tu propia cuenta.' });
+    const target = await User.findOne({ id: req.params.id, role: { $in: ADMIN_ROLES } }).select('id username role team isActive').lean();
+    if (!target) return res.status(404).json({ error: 'Cuenta de staff no encontrada' });
+    if (!active && target.role === 'admin' && !target.team) {
+      const others = await User.countDocuments({ role: 'admin', team: null, isActive: { $ne: false }, id: { $ne: target.id } });
+      if (others < 1) return res.status(400).json({ error: 'Es el único admin general activo: no se puede desactivar.' });
+    }
+    await User.updateOne({ id: target.id }, active ? { $set: { isActive: true } } : { $set: { isActive: false }, $inc: { tokenVersion: 1 } });
+    _staffAudit(req, active ? 'staff_enable' : 'staff_disable', { target });
+    if (!active) _staffSecurityAlert([`Cuenta de staff DESACTIVADA: ${target.username} (${target.role})`, `Por: ${req.user.username} · IP ${_reqIp(req)}`]);
+    res.json({ success: true, message: `${target.username} ${active ? 'activada' : 'DESACTIVADA (sesiones cerradas)'}.` });
+  } catch (e) { logger.error('[security] active: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
 });
 
 // ============================================
@@ -16706,6 +17047,10 @@ app.post('/api/admin/users/:id/verify-phone', authMiddleware, adminMiddleware, a
 
     const user = await User.findOne({ id });
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+    if (isAdminRole(user.role) && !_isGeneralAdminReq(req)) { // #245
+      _staffAudit(req, 'password_change_denied', { target: user, status: 403, details: { via: 'verify-phone' } });
+      return res.status(403).json({ error: 'Solo el administrador general puede tocar el teléfono de una cuenta del staff.' });
+    }
 
     user.phoneVerified = verified;
     if (verified) {
@@ -18519,6 +18864,10 @@ app.post('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =
       return res.status(400).json({ error: 'Rol inválido' });
     }
     
+    // #245 (owner): crean clientes SOLO el admin y el depositor (el withdrawer/comunidad no; mismo criterio que el link de acceso).
+    if (!['admin', 'depositor'].includes(adminRole)) {
+      return res.status(403).json({ error: 'Tu rol no puede crear usuarios. Pedíselo a un depositor o al admin general.' });
+    }
     // Restricciones de rol para crear usuarios
     if (adminRole !== 'admin' && role !== 'user') {
       return res.status(403).json({ error: 'Solo el administrador general puede crear otros administradores' });
