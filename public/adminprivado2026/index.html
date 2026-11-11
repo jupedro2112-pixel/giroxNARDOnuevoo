@@ -2054,23 +2054,6 @@ document.addEventListener('change', function (ev) {
                     Si cargaste el bot de Telegram de alertas, llega un aviso al instante por cada clave de staff cambiada, por cada ingreso desde una IP nueva y por cada IP compartida.
                 </div>
 
-                <!-- #232 🔐 PERMISOS POR ROL (solo el dueño de Seguridad) -->
-                <div style="background:rgba(212,175,55,0.06);border:1px solid rgba(212,175,55,0.35);border-radius:10px;padding:12px;margin-bottom:18px;">
-                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
-                        <h3 style="color:#d4af37;font-size:14px;margin:0;">🔐 Permisos por rol</h3>
-                        <span id="rolePermsStatus" style="font-size:11.5px;color:#aaa;"></span>
-                        <span style="flex:1"></span>
-                        <button class="btn btn-secondary btn-sm" onclick="toggleRolePerms()" id="rolePermsToggleBtn">▼ Ver / editar</button>
-                    </div>
-                    <div style="color:#aaa;font-size:11.5px;line-height:1.55;">
-                        Qué puede hacer cada rol. Lo de <strong>Claves y cuentas</strong>, <strong>Plata</strong> y <strong>Chats</strong> lo controla el SERVIDOR (aunque alguien toque el panel, no pasa).
-                        Las <strong>Secciones</strong> esconden la sección del menú (solo se pueden quitar respecto de lo de siempre).
-                        Reglas fijas que esta tabla no cambia: el dueño de Seguridad (PANEL_OWNER) tiene todo; la cuenta de un dueño de Seguridad solo la toca otro dueño de Seguridad; crear o convertir a alguien en ADMIN GENERAL, solo un admin general.
-                        Los cambios aplican al instante en el servidor (~15 s en las otras instancias); el panel de cada uno los muestra al recargar. Cada cambio queda en el registro y avisa por Telegram.
-                    </div>
-                    <div id="rolePermsBox" style="display:none;margin-top:10px;"></div>
-                </div>
-
                 <h3 style="color:#ef4444;font-size:14px;margin:6px 0 8px;">🚨 MISMO DISPOSITIVO usado por varias cuentas (últimos 30 días)</h3>
                 <div style="color:#999;font-size:11.5px;margin-bottom:6px;line-height:1.5;">La señal más fuerte: el mismo celular o PC entró con cuentas distintas del staff, <strong>aunque use VPN</strong> (la IP cambia, el dispositivo no). "Mismo navegador" = lo reconoció por el ID guardado en ese navegador (casi seguro). "Misma huella" = mismo equipo por sus características (pantalla, placa de video, etc.): en una oficina con PCs idénticas puede coincidir — confirmá con IP y horarios.</div>
                 <div id="securitySharedDevices" style="margin-bottom:16px;"></div>
@@ -2080,6 +2063,14 @@ document.addEventListener('change', function (ev) {
 
                 <h3 style="color:#d4af37;font-size:14px;margin:6px 0 8px;">👥 Cuentas del staff</h3>
                 <div id="securityStaff" style="overflow-x:auto;margin-bottom:18px;"></div>
+
+                <h3 style="color:#d4af37;font-size:14px;margin:6px 0 8px;">👁️ Qué ve cada tipo de admin</h3>
+                <div style="color:#999;font-size:11.5px;margin-bottom:6px;line-height:1.5;">Tildado = esa sección le aparece; destildado = se le saca del menú <strong>y el server le bloquea esa parte</strong> (aunque llame a la API a mano, queda registrado como "sección bloqueada"). Solo se puede quitar: "—" = ese tipo de cuenta nunca tuvo esa sección. Vos (dueño de Seguridad) ves todo siempre, y 🛡️ Seguridad es solo tuya. Cada cuenta ve el cambio al recargar el panel; el bloqueo del server corre en segundos.</div>
+                <div id="securityPerms" style="overflow-x:auto;margin-bottom:8px;"></div>
+                <h3 style="color:#d4af37;font-size:14px;margin:14px 0 8px;">🔐 Qué puede hacer cada tipo de admin</h3>
+                <div style="color:#999;font-size:11.5px;margin-bottom:6px;line-height:1.5;">Tildado = puede; destildado = el server se lo rechaza (y el botón desaparece). Acá <strong>sí se puede DAR</strong> lo que el tipo no tenía (ej. cambiar claves de clientes a Cargas), salvo la plata (cargar, bonos, retirar), que solo se puede quitar. <strong>⚠️ = mucho poder</strong>: con "cambiar la clave del staff / de un admin general" esa persona puede entrar a otra cuenta. La clave del dueño de Seguridad la cambia solo un dueño, siempre.</div>
+                <div id="securityActions" style="overflow-x:auto;margin-bottom:8px;"></div>
+                <div style="margin-bottom:18px;"><button class="btn btn-primary" onclick="saveSecurityPerms()" style="padding:8px 16px;">💾 Guardar permisos</button></div>
 
                 <h3 style="color:#d4af37;font-size:14px;margin:6px 0 8px;">📜 Registro</h3>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
@@ -2097,8 +2088,9 @@ document.addEventListener('change', function (ev) {
                         <option value="api">Acciones</option>
                         <option value="money">💰 Solo plata (cargas, retiros, bonos, pagos)</option>
                         <option value="session_revoke">Sesiones cerradas</option>
-                        <option value="permissions_change">🔐 Cambios de permisos por rol</option>
-                        <option value="permission_denied">🚫 Acciones sin permiso</option>
+                        <option value="permissions_change">Cambios de permisos</option>
+                        <option value="section_denied">Secciones bloqueadas</option>
+                        <option value="action_denied">Acciones sin permiso</option>
                     </select>
                     <select id="secFDays" style="padding:7px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a24;color:#fff;font-size:12.5px;">
                         <option value="1">Hoy / 24 h</option>

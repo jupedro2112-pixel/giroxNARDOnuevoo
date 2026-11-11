@@ -949,64 +949,9 @@ function _isPanelOwnerUser(u) {
   const owners = _panelOwners();
   return !!(owners.length && u && u.role === 'admin' && !u.team && owners.includes(String(u.username || '').trim().toLowerCase()));
 }
-// ============================================
-// #232 PERMISOS POR ROL editables (🛡️ Seguridad → "🔐 Permisos por rol", solo el dueño de Seguridad)
-// ============================================
-// Catálogo y defaults en src/utils/rolePermissions.js (defaults = lo que hacía el código antes ⇒ deployar no cambia nada).
-// Tabla en Config['rolePermissions'] = { perms:{key:[roles]}, sections:{key:[roles]}, updatedBy, updatedAt }.
-// Cache 15 s por instancia (las otras instancias de EB lo toman solas); al guardar se invalida en esta al instante.
-// REGLAS FIJAS que la tabla NO puede romper (anti toma de la sala):
-//   · El dueño de Seguridad (PANEL_OWNER) tiene TODO, siempre.
-//   · La cuenta de un dueño de Seguridad solo la toca (clave, teléfono, rol, edición) otro dueño de Seguridad.
-//   · Crear una cuenta ADMIN GENERAL o convertir a alguien en admin general: solo un admin general (además del permiso).
-const rolePerms = require('./src/utils/rolePermissions');
-let _rolePermsCache = { v: null, ts: 0 };
-async function _getRolePerms() {
-  const now = Date.now();
-  if (_rolePermsCache.v && (now - _rolePermsCache.ts) < 15000) return _rolePermsCache.v;
-  let saved = null;
-  try { saved = await Config.get('rolePermissions', null); } catch (e) { logger.warn('[permisos] no se pudo leer la tabla: ' + e.message); }
-  const v = rolePerms.normalize(saved);
-  _rolePermsCache = { v, ts: now };
-  return v;
-}
-function _invalidateRolePerms() { _rolePermsCache = { v: null, ts: 0 }; }
-// ¿Este request tiene el permiso `key`? (perm o sección). Desconocido / publisher_admin / cliente = NO.
-async function _can(req, key) {
-  const u = req && req.user;
-  if (!u) return false;
-  if (_isPanelOwnerUser(u)) return true;
-  if (!rolePerms.ROLES.includes(u.role)) return false;
-  return rolePerms.roleHas(await _getRolePerms(), u.role, key);
-}
-async function _canAny(req, keys) { for (const k of keys) if (await _can(req, k)) return true; return false; }
-// Middleware de ruta: reemplaza a depositorMiddleware/withdrawerMiddleware donde la tabla manda.
-function _permMw(keys, msg) {
-  const list = Array.isArray(keys) ? keys : [keys];
-  return async (req, res, next) => {
-    try {
-      if (await _canAny(req, list)) return next();
-      _staffAudit(req, 'permission_denied', { status: 403, details: { perm: list.join(',') } });
-      return res.status(403).json({ error: msg || 'Tu rol no tiene permiso para esta acción.', code: 'NO_PERMISSION', perm: list[0] });
-    } catch (e) { logger.error('[permisos] ' + e.message); return res.status(500).json({ error: 'Error del servidor' }); }
-  };
-}
-// Cuenta de un dueño de Seguridad: solo la toca otro dueño de Seguridad.
-function _isPanelOwnerTarget(target) { return !!(target && _isPanelOwnerUser(target)); }
-// Qué permiso hace falta para cambiar la clave (o tocar la cuenta) de `target`.
-function _pwdPermFor(target) {
-  const r = target && target.role;
-  if (!r || r === 'user') return 'pwd_client';
-  if (r === 'admin') return target.isOwner === true ? 'pwd_owner' : 'pwd_admin';
-  return 'pwd_staff';
-}
-async function _canTouchAccount(req, target) {
-  if (_isPanelOwnerTarget(target)) return _isPanelOwnerUser(req.user);
-  return _can(req, _pwdPermFor(target));
-}
-function _denyPasswordChange(req, res, target) {
+function _denyPasswordChange(req, res, target, msg) {
   _staffAudit(req, 'password_change_denied', { target, status: 403 });
-  return res.status(403).json({ error: 'Tu rol no tiene permiso para cambiar esta contraseña (lo define el dueño en 🛡️ Seguridad → Permisos por rol). Para un cliente usá el 🔗 link de acceso.', code: 'NO_PERMISSION' });
+  return res.status(403).json({ error: msg || 'Tu cuenta no tiene permiso para cambiar esa contraseña. Para un cliente usá el 🔗 link de acceso.' });
 }
 function _auditPasswordChange(req, target, via) {
   _staffAudit(req, 'password_change', { target, details: { via } });
@@ -1016,6 +961,227 @@ function _auditPasswordChange(req, target, via) {
   }
 }
 app.use(_staffAuditMiddleware); // #245
+
+// ============================================================================================================
+// #233 (réplica BUFFALOGIROX #249) QUÉ VE CADA TIPO DE ADMIN (lo edita SOLO el dueño de Seguridad desde 🛡️ Seguridad).
+// `Config['staffSectionAccess']` = { admin|depositor|withdrawer|comunidad: [secciones OCULTAS] }  (admin = admin general).
+// SOLO RESTA: una sección tildada vuelve a lo de siempre (lo que el rol ya podía); nunca le da a un rol algo que no tenía.
+// El dueño de Seguridad (PANEL_OWNER, `_isPanelOwnerUser`) ve TODO siempre, y 🛡️ Seguridad no se configura.
+// ⚠️ Acá "dueño" es el de SEGURIDAD; el `isOwner` de PUBLICIDAD (#221) sigue aparte (sus secciones tienen ownerMiddleware).
+// Se aplica en el MENÚ (panel) y en el SERVER: `_staffSectionGuard` (global, antes de las rutas) le devuelve 403 a las
+// rutas de una sección oculta → no alcanza con llamar la API a mano. Sección nueva del panel ⇒ sumarla a STAFF_SECTION_API.
+// Cada entrada: [prefijo, modo] — 'all' = toda la ruta y sus subrutas · 'write' = solo POST/PUT/PATCH/DELETE (el GET lo
+// usan otras partes del panel al arrancar) · 'exact' = solo ese path exacto (ej. la LISTA de usuarios; /users/:id lo usa el chat).
+// ============================================================================================================
+const STAFF_PERM_KEYS = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+const STAFF_SECTION_API = {
+  chats: [['/api/admin/conversations', 'all'], ['/api/admin/chats', 'all'], ['/api/admin/chat-status', 'all'], ['/api/admin/close-chat', 'all'], ['/api/admin/send-to-open', 'all'], ['/api/admin/send-to-payments', 'all'], ['/api/admin/send-to-community', 'all']],
+  chatDelays: [['/api/admin/chat-delays', 'all']],
+  users: [['/api/admin/users', 'exact'], ['/api/admin/users/export', 'all']],
+  transactions: [['/api/admin/transactions', 'all']],
+  fraud: [['/api/admin/fraud', 'all']],
+  commands: [['/api/admin/commands', 'write'], ['/api/admin/config', 'write'], ['/api/admin/features', 'write'], ['/api/admin/registration-mode', 'write'],
+    ['/api/admin/bonus-rollover', 'write'], ['/api/admin/bonus-cap', 'write'], ['/api/admin/install-bonus-config', 'write'], ['/api/admin/instant-cashback', 'write'],
+    ['/api/admin/refund-percents', 'write'], ['/api/admin/refund-tiers', 'write'], ['/api/admin/vip-levels', 'write'], ['/api/admin/fire-milestones', 'write'],
+    ['/api/admin/community-code', 'write'], ['/api/admin/community', 'write'], ['/api/admin/owners', 'write']],
+  banksConfig: [['/api/admin/hgcash', 'write'], ['/api/admin/cbu', 'write']],
+  datos: [['/api/admin/datos', 'all']],
+  datos2: [['/api/admin/datos2', 'all']],
+  datosIa: [['/api/admin/datos-ia', 'all'], ['/api/admin/datos-ia-pin', 'all']],
+  centralIngresos: [['/api/admin/central/ingresos', 'all']],
+  centralAppUsers: [['/api/admin/central/app-users', 'all']],
+  centralWelcomeBonus: [['/api/admin/central/welcome-bonus', 'all']],
+  suspiciousAccounts: [['/api/admin/suspicious-accounts', 'all']],
+  reembolsos: [['/api/admin/reembolsos', 'all']],
+  cronograma: [['/api/admin/cronograma', 'all'], ['/api/admin/cronograma-autopilot', 'all'], ['/api/admin/cronograma-report', 'all']],
+  cronohist: [['/api/admin/stories-autopilot', 'all']],
+  notifCenter: [['/api/admin/notif-center', 'all']],
+  weeklyReview: [['/api/admin/weekly-review', 'all']],
+  roulette: [['/api/admin/roulette', 'all'], ['/api/admin/daily-roulette', 'write']],
+  stories: [['/api/admin/stories', 'all']],
+  reviews: [['/api/admin/reviews', 'all']],
+  referrals: [['/api/referrals/admin', 'all']],
+  campaigns: [['/api/admin/campaigns', 'all'], ['/api/admin/influencer-stories', 'all'], ['/api/admin/influencer-users', 'all'], ['/api/admin/publishers', 'write']],
+  publisherAdmins: [['/api/admin/publisher-admins', 'all']],
+  publishersDashboard: [['/api/admin/publishers/dashboard', 'all'], ['/api/admin/publishers/ranking', 'all']],
+  sms: [['/api/admin/bulk-sms', 'all'], ['/api/admin/soporte-vip', 'all'], ['/api/admin/verify-sms-password', 'all']],
+  notifications: [['/api/notifications/send-batch', 'all'], ['/api/notifications/send-to-tag', 'all'], ['/api/notifications/templates', 'all'],
+    ['/api/notifications/strategy', 'all'], ['/api/notifications/users-status', 'all'], ['/api/notifications/batch-status', 'all'],
+    ['/api/notifications/verify-tokens', 'all'], ['/api/admin/notif-batches', 'all'], ['/api/admin/send-notification', 'all']],
+  encuesta: [['/api/admin/encuesta', 'all']],
+  inactivos: [['/api/admin/inactividad', 'all'], ['/api/admin/reactivacion', 'all']],
+  automations: [['/api/admin/notification-rules', 'all']],
+  bonusStrategy: [['/api/admin/bonus-strategy', 'all']]
+};
+// Lo que cada tipo PUEDE ver de base (lo de siempre, por código). El panel no deja tildar fuera de esto.
+const _ADMIN_ONLY_SECTIONS = ['chatDelays', 'banksConfig', 'publisherAdmins', 'publishersDashboard', 'sms'];
+function _staffBaseSections(key) {
+  const all = Object.keys(STAFF_SECTION_API);
+  if (key === 'admin') return all;
+  let out = all.filter((s) => !_ADMIN_ONLY_SECTIONS.includes(s));
+  if (key === 'withdrawer') out = out.filter((s) => s !== 'users');
+  return out;
+}
+function _staffPermKey(u) {
+  if (!u || !STAFF_PERM_KEYS.includes(u.role)) return null;
+  return u.role;
+}
+function _sanitizeStaffAccess(v) {
+  const out = {};
+  const src = (v && typeof v === 'object') ? v : {};
+  for (const k of STAFF_PERM_KEYS) {
+    const arr = Array.isArray(src[k]) ? src[k] : [];
+    out[k] = [...new Set(arr.map(String).filter((s) => Object.prototype.hasOwnProperty.call(STAFF_SECTION_API, s)))];
+  }
+  return out;
+}
+// Cache corto (15 s): corre en cada request a una ruta de sección; con varias instancias el cambio llega a todas en ≤15 s.
+let _staffAccessCache = { at: 0, val: null };
+async function _getStaffAccess(force) {
+  if (!force && _staffAccessCache.val && Date.now() - _staffAccessCache.at < 15000) return _staffAccessCache.val;
+  let v = null;
+  try { v = await getConfig('staffSectionAccess', null); } catch (_) { v = _staffAccessCache.val; }
+  const val = _sanitizeStaffAccess(v);
+  _staffAccessCache = { at: Date.now(), val };
+  return val;
+}
+// ============================================================================================================
+// #233 (réplica BUFFALOGIROX #250) QUÉ PUEDE HACER cada tipo de admin (acciones; lo edita SOLO el dueño de Seguridad).
+// `Config['staffActionPerms']` = { acción: [tipos que pueden] } (acción sin guardar = `def`, lo de siempre).
+//   grant:true  → el dueño la puede DAR a un tipo que no la tenía (ej. cambiar claves de clientes al depositor).
+//   grant:false → solo se puede QUITAR (plata: cargar/bono/retirar — el chat arma sus botones por rol, y "carga y retira el mismo"
+//                 es justo el fraude del #231).
+// Fijo, no configurable: la clave de un DUEÑO de Seguridad solo la cambia un dueño (si no, el que cambia esa clave entra como dueño
+// y se da todos los permisos), y una cuenta que no es admin general nunca crea un ADMIN general aunque tenga "crear staff".
+// Ruta nueva que haga una de estas acciones ⇒ `await _canDo(req.user, '<acción>')`. Acción nueva ⇒ sumarla acá + etiqueta en el panel.
+// ============================================================================================================
+const STAFF_ACTIONS = {
+  pwd_client:    { def: ['admin'], grant: true },
+  pwd_staff:     { def: ['admin'], grant: true },
+  pwd_admin:     { def: ['admin'], grant: true },
+  access_link:   { def: ['admin', 'depositor'], grant: true },
+  login_no_pwd:  { def: ['admin', 'depositor'], grant: true },
+  block:         { def: ['admin', 'depositor'], grant: true },
+  create_client: { def: ['admin', 'depositor'], grant: true },
+  create_staff:  { def: ['admin'], grant: true },
+  export_csv:    { def: ['admin'], grant: true },
+  deposit:       { def: ['admin', 'depositor', 'comunidad'], grant: false },
+  bonus:         { def: ['admin', 'depositor', 'comunidad'], grant: false },
+  withdraw:      { def: ['admin', 'withdrawer'], grant: false }
+};
+/** Tipos que el panel deja tildar para esa acción (los demás salen "—"). */
+function _actionEditableKeys(action) {
+  const A = STAFF_ACTIONS[action];
+  return STAFF_PERM_KEYS.filter((k) => A.grant || A.def.includes(k));
+}
+function _sanitizeStaffActions(v) {
+  const out = {};
+  const src = (v && typeof v === 'object') ? v : {};
+  for (const a of Object.keys(STAFF_ACTIONS)) {
+    if (!Array.isArray(src[a])) continue; // sin guardar = lo de siempre
+    const ok = _actionEditableKeys(a);
+    out[a] = [...new Set(src[a].map(String).filter((k) => ok.includes(k)))];
+  }
+  return out;
+}
+let _staffActionsCache = { at: 0, val: null };
+async function _getStaffActions(force) {
+  if (!force && _staffActionsCache.val && Date.now() - _staffActionsCache.at < 15000) return _staffActionsCache.val;
+  let v = null;
+  try { v = await getConfig('staffActionPerms', null); } catch (_) { v = _staffActionsCache.val; }
+  const val = _sanitizeStaffActions(v);
+  _staffActionsCache = { at: Date.now(), val };
+  return val;
+}
+function _actionAllowedKeys(cfg, action) {
+  return Array.isArray(cfg[action]) ? cfg[action] : STAFF_ACTIONS[action].def;
+}
+/** ¿Esta cuenta puede hacer la acción? `u` = req.user (JWT: userId, username, role) o un doc/lean de User. */
+async function _canDo(u, action) {
+  const A = STAFF_ACTIONS[action];
+  if (!u || !A) return false;
+  if (_isPanelOwnerUser(u)) return true;
+  const key = _staffPermKey(u);
+  if (!key) return false;
+  const allowed = _actionAllowedKeys(await _getStaffActions(), action);
+  if (!A.grant && !A.def.includes(key)) return false;
+  return allowed.includes(key);
+}
+/** { acción: bool } para el panel (login y /api/admin/me): arma los botones. El server igual lo vuelve a chequear. */
+async function _permsFor(u) {
+  const out = {};
+  for (const a of Object.keys(STAFF_ACTIONS)) out[a] = await _canDo(u, a);
+  return out;
+}
+/** Cambio de clave de `target` por `req.user`: null = puede; si no, el motivo. */
+async function _pwdChangeDenied(req, target) {
+  if (!target) return null;
+  if (_isPanelOwnerUser(target)) return _isPanelOwnerUser(req.user) ? null : 'La clave del dueño de Seguridad solo la cambia un dueño.';
+  const action = target.role === 'user' ? 'pwd_client' : (target.role === 'admin' ? 'pwd_admin' : 'pwd_staff');
+  if (await _canDo(req.user, action)) return null;
+  return action === 'pwd_client'
+    ? 'Tu cuenta no tiene permiso para cambiar claves de clientes. Usá el 🔗 link de acceso.'
+    : action === 'pwd_admin' ? 'Tu cuenta no tiene permiso para cambiar la clave de un admin general.'
+      : 'Tu cuenta no tiene permiso para cambiar claves del staff.';
+}
+/** Middleware para las rutas de plata (después del de rol de siempre). */
+function _capMw(action, msg) {
+  return async (req, res, next) => {
+    try {
+      if (await _canDo(req.user, action)) return next();
+      _staffAudit(req, 'action_denied', { status: 403, details: { action } });
+      return res.status(403).json({ error: msg || 'Tu cuenta no tiene permiso para esto.', code: 'ACTION_DENIED', action });
+    } catch (e) { logger.warn('[staff-actions] ' + e.message); return res.status(500).json({ error: 'Error del servidor' }); }
+  };
+}
+
+/** Secciones ocultas para esta cuenta ([] para el dueño de Seguridad, clientes y publisher_admin). */
+async function _hiddenSectionsFor(u) {
+  const key = _staffPermKey(u);
+  if (!key || _isPanelOwnerUser(u)) return [];
+  const cfg = await _getStaffAccess();
+  return cfg[key] || [];
+}
+function _sectionsForPath(method, p) {
+  const write = !['GET', 'HEAD', 'OPTIONS'].includes(String(method || 'GET').toUpperCase());
+  const out = [];
+  for (const [sec, list] of Object.entries(STAFF_SECTION_API)) {
+    for (const [prefix, mode] of list) {
+      const hit = mode === 'exact' ? p === prefix || p === prefix + '/' : (p === prefix || p.startsWith(prefix + '/'));
+      if (hit && (mode !== 'write' || write)) { out.push(sec); break; }
+    }
+  }
+  return out;
+}
+async function _staffSectionGuard(req, res, next) {
+  try {
+    const p = String(req.originalUrl || req.url || '').split('?')[0];
+    if (!p.startsWith('/api/') || req.method === 'OPTIONS') return next();
+    const secs = _sectionsForPath(req.method, p);
+    if (!secs.length) return next();
+    const cfg = await _getStaffAccess();
+    if (!STAFF_PERM_KEYS.some((k) => (cfg[k] || []).some((s) => secs.includes(s)))) return next(); // nadie la tiene oculta
+    let token = req.headers.authorization?.split(' ')[1];
+    if (!token) token = getAdminApiSessionCookie(req) || null;
+    if (!token || !JWT_SECRET) return next(); // la ruta responde su 401 de siempre
+    let decoded;
+    try { decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }); } catch (_) { return next(); }
+    let u = await User.findOne({ id: decoded.userId }).select('id username role').lean();
+    if (!u) { try { u = await User.findById(decoded.userId).select('id username role').lean(); } catch (_) { u = null; } }
+    if (!u) return next();
+    const key = _staffPermKey(u);
+    if (!key || _isPanelOwnerUser(u)) return next();
+    const hidden = cfg[key] || [];
+    const blocked = secs.find((s) => hidden.includes(s));
+    if (!blocked) return next();
+    _staffAudit(req, 'section_denied', { status: 403, actor: { userId: u.id, username: u.username, role: u.role, team: null }, details: { section: blocked } });
+    return res.status(403).json({ error: 'No tenés permiso para esta sección.', code: 'SECTION_HIDDEN', section: blocked });
+  } catch (e) {
+    logger.warn('[staff-access] guard: ' + e.message);
+    return next(); // nunca tumba el panel: la ruta sigue con sus permisos de siempre
+  }
+}
+app.use(_staffSectionGuard); // #233 (réplica #249)
 
 // Rutas que un publisher_admin puede tocar. Cualquier otra ruta devuelve 403.
 // El authMiddleware aplica este lockdown sólo para ese rol; admin / depositor /
@@ -4827,7 +4993,8 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
         canSeePublicity: isAdminRole(userObj.role) ? await canSeePublicity({ role: userObj.role, isOwner: userObj.isOwner === true }) : false,
         ownersConfigured: isAdminRole(userObj.role) ? await ownersConfigured() : false,
         isPanelOwner: _isPanelOwnerUser(userObj), // #231 (réplica #245b): dueño de 🛡️ Seguridad = PANEL_OWNER de SSM (≠ isOwner de Publicidad)
-        rolePerms: isAdminRole(userObj.role) ? rolePerms.forRole(await _getRolePerms(), userObj.role, _isPanelOwnerUser(userObj)) : null, // #232
+        hiddenSections: await _hiddenSectionsFor(userObj), // #233 (réplica #249)
+        perms: await _permsFor(userObj), // #233 (réplica #250)
         // Leemos del doc vivo `user` (no del snapshot `userObj`) para reflejar
         // la auto-limpieza recién hecha. Sólo queda true si un admin reseteó
         // manualmente la contraseña a una nueva (distinta de "asd123").
@@ -5007,7 +5174,8 @@ app.get('/api/admin/me', async (req, res) => {
         canSeePublicity: await canSeePublicity({ role: user.role, isOwner: user.isOwner === true }),
         ownersConfigured: await ownersConfigured(),
         isPanelOwner: _isPanelOwnerUser(user), // #231 (réplica #245b): dueño de 🛡️ Seguridad = PANEL_OWNER de SSM
-        rolePerms: isAdminRole(user.role) ? rolePerms.forRole(await _getRolePerms(), user.role, _isPanelOwnerUser(user)) : null // #232 lo que ve el panel
+        hiddenSections: await _hiddenSectionsFor(user), // #233 (réplica #249)
+        perms: await _permsFor(user) // #233 (réplica #250)
       },
       token: freshToken
     });
@@ -6190,8 +6358,7 @@ app.post('/api/admin/verify-sms-password', authMiddleware, async (req, res) => {
 
 app.post('/api/admin/users/:id/reset-password', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    // Resetear contraseñas: #232 según la tabla de permisos y a QUIÉN (cliente / staff / admin / dueño). Antes (#245): solo admin general.
-    if (!rolePerms.ROLES.includes(req.user.role) && !_isPanelOwnerUser(req.user)) return _denyPasswordChange(req, res, { id: req.params.id });
+    // #233 (réplica #250): quién cambia qué clave lo decide el dueño de Seguridad (default: solo el admin general, #231).
     const { id } = req.params;
     const { newPassword } = req.body;
     
@@ -6204,7 +6371,7 @@ app.post('/api/admin/users/:id/reset-password', authMiddleware, adminMiddleware,
     if (!user) {
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
-    if (!(await _canTouchAccount(req, user))) return _denyPasswordChange(req, res, user); // #232
+    { const why = await _pwdChangeDenied(req, user); if (why) return _denyPasswordChange(req, res, user, why); }
     
     user.password = newPassword;
     user.passwordChangedAt = new Date();
@@ -6772,13 +6939,11 @@ app.get('/api/admin/girox/test-sso', authMiddleware, adminMiddleware, async (req
 app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    // #245: antes cualquier staff le cambiaba el TELÉFONO a la cuenta de otro admin y con el SMS entraba a esa cuenta.
-    // #232: hace falta el permiso "Editar cuentas" Y, si la cuenta es de staff/admin/dueño, el mismo permiso que para
-    // cambiarle la clave (la cuenta de un dueño de Seguridad solo la toca otro dueño de Seguridad). El panel no usa este endpoint.
-    const _putTarget = await User.findOne({ id }).select('id username role isOwner').lean().catch(() => null);
-    if (!(await _can(req, 'edit_account')) || (_putTarget && isAdminRole(_putTarget.role) && !(await _canTouchAccount(req, _putTarget)))) {
-      _staffAudit(req, 'password_change_denied', { target: _putTarget || { id }, status: 403, details: { via: 'put-users', fields: Object.keys(req.body || {}).slice(0, 10) } });
-      return res.status(403).json({ error: 'Tu rol no tiene permiso para editar esta cuenta.', code: 'NO_PERMISSION' });
+    // #245: SOLO el admin general. Antes cualquier staff le cambiaba el TELÉFONO a la cuenta de otro admin y con el
+    // SMS entraba a esa cuenta. El panel no usa este endpoint.
+    if (!_isGeneralAdminReq(req)) {
+      _staffAudit(req, 'password_change_denied', { target: { id }, status: 403, details: { via: 'put-users', fields: Object.keys(req.body || {}).slice(0, 10) } });
+      return res.status(403).json({ error: 'Solo el administrador general puede editar cuentas.' });
     }
 
     // Whitelist of fields any admin role can update
@@ -6820,11 +6985,13 @@ app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
     // request. El cambio de ROL ya estaba protegido; el de contraseña no.
     // Verificado que el panel NO usa este endpoint (usa /api/admin/change-password).
     if (req.body.password) {
-      // #232: según la tabla y a quién (cliente / staff / admin / dueño).
-      if (!(await _canTouchAccount(req, _putTarget || { id }))) return _denyPasswordChange(req, res, _putTarget || { id });
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Solo el administrador principal puede cambiar contraseñas desde acá' });
+      }
       updates.password = await bcrypt.hash(String(req.body.password), 10);
       updates.passwordChangedAt = new Date();
-      _auditPasswordChange(req, _putTarget || { id }, 'put-users'); // #245
+      const _tgt = await User.findOne({ id }).select('id username role').lean().catch(() => null);
+      _auditPasswordChange(req, _tgt || { id }, 'put-users'); // #245
     }
 
     if (Object.keys(updates).length === 0) {
@@ -9143,7 +9310,7 @@ async function getGiroxBonusMultiplier() {
   return envOk ? envVal : 0;
 }
 
-app.post('/api/admin/deposit', authMiddleware, adminMiddleware, _permMw('deposit', 'Tu rol no tiene permiso para cargar fichas.'), async (req, res) => {
+app.post('/api/admin/deposit', authMiddleware, depositorMiddleware, _capMw('deposit', 'Tu cuenta no tiene permiso para cargar.'), async (req, res) => {
   try {
     const { userId, username, amount, bonus = 0, description } = req.body;
     
@@ -9631,7 +9798,7 @@ app.get('/api/admin/balance/:username', authMiddleware, adminMiddleware, async (
   }
 });
 
-app.post('/api/admin/withdrawal', authMiddleware, adminMiddleware, _permMw('withdraw', 'Tu rol no tiene permiso para retirar fichas.'), async (req, res) => {
+app.post('/api/admin/withdrawal', authMiddleware, withdrawerMiddleware, _capMw('withdraw', 'Tu cuenta no tiene permiso para retirar.'), async (req, res) => {
   try {
     const { userId, username, amount, description } = req.body;
     
@@ -9791,7 +9958,7 @@ app.post('/api/admin/withdrawal', authMiddleware, adminMiddleware, _permMw('with
   }
 });
 
-app.post('/api/admin/bonus', authMiddleware, adminMiddleware, _permMw('bonus', 'Tu rol no tiene permiso para dar bonificaciones.'), async (req, res) => {
+app.post('/api/admin/bonus', authMiddleware, depositorMiddleware, _capMw('bonus', 'Tu cuenta no tiene permiso para dar bonos.'), async (req, res) => {
   try {
     const { username: rawUsername, userId: rawUserId, amount } = req.body;
 
@@ -14433,6 +14600,7 @@ app.put('/api/admin/publisher-admins/:id', authMiddleware, adminMiddleware, owne
     if (typeof email === 'string') target.email = email.trim() || null;
     if (typeof phone === 'string') target.phone = phone.trim() || null;
     if (password) {
+      { const why = await _pwdChangeDenied(req, target); if (why) return _denyPasswordChange(req, res, target, why); } // #233 (réplica #250)
       if (!validatePassword(password)) {
         return res.status(400).json({ error: 'La contraseña debe tener entre 6 y 100 caracteres' });
       }
@@ -15987,9 +16155,10 @@ app.post('/api/admin/change-password', authMiddleware, adminMiddleware, async (r
     // enumeraban 'withdrawer' y 'depositor', y el rol 'comunidad' —creado
     // después— caía al else SIN restricción → podía cambiarle la contraseña al
     // ADMIN GENERAL y tomar la sala. Ahora solo pasan los roles previstos.
-    // #245 (owner 2026-11-11): solo el admin general. #232: ahora lo decide la tabla de permisos según a QUIÉN
-    // (cliente / staff / admin / dueño de Publicidad); la cuenta de un dueño de Seguridad solo la cambia otro dueño de Seguridad.
-    if (!(await _canTouchAccount(req, user))) return _denyPasswordChange(req, res, user);
+    // #245 (owner 2026-11-11): SOLO el admin general (rol admin sin equipo). Antes el depositor podía cambiar la
+    // clave de los clientes; ahora ningún depositor/withdrawer/comunidad/cajero de equipo cambia claves.
+    // #233 (réplica #250): lo decide el dueño de Seguridad → Qué puede hacer cada tipo (default: solo el admin general).
+    { const why = await _pwdChangeDenied(req, user); if (why) return _denyPasswordChange(req, res, user, why); }
 
     user.password = newPassword;
     user.passwordChangedAt = new Date();
@@ -16212,44 +16381,48 @@ app.post('/api/admin/security/staff/:id/active', authMiddleware, adminMiddleware
     res.json({ success: true, message: `${target.username} ${active ? 'activada' : 'DESACTIVADA (sesiones cerradas)'}.` });
   } catch (e) { logger.error('[security] active: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
 });
-
-// #232 🔐 PERMISOS POR ROL — ver y editar la tabla (SOLO el dueño de Seguridad, `_secOnly`).
-app.get('/api/admin/role-permissions', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+// #233 (réplica #249/#250) Qué ve / qué puede hacer cada tipo de admin (solo el dueño de Seguridad).
+// GET = matriz actual; PUT { hidden: { admin:[…], depositor:[…], … }, actions?: { acción: [tipos que pueden] } }.
+app.get('/api/admin/security/permissions', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
   try {
-    const saved = await Config.get('rolePermissions', null).catch(() => null);
-    res.json({
-      catalog: rolePerms.catalog(),
-      matrix: rolePerms.normalize(saved),
-      defaults: rolePerms.defaults(),
-      customized: !!(saved && (saved.perms || saved.sections)),
-      updatedBy: (saved && saved.updatedBy) || null,
-      updatedAt: (saved && saved.updatedAt) || null,
-      owners: _panelOwners()
-    });
-  } catch (e) { logger.error('[permisos] get: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+    const hidden = await _getStaffAccess(true);
+    const base = {}; for (const k of STAFF_PERM_KEYS) base[k] = _staffBaseSections(k);
+    const acfg = await _getStaffActions(true);
+    const actions = Object.keys(STAFF_ACTIONS).map((a) => ({ key: a, grant: STAFF_ACTIONS[a].grant, editable: _actionEditableKeys(a), allowed: _actionAllowedKeys(acfg, a), def: STAFF_ACTIONS[a].def }));
+    res.json({ keys: STAFF_PERM_KEYS, sections: Object.keys(STAFF_SECTION_API), base, hidden, actions });
+  } catch (e) { logger.error('[security] permissions get: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
 });
-// Body: { perms:{key:[roles]}, sections:{key:[roles]} } o { reset:true } (vuelve a lo de siempre).
-app.post('/api/admin/role-permissions', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
+app.put('/api/admin/security/permissions', authMiddleware, adminMiddleware, _secOnly, async (req, res) => {
   try {
-    const before = await _getRolePerms();
-    const reset = !!(req.body && req.body.reset === true);
-    const next = reset ? rolePerms.defaults() : rolePerms.normalize({ perms: req.body && req.body.perms, sections: req.body && req.body.sections });
-    const changes = rolePerms.diff(before, next);
-    if (reset) await Config.deleteOne({ key: 'rolePermissions' });
-    else await Config.set('rolePermissions', { perms: next.perms, sections: next.sections, updatedBy: req.user.username, updatedAt: new Date() }, req.user.username);
-    _invalidateRolePerms();
-    _staffAudit(req, 'permissions_change', { details: { reset, changes: changes.slice(0, 40).map((c) => `${c.key}${c.added.length ? ' +' + c.added.join('+') : ''}${c.removed.length ? ' -' + c.removed.join('-') : ''}`) } });
-    if (changes.length) {
-      const nm = (r) => rolePerms.ROLE_LABELS[r] || r;
-      _staffSecurityAlert([
-        `Permisos por rol ${reset ? 'VUELTOS A LO DE SIEMPRE' : 'CAMBIADOS'} por ${req.user.username} · IP ${_reqIp(req)}`,
-        ...changes.slice(0, 15).map((c) => `• ${c.label}: ${c.added.length ? '✅ ' + c.added.map(nm).join(', ') : ''}${c.added.length && c.removed.length ? ' · ' : ''}${c.removed.length ? '⛔ ' + c.removed.map(nm).join(', ') : ''}`),
-        changes.length > 15 ? `… y ${changes.length - 15} cambios más` : null
-      ].filter(Boolean));
+    const before = await _getStaffAccess(true);
+    const next = _sanitizeStaffAccess(req.body && req.body.hidden);
+    // Lo que el rol no podía ver de base no se guarda (no hay nada que ocultar).
+    for (const k of STAFF_PERM_KEYS) { const b = _staffBaseSections(k); next[k] = next[k].filter((s) => b.includes(s)); }
+    await setConfig('staffSectionAccess', next);
+    _staffAccessCache = { at: Date.now(), val: next };
+    const changes = [];
+    for (const k of STAFF_PERM_KEYS) {
+      const off = next[k].filter((s) => !(before[k] || []).includes(s));
+      const on = (before[k] || []).filter((s) => !next[k].includes(s));
+      if (off.length || on.length) changes.push(`${k}: ${off.length ? 'oculta ' + off.join(',') : ''}${off.length && on.length ? ' · ' : ''}${on.length ? 'vuelve ' + on.join(',') : ''}`);
     }
-    res.json({ success: true, changes: changes.length, matrix: next, message: changes.length ? `Permisos guardados (${changes.length} cambio${changes.length === 1 ? '' : 's'}). Las otras instancias lo toman en ~15 s; cada cuenta lo ve en el panel al recargar.` : 'Sin cambios.' });
-  } catch (e) { logger.error('[permisos] post: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
+    if (req.body && req.body.actions && typeof req.body.actions === 'object') {
+      const abefore = await _getStaffActions(true);
+      const anext = _sanitizeStaffActions(req.body.actions);
+      for (const a of Object.keys(STAFF_ACTIONS)) {
+        const was = _actionAllowedKeys(abefore, a); const now = _actionAllowedKeys(anext, a);
+        const on = now.filter((k) => !was.includes(k)); const off = was.filter((k) => !now.includes(k));
+        if (on.length || off.length) changes.push(`${a}: ${on.length ? 'DA a ' + on.join(',') : ''}${on.length && off.length ? ' · ' : ''}${off.length ? 'saca a ' + off.join(',') : ''}`);
+      }
+      await setConfig('staffActionPerms', anext);
+      _staffActionsCache = { at: Date.now(), val: anext };
+    }
+    _staffAudit(req, 'permissions_change', { status: 200, details: { changes } });
+    if (changes.length) _staffSecurityAlert([`Permisos del panel cambiados por ${req.user.username}`, ...changes, `IP: ${_reqIp(req)}`]);
+    res.json({ success: true, hidden: next, message: changes.length ? 'Permisos guardados. Cada cuenta lo ve al recargar el panel (el server ya lo bloquea).' : 'Sin cambios.' });
+  } catch (e) { logger.error('[security] permissions put: ' + e.message); res.status(500).json({ error: 'Error del servidor' }); }
 });
+
 
 // ============================================
 // BLOQUEO / DESBLOQUEO DE USUARIOS
@@ -17080,8 +17253,8 @@ app.post('/api/admin/users/:id/block', authMiddleware, adminMiddleware, async (r
 
     // Pueden bloquear: admin general y depositor (los que están en el chat).
     // Withdrawer no, para no darle a una sola persona poder de cortar accesos.
-    if (!(await _can(req, 'block_user'))) { // #232 tabla de permisos (default: admin y depositor)
-      return res.status(403).json({ error: 'No tenés permiso para bloquear usuarios.', code: 'NO_PERMISSION' });
+    if (!(await _canDo(req.user, 'block'))) { // #233 (réplica #250)
+      return res.status(403).json({ error: 'No tenés permiso para bloquear usuarios.' });
     }
 
     if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
@@ -17113,8 +17286,8 @@ app.post('/api/admin/users/:id/block', authMiddleware, adminMiddleware, async (r
 app.post('/api/admin/users/:id/unblock', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    if (!(await _can(req, 'block_user'))) { // #232 tabla de permisos (default: admin y depositor)
-      return res.status(403).json({ error: 'No tenés permiso para desbloquear usuarios.', code: 'NO_PERMISSION' });
+    if (!(await _canDo(req.user, 'block'))) { // #233 (réplica #250)
+      return res.status(403).json({ error: 'No tenés permiso para desbloquear usuarios.' });
     }
     const user = await User.findOne({ id });
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
@@ -17143,10 +17316,9 @@ app.post('/api/admin/users/:id/verify-phone', authMiddleware, adminMiddleware, a
 
     const user = await User.findOne({ id });
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
-    // #245/#232: teléfono de una cuenta de STAFF = mismo poder que cambiarle la clave; el de un CLIENTE = permiso verify_phone.
-    if (isAdminRole(user.role) ? !(await _canTouchAccount(req, user)) : !(await _can(req, 'verify_phone'))) {
+    if (isAdminRole(user.role) && !_isGeneralAdminReq(req)) { // #245
       _staffAudit(req, 'password_change_denied', { target: user, status: 403, details: { via: 'verify-phone' } });
-      return res.status(403).json({ error: 'Tu rol no tiene permiso para tocar el teléfono de esta cuenta.', code: 'NO_PERMISSION' });
+      return res.status(403).json({ error: 'Solo el administrador general puede tocar el teléfono de una cuenta del staff.' });
     }
 
     user.phoneVerified = verified;
@@ -17175,8 +17347,8 @@ app.post('/api/admin/users/:id/login-without-password', authMiddleware, adminMid
   // access-link): esto DESACTIVA la contraseña de un cliente. Un withdrawer o
   // comunidad podía activarlo, entrar como ese cliente y pedir un retiro a su
   // propio CBU.
-  if (!(await _can(req, 'login_nopass'))) { // #232 tabla de permisos (default: admin y depositor)
-    return res.status(403).json({ error: 'No tenés permiso para habilitar el inicio sin clave.', code: 'NO_PERMISSION' });
+  if (!(await _canDo(req.user, 'login_no_pwd'))) { // #233 (réplica #250)
+    return res.status(403).json({ error: 'No tenés permiso para habilitar el inicio sin clave.' });
   }
   try {
     const { id } = req.params;
@@ -17527,14 +17699,16 @@ app.get('/api/admin/conversations', authMiddleware, adminMiddleware, async (req,
     
     const userRole = req.user.role;
     
-    // #232: qué pestaña ve cada rol lo decide la tabla de permisos. Defaults = lo de antes: depositor abiertos/cerrados;
-    // comunidad abiertos/cerrados/comunidad; withdrawer solo pagos; admin todo.
-    const _TAB_PERM = { open: 'tab_open', closed: 'tab_closed', payments: 'tab_payments', comunidad: 'tab_comunidad' };
-    if (_TAB_PERM[status]) {
-      if (!(await _can(req, _TAB_PERM[status]))) {
-        return res.status(403).json({ error: 'Acceso denegado: tu rol no ve esa pestaña de chats.', code: 'NO_PERMISSION' });
-      }
-    } else if (userRole === 'withdrawer') {
+    // Depositor: ve abiertos/cerrados; NO pagos NI comunidad.
+    if (userRole === 'depositor' && (status === 'payments' || status === 'comunidad')) {
+      return res.status(403).json({ error: 'Acceso denegado.' });
+    }
+    // Comunidad: ve abiertos/cerrados/comunidad; NO pagos.
+    if (userRole === 'comunidad' && status === 'payments') {
+      return res.status(403).json({ error: 'Acceso denegado. Comunidad no puede ver pagos.' });
+    }
+
+    if (userRole === 'withdrawer' && status !== 'payments') {
       return res.status(403).json({ error: 'Acceso denegado. Los withdrawers solo pueden ver chats de pagos.' });
     }
     
@@ -18120,8 +18294,8 @@ app.post('/api/admin/users/:userId/access-link', authMiddleware, adminMiddleware
   try {
     // Admin general y depositor (decisión del owner 2026-08-03: los depositors
     // también dan de alta clientes). withdrawer/comunidad/publisher_admin NO.
-    if (!(await _can(req, 'access_link'))) { // #232 tabla de permisos (default: admin y depositor)
-      return res.status(403).json({ error: 'Tu rol no tiene permiso para generar links de acceso.', code: 'NO_PERMISSION' });
+    if (!(await _canDo(req.user, 'access_link'))) { // #233 (réplica #250; default: admin general y depositor)
+      return res.status(403).json({ error: 'Tu cuenta no tiene permiso para generar links de acceso.' });
     }
     const { userId } = req.params;
     const user = await User.findOne({ id: userId }).select('id username role isBlocked').lean();
@@ -18267,7 +18441,7 @@ async function resolveHgcashAccountId({ force = false } = {}) {
 }
 
 // Listar pagos pendientes (para la sección Pagos / banner del chat). Opcional ?userId= o ?status=.
-app.get('/api/admin/payouts', authMiddleware, adminMiddleware, _permMw(['payout_pay', 'payout_cancel'], 'Tu rol no tiene permiso para ver los retiros pendientes.'), async (req, res) => {
+app.get('/api/admin/payouts', authMiddleware, withdrawerMiddleware, async (req, res) => {
   try {
     const q = {};
     if (req.query.userId) q.userId = String(req.query.userId);
@@ -18401,7 +18575,7 @@ async function _deductChipsAtConfirm(payout, agentUser) {
 }
 
 // El agente CONFIRMA el pago → se ejecuta el cash-out automático en hgcash.
-app.post('/api/admin/payouts/:id/pay', authMiddleware, adminMiddleware, _permMw('payout_pay', 'Tu rol no tiene permiso para pagar retiros.'), async (req, res) => {
+app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _capMw('withdraw', 'Tu cuenta no tiene permiso para retirar ni pagar retiros.'), async (req, res) => {
   try {
     const { id } = req.params;
     if (!hgcashPay.isEnabled()) {
@@ -18536,7 +18710,7 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, adminMiddleware, _permMw(
 
 // El agente RECHAZA el pago: NO se paga y se le DEVUELVEN las fichas al cliente
 // (re-crédito en JUGAYGANA, ya que el self-retiro se las había descontado).
-app.post('/api/admin/payouts/:id/cancel', authMiddleware, adminMiddleware, _permMw('payout_cancel', 'Tu rol no tiene permiso para rechazar retiros.'), async (req, res) => {
+app.post('/api/admin/payouts/:id/cancel', authMiddleware, withdrawerMiddleware, _capMw('withdraw', 'Tu cuenta no tiene permiso para retirar ni pagar retiros.'), async (req, res) => {
   try {
     const { id } = req.params;
     // Reclamo atómico: sólo procede uno (evita doble devolución si dos agentes tocan a la vez).
@@ -18680,7 +18854,7 @@ app.post('/api/admin/payouts/:id/cancel', authMiddleware, adminMiddleware, _perm
 
 // El agente paga el retiro DESDE OTRO BANCO (manual, fuera de hgcash): se marca como
 // pagado SIN devolver fichas y SIN llamar a hgcash. Manda el aviso de "pago enviado".
-app.post('/api/admin/payouts/:id/pay-other-bank', authMiddleware, adminMiddleware, _permMw('payout_pay', 'Tu rol no tiene permiso para pagar retiros.'), async (req, res) => {
+app.post('/api/admin/payouts/:id/pay-other-bank', authMiddleware, withdrawerMiddleware, _capMw('withdraw', 'Tu cuenta no tiene permiso para retirar ni pagar retiros.'), async (req, res) => {
   try {
     const { id } = req.params;
     const payout = await PendingPayout.findOne({ id });
@@ -18745,7 +18919,7 @@ app.post('/api/admin/payouts/:id/dismiss', authMiddleware, withdrawerMiddleware,
 // Destrabar un pago: consulta el estado REAL en hgcash y actualiza el payout. Sirve
 // cuando quedó en 'paying' porque se perdió el webhook (DONE→paid+aviso+recibo;
 // ERROR/CANCELLED→failed). Reusa el handler del webhook para mapear el estado.
-app.post('/api/admin/payouts/:id/sync', authMiddleware, adminMiddleware, _permMw(['payout_pay', 'payout_cancel']), async (req, res) => {
+app.post('/api/admin/payouts/:id/sync', authMiddleware, withdrawerMiddleware, async (req, res) => {
   try {
     if (!hgcashPay.isEnabled()) return res.status(400).json({ error: 'Pago automático no configurado.' });
     const payout = await PendingPayout.findOne({ id: req.params.id }).lean();
@@ -18812,12 +18986,8 @@ app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =>
     // Construir query según rol
     let query = {};
     if (userRole !== 'admin') {
-      // Depositor y withdrawer solo ven usuarios (no admins).
-      // #232: salvo que la tabla de permisos les deje cambiar claves de staff / admins: ahí ven también esas cuentas.
-      const _roles = ['user'];
-      if (await _can(req, 'pwd_staff')) _roles.push('depositor', 'withdrawer', 'comunidad', 'publisher_admin');
-      if (await _can(req, 'pwd_admin') || await _can(req, 'pwd_owner')) _roles.push('admin');
-      query.role = _roles.length === 1 ? 'user' : { $in: _roles };
+      // Depositor y withdrawer solo ven usuarios (no admins)
+      query.role = 'user';
     }
     // Admin general ve TODOS (usuarios y admins)
 
@@ -18853,7 +19023,7 @@ app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =>
     // GET /api/users/:userId (viewUser/loadUserInfo). Antes viajaba el doc entero
     // (fcmTokens, tagHistory, withdrawalAccount, acquisitionUtm, adminNotes…).
     // ⚠️ Si se agrega una columna nueva a la tabla del panel: sumar el campo acá.
-    const USERS_LIST_FIELDS = 'id username isOwner tags accountNumber email phone role balance isActive isBlocked blockReason lastLogin createdAt notificationPlan notifMonthlyCounts phoneVerified loginWithoutPassword vipLevel lifetimeWagered';
+    const USERS_LIST_FIELDS = 'id username tags accountNumber email phone role balance isActive isBlocked blockReason lastLogin createdAt notificationPlan notifMonthlyCounts phoneVerified loginWithoutPassword vipLevel lifetimeWagered';
     const users = await User.find(query)
       .select(USERS_LIST_FIELDS)
       .sort({ role: 1, username: 1 })
@@ -18963,16 +19133,15 @@ app.post('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =
       return res.status(400).json({ error: 'Rol inválido' });
     }
     
-    // #245 (owner): crean clientes el admin y el depositor. #232: lo decide la tabla (create_user / create_staff).
-    if (role === 'user' && !(await _can(req, 'create_user'))) {
-      return res.status(403).json({ error: 'Tu rol no puede crear usuarios.', code: 'NO_PERMISSION' });
+    // #245 (owner): crean clientes SOLO el admin y el depositor (el withdrawer/comunidad no; mismo criterio que el link de acceso).
+    // #233 (réplica #250): crear clientes / crear staff lo decide el dueño de Seguridad (default: clientes admin+depositor, staff solo admin general).
+    if (role === 'user' && !(await _canDo(req.user, 'create_client'))) {
+      return res.status(403).json({ error: 'Tu cuenta no tiene permiso para crear clientes.' });
     }
-    if (role !== 'user' && !(await _can(req, 'create_staff'))) {
-      return res.status(403).json({ error: 'Tu rol no puede crear cuentas de staff.', code: 'NO_PERMISSION' });
-    }
-    // REGLA FIJA #232: una cuenta ADMIN GENERAL solo la crea un admin general (la tabla no lo puede dar).
-    if (role === 'admin' && adminRole !== 'admin') {
-      return res.status(403).json({ error: 'Solo el administrador general puede crear otros administradores' });
+    if (role !== 'user') {
+      if (!(await _canDo(req.user, 'create_staff'))) return res.status(403).json({ error: 'Tu cuenta no tiene permiso para crear cuentas del staff.' });
+      // Fijo: un ADMIN general solo lo crea un admin general (si no, cualquiera con "crear staff" se arma un admin y tiene todo).
+      if (role === 'admin' && !_isGeneralAdminReq(req)) return res.status(403).json({ error: 'Solo el administrador general puede crear otros administradores generales.' });
     }
     
     // Verificar si el usuario ya existe
@@ -19202,9 +19371,9 @@ function escapeCsvField(value) {
 // ============================================
 
 app.get('/api/admin/users/export/csv', authMiddleware, async (req, res) => {
-  // #232 tabla de permisos (default: solo el admin general)
-  if (!(await _can(req, 'export_csv'))) {
-    return res.status(403).json({ error: 'Acceso denegado. Tu rol no puede exportar usuarios.', code: 'NO_PERMISSION' });
+  // #233 (réplica #250): exportar lo decide el dueño de Seguridad (default: solo el admin general)
+  if (!(await _canDo(req.user, 'export_csv'))) {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el admin general puede exportar usuarios.' });
   }
   try {
     const users = await User.find().select('username phone email balance lastLogin').lean();
