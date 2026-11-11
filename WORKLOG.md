@@ -8,6 +8,41 @@
 
 ## Sesión 2026-11-11
 
+### 232. 🔐 PERMISOS POR ROL editables desde 🛡️ Seguridad (solo el dueño de Seguridad) — admin-sw v64
+- **Owner:** "que se pueda modificar qué permisos se le da a cada rol, por ejemplo cambiar la contraseña a los usuarios, admin, staff,
+  dueño, etc." Decisiones del owner: la edita **solo el dueño de Seguridad** (`PANEL_OWNER`); entran **claves y cuentas + plata +
+  secciones del panel**; roles en la tabla: **admin general, depositor, withdrawer y comunidad** (el dueño de Seguridad tiene todo, fijo).
+- **Catálogo puro** `src/utils/rolePermissions.js` (test `node scripts/test-role-permissions.js`, 22): 21 permisos en 4 grupos —
+  Claves y cuentas (`pwd_client` / `pwd_staff` / `pwd_admin` / `pwd_owner` = cambiar la clave según A QUIÉN, `create_user`,
+  `create_staff`, `edit_account`, `access_link`, `verify_phone`, `login_nopass`, `block_user`, `export_csv`), Plata (`deposit`, `bonus`,
+  `withdraw`, `payout_pay`, `payout_cancel`), Chats (`tab_open/closed/payments/comunidad`) — y 22 secciones del menú. **Los defaults son
+  EXACTAMENTE lo que hacía el código** (post #231): deployar no cambia nada hasta que el dueño toque la tabla.
+- **Server:** `Config['rolePermissions']` (cache 15 s por instancia, `_invalidateRolePerms` al guardar). `_can(req, key)` (dueño de
+  Seguridad = todo; publisher_admin/cliente/desconocido = no), `_permMw(keys)` reemplaza a `depositorMiddleware`/`withdrawerMiddleware` en
+  `/api/admin/deposit`, `/bonus`, `/withdrawal`, `GET /payouts`, `/payouts/:id/pay|pay-other-bank|cancel|sync` (dismiss y cleanup-old siguen
+  igual). Claves: `_canTouchAccount(req, target)` + `_pwdPermFor(target)` en `/api/admin/change-password`, `reset-password` (ahora chequea
+  DESPUÉS de buscar a quién), `PUT /api/users/:id` (+ `edit_account`) y `verify-phone` de staff. Chequeos inline reemplazados: crear usuarios,
+  link de acceso, entrar sin clave, bloquear/desbloquear, export CSV y las pestañas de `/api/admin/conversations`. `GET /api/admin/users`:
+  un rol no-admin con permiso de claves de staff/admins ve también esas cuentas (si no, solo clientes, como antes). `USERS_LIST_FIELDS` suma
+  `isOwner` (para saber si una clave es de un dueño 👑).
+- **REGLAS FIJAS (la tabla no las puede romper):** el dueño de Seguridad tiene todo; la cuenta de un **dueño de Seguridad** (clave,
+  teléfono, edición) solo la toca otro dueño de Seguridad — **cambia respecto del #231**: antes cualquier admin general podía resetearle la
+  clave al dueño de Seguridad y quedarse con la tabla; crear una cuenta ADMIN GENERAL o cambiar roles = solo un admin general.
+- **Endpoints:** `GET/POST /api/admin/role-permissions` (`_secOnly`; POST `{perms, sections}` o `{reset:true}`). Cada cambio → `StaffAudit`
+  `permissions_change` (con el detalle) + Telegram; cada rechazo de `_permMw` → `permission_denied`. Login y `/api/admin/me` mandan
+  `rolePerms {perms, sections}` de la cuenta.
+- **Panel:** card "🔐 Permisos por rol" arriba de todo en 🛡️ Seguridad (tabla con tildes, amarillo = distinto de lo de siempre, "—" = sección
+  que el server no le sirve a ese rol, Guardar / Descartar / "Volver a lo de siempre"). `_perm(key, legacy)` / `_sectionAllowed(key)`: esconden
+  pestañas de chats, Cargar / Retirar / Bono, botones del retiro pendiente, 🔑 / 🔗 / bloquear de la tabla de usuarios y las secciones del menú
+  (`switchSection` las rechaza). Sin `rolePerms` (server viejo) todo queda con la regla de siempre. Filtros nuevos en el registro.
+- **Límites (explicados):** las SECCIONES solo esconden el menú (lo que se puede HACER adentro lo deciden el server y los permisos de arriba) y
+  solo se pueden quitar respecto de hoy (salvo Usuarios). El resto de los ~100 chequeos de rol del server (COMANDOS, publicidad, bancos,
+  datos…) siguen fijos.
+- Validado: `node --check` + `check-tdz` + test-role-permissions (22) + prueba en frío de `_can` / `_canTouchAccount` / reglas fijas / cache
+  con base simulada (16) + tests de siempre; HTML balanceado, sin ids duplicados nuevos. **Necesita deploy EB.** PROBAR: como dueño de
+  Seguridad → 🛡️ Seguridad → 🔐 Permisos por rol → darle "Cambiar la clave de CLIENTES" al depositor → Guardar → entrar con un depositor →
+  Usuarios → 🔑 a un cliente: funciona; sacárselo → 403 y aparece "🚫 Sin permiso" en el registro; "Volver a lo de siempre".
+
 ### 231. 🛡️ SEGURIDAD INTERNA entre admins — réplica 1:1 de BUFFALOGIROX #245 / #245b / #245c / #246 / #247 / #248 — admin-sw v63
 - **Owner:** "replicá todo lo que hicimos hoy de seguridad en BUFFALOGIROX, tal cual". Allá hubo un incidente: un empleado le cambiaba la clave
   a otros admins, entraba con esas cuentas, le cargaba saldo a un usuario suyo y retiraba. **Este repo tenía EL MISMO agujero** (verificado

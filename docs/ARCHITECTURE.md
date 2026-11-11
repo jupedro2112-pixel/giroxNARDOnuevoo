@@ -5,7 +5,7 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-11-11** — **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
+> Última actualización: **2026-11-11** — **PERMISOS POR ROL editables (#232)**: `src/utils/rolePermissions.js` + `Config['rolePermissions']`, `_can`/`_permMw`/`_canTouchAccount`, card 🔐 en 🛡️ Seguridad (§3, §9). Y **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
 > CARGASGIROXactivo; ver "Cuentas hgcash múltiples" en la auto-carga del banco)**. Antes: **2026-10-29** — **PÁGINA DEL CASINO desde COMANDOS (#228)**: `/sys_casino_url` re-apunta el
 > dominio del link de SSO y suma ese dominio al `frame-src` del CSP (§4.9, §9).
 > Antes: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
@@ -298,6 +298,14 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `sharedIps` y `sharedDevices`. Panel 🛡️ Seguridad + `/api/admin/security/*` (`_secOnly`) = **solo el dueño de Seguridad**:
   `_isPanelOwnerUser` = rol admin con `username` en `PANEL_OWNER` de SSM (varios por coma; sin valor nadie). Login y `/api/admin/me` mandan
   **`isPanelOwner`** — ⚠️ distinto de `isOwner` (= dueño de PUBLICIDAD, #221): no mezclarlos.
+- **Permisos por rol (#232):** catálogo y defaults en `src/utils/rolePermissions.js` (puro; defaults = la regla de antes), tabla en
+  `Config['rolePermissions']` (cache 15 s por instancia), editable SOLO por el dueño de Seguridad (`GET/POST /api/admin/role-permissions`,
+  `_secOnly`). `_can(req, key)` (PANEL_OWNER = todo), `_permMw(keys)` en las rutas de plata (deposit, bonus, withdrawal, payouts
+  ver/pagar/otro banco/rechazar/sync), `_canTouchAccount(req, target)` (= `_pwdPermFor`: pwd_client / pwd_staff / pwd_admin / pwd_owner)
+  en change-password, reset-password, `PUT /api/users/:id` y verify-phone de staff; `_can` inline en crear usuarios (create_user /
+  create_staff), access-link, login-without-password, block/unblock, export CSV y las pestañas de `/api/admin/conversations`.
+  **Reglas fijas:** la cuenta de un dueño de Seguridad solo la toca otro; crear/convertir ADMIN GENERAL solo un admin general. El panel
+  recibe `rolePerms {perms, sections}` en login y `/api/admin/me` y esconde con `_perm(key, legacy)` / `_sectionAllowed(key)`.
 - **`src/middlewares/auth.js` es OTRO sistema de auth** (access 15m + refresh 7d,
   blacklist EN MEMORIA no compartida entre instancias) usado SOLO por las rutas de
   referidos. Lazy getters de JWT_SECRET (SSM carga después del require).
@@ -1038,8 +1046,9 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   `username_taken_foreign` en ese caso y TODOS los altas (registro, panel,
   publicista) FALLAN sin dejar cuenta local — jamás crear una cuenta 'linked' a un
   jugador que la key no puede leer.
-- **Seguridad interna (#231):** toda vía NUEVA que cambie una clave tiene que exigir `_isGeneralAdminReq(req)` (o ser la propia con la
-  clave actual) y llamar `_auditPasswordChange(req, target, via)`. Ninguna cuenta de staff entra ni recupera clave por SMS: no abrir eso.
+- **Seguridad interna (#231/#232):** toda vía NUEVA que cambie una clave tiene que exigir `_canTouchAccount(req, target)` (o ser la propia
+  con la clave actual) y llamar `_auditPasswordChange(req, target, via)`. Acción nueva que deba ser configurable por rol ⇒ sumar la key a
+  `rolePermissions.js` con `def` = quién la tiene HOY y chequear `_can`/`_permMw` (key desconocida = NO). No renombrar keys (quedan en Config). Ninguna cuenta de staff entra ni recupera clave por SMS: no abrir eso.
   `StaffAudit` es la evidencia — no ponerle TTL ni guardar claves/tokens en `details`. El dueño de Seguridad es `isPanelOwner`
   (`PANEL_OWNER`), NO `isOwner` (Publicidad).
 - **DOS `connectDB`**: el real es `config/database.js`; el de `src/models/index.js` NO

@@ -603,6 +603,20 @@ function showPasswordChangeModal() {
     }
 }
 
+// #232 PERMISOS POR ROL: el server manda currentAdmin.rolePerms = {perms:{key:bool}, sections:{key:bool}} (login y /api/admin/me).
+// Sin eso (server viejo) se usa la regla de siempre (`legacy`). El SERVER es el que manda de verdad: esto solo esconde botones.
+function _perm(key, legacy) {
+    const rp = currentAdmin && currentAdmin.rolePerms;
+    if (rp && rp.perms && Object.prototype.hasOwnProperty.call(rp.perms, key)) return rp.perms[key] === true;
+    return !!legacy;
+}
+function _sectionAllowed(key) {
+    const rp = currentAdmin && currentAdmin.rolePerms;
+    if (rp && rp.sections && Object.prototype.hasOwnProperty.call(rp.sections, key)) return rp.sections[key] === true;
+    return true; // sección fuera de la tabla: la decide su propia regla
+}
+window._perm = _perm;
+
 function setupRoleBasedUI() {
     loadFeatureNav(); // #222: esconde del menú las funciones replicadas que están apagadas
     const role = currentAdmin?.role;
@@ -688,23 +702,38 @@ function setupRoleBasedUI() {
         if (tabPayments) tabPayments.style.display = 'flex';
         if (tabComunidad) tabComunidad.style.display = 'flex';
     }
+    // #232: si el server mandó la tabla de permisos, las pestañas salen de ahí (defaults = lo de arriba).
+    if (currentAdmin && currentAdmin.rolePerms && currentAdmin.rolePerms.perms) {
+        const _tabs = [['open', tabOpen, 'tab_open'], ['closed', tabClosed, 'tab_closed'], ['payments', tabPayments, 'tab_payments'], ['comunidad', tabComunidad, 'tab_comunidad']];
+        const _vis = [];
+        for (const [name, el, key] of _tabs) {
+            const ok = _perm(key, false);
+            if (el) el.style.display = ok ? 'flex' : 'none';
+            if (ok) _vis.push(name);
+        }
+        if (_vis.length && !_vis.includes(currentTab)) currentTab = _vis[0];
+        document.querySelectorAll('.tab-btn[data-tab]').forEach((t) => t.classList.toggle('active', t.dataset.tab === currentTab));
+    }
     
     // Depositor y withdrawer pueden ver "Usuarios" pero NO pueden exportar CSV
     const usersNavItem = document.querySelector('.nav-item[data-section="users"]');
     if (usersNavItem) {
-        usersNavItem.style.display = ['admin', 'depositor'].includes(role) ? '' : 'none'; // #231 (réplica #245): el withdrawer no crea clientes
+        usersNavItem.style.display = (currentAdmin && currentAdmin.rolePerms ? _sectionAllowed('users') : ['admin', 'depositor'].includes(role)) ? '' : 'none'; // #231 (réplica #245) / #232 tabla
     }
     // Solo el admin general puede exportar usuarios
     const exportCsvBtn = document.getElementById('exportUsersCSVBtn');
     if (exportCsvBtn) {
-        exportCsvBtn.style.display = role === 'admin' ? '' : 'none';
+        exportCsvBtn.style.display = _perm('export_csv', role === 'admin') ? '' : 'none'; // #232
     }
 
     // Bonus directo: visible para admin, depositor y comunidad
     const btnBonus = elements.btnBonus;
     if (btnBonus) {
-        btnBonus.style.display = ['admin', 'depositor', 'comunidad'].includes(role) ? '' : 'none';
+        btnBonus.style.display = _perm('bonus', ['admin', 'depositor', 'comunidad'].includes(role)) ? '' : 'none'; // #232
     }
+    // #232: Cargar / Retirar del chat según la tabla (antes se veían siempre y el server rechazaba).
+    if (elements.btnDeposit) elements.btnDeposit.style.display = _perm('deposit', true) ? '' : 'none';
+    if (elements.btnWithdraw) elements.btnWithdraw.style.display = _perm('withdraw', true) ? '' : 'none';
 
     // #230 Bancos — Configuración: solo admin general (credenciales, cuentas, movimientos)
     const banksCfgNav = document.querySelector('.nav-item-banks-config');
@@ -744,6 +773,15 @@ function setupRoleBasedUI() {
     const cdNavItem = document.querySelector('.nav-item-chat-delays');
     if (cdNavItem) {
         cdNavItem.style.display = role === 'admin' ? '' : 'none';
+    }
+
+    // #232: secciones que la tabla de permisos le saca a este rol (solo se pueden QUITAR respecto de lo de siempre).
+    const _rpSec = currentAdmin && currentAdmin.rolePerms && currentAdmin.rolePerms.sections;
+    if (_rpSec) {
+        for (const [key, ok] of Object.entries(_rpSec)) {
+            if (ok || key === 'users') continue; // users ya se resolvió arriba
+            document.querySelectorAll('.nav-item[data-section="' + key + '"]').forEach((el) => { el.style.display = 'none'; });
+        }
     }
 
     // Actualizar botones según la pestaña actual
@@ -2965,7 +3003,9 @@ async function loadPayoutBanner(userId) {
         const debitWarn = debitUnconfirmed
             ? '<div style="margin-top:5px;font-size:11px;font-weight:800;color:#ffe08a;background:rgba(0,0,0,0.32);padding:5px 8px;border-radius:6px;">⚠️ Descuento NO confirmado en 1girox — verificá el saldo real antes de pagar. Si rechazás, NO se devuelven fichas automáticamente.</div>'
             : '';
-        const payBtn = j.payEnabled
+        // #232: Pagar / Rechazar según la tabla de permisos (el server igual lo valida).
+        const _canPay = _perm('payout_pay', true), _canCancel = _perm('payout_cancel', true);
+        const payBtn = !_canPay ? '' : j.payEnabled
             ? '<button onclick="payPayout(\'' + escapeHtml(p.id) + '\')" style="background:#0f8a2f;color:#fff;border:none;border-radius:7px;padding:7px 13px;font-weight:800;font-size:12px;cursor:pointer;">💸 Pagar ' + monto + '</button>'
             : '<span style="color:#ffd;font-size:11px;">Pago automático no configurado (falta token). Pagá manual.</span>';
         // "Descartar": SOLO admin general. Limpia un pago viejo ya resuelto SIN devolver fichas ni avisar al cliente.
@@ -2978,8 +3018,8 @@ async function loadPayoutBanner(userId) {
             '<div style="font-size:11px;opacity:0.92;">Titular: ' + titular + ' · CBU/alias: ' + dest + '</div>' +
             '<div style="font-size:10.5px;opacity:0.8;">Verificá los datos antes de pagar.</div>' + debitWarn + '</div>' +
             payBtn +
-            '<button onclick="payOtherBank(\'' + escapeHtml(p.id) + '\')" style="background:#1f6feb;color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;font-weight:700;cursor:pointer;">🏦 Pagar con otro banco</button>' +
-            '<button onclick="cancelPayout(\'' + escapeHtml(p.id) + '\')" style="background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;cursor:pointer;">↩️ Rechazar pago</button>' +
+            (_canPay ? '<button onclick="payOtherBank(\'' + escapeHtml(p.id) + '\')" style="background:#1f6feb;color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;font-weight:700;cursor:pointer;">🏦 Pagar con otro banco</button>' : '') +
+            (_canCancel ? '<button onclick="cancelPayout(\'' + escapeHtml(p.id) + '\')" style="background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;cursor:pointer;">↩️ Rechazar pago</button>' : '') +
             dismissBtn +
             '</div>';
     } catch (e) {
@@ -4376,7 +4416,9 @@ function renderUsers(users) {
     
     tbody.innerHTML = users.map(user => {
         const isAdminUser = ['admin', 'depositor', 'withdrawer', 'comunidad'].includes(user.role);
-        const canChangePassword = adminRole === 'admin' || (adminRole === 'depositor' && !isAdminUser);
+        // #232: según la tabla de permisos y a QUIÉN (cliente / staff / admin / dueño 👑). Legacy = la regla de antes.
+        const _pwdKey = user.role === 'user' ? 'pwd_client' : (user.role === 'admin' ? (user.isOwner ? 'pwd_owner' : 'pwd_admin') : 'pwd_staff');
+        const canChangePassword = _perm(_pwdKey, adminRole === 'admin' || (adminRole === 'depositor' && !isAdminUser));
         const canBlock = adminRole === 'admin' && !isAdminUser;
 
         // Status cell: show BLOQUEADO badge if blocked
@@ -4435,7 +4477,7 @@ function renderUsers(users) {
             : '';
 
         // Link de acceso de un solo uso: admin general y depositor, solo clientes.
-        const accessLinkBtn = (['admin', 'depositor'].includes(adminRole) && !isAdminUser)
+        const accessLinkBtn = (_perm('access_link', ['admin', 'depositor'].includes(adminRole)) && !isAdminUser) // #232
             ? `<button class="action-btn-small" title="Generar link de acceso (un solo uso — loguea al cliente automáticamente)" onclick='handleGenerateAccessLink(${JSON.stringify(user.id)}, ${JSON.stringify(user.username)})'>🔗</button>`
             : '';
 
@@ -4905,7 +4947,7 @@ function applyBlockStateToChatHeader(user) {
     const blockedAt = user.blockedAt ? new Date(user.blockedAt) : null;
     const isAdminUser = ['admin', 'depositor', 'withdrawer', 'comunidad'].includes(user.role);
     // Tanto admin general como depositor pueden bloquear (son los que operan en el chat).
-    const canBlock = ['admin', 'depositor'].includes(currentAdmin?.role) && !isAdminUser;
+    const canBlock = _perm('block_user', ['admin', 'depositor'].includes(currentAdmin?.role)) && !isAdminUser; // #232
 
     if (elements.chatBlockedBanner) {
         elements.chatBlockedBanner.style.display = isBlocked ? 'block' : 'none';
@@ -4980,12 +5022,16 @@ window.handleUnblockFromChat = handleUnblockFromChat;
 function switchSection(section) {
     // #231 (réplica #245): "Usuarios" (y Crear Usuario) = admin general y depositor. Antes solo admin, aunque el menú se la
     // mostraba al depositor ⇒ el depositor no podía crear clientes.
-    if (section === 'users' && !['admin', 'depositor'].includes(currentAdmin?.role)) {
+    if (section === 'users' && !(currentAdmin && currentAdmin.rolePerms ? _sectionAllowed('users') : ['admin', 'depositor'].includes(currentAdmin?.role))) {
         showToast('No tienes permiso para acceder a esta sección', 'error');
         return;
     }
     if (section === 'security' && !(currentAdmin && currentAdmin.isPanelOwner === true)) { // #231 (réplica #245b)
         showToast('Solo el admin dueño', 'error');
+        return;
+    }
+    if (section !== 'users' && !_sectionAllowed(section)) { // #232 tabla de permisos
+        showToast('Tu rol no tiene acceso a esta sección', 'error');
         return;
     }
     // Solo admin general puede ver el reporte de demoras
@@ -15396,7 +15442,8 @@ window.updateNotifScheduleUI = updateNotifScheduleUI;
 const SEC_ACTION_LABELS = {
     login: '🟢 Ingresó', login_failed: '🔴 Clave incorrecta', login_blocked: '⛔ Ingreso bloqueado',
     password_change: '🔑 Cambió clave', password_change_denied: '🚫 Intento de cambio de clave',
-    session_revoke: '✂️ Cerró sesiones', staff_disable: '⛔ Desactivó cuenta', staff_enable: '✅ Activó cuenta', api: '⚙️ Acción'
+    session_revoke: '✂️ Cerró sesiones', staff_disable: '⛔ Desactivó cuenta', staff_enable: '✅ Activó cuenta', api: '⚙️ Acción',
+    permissions_change: '🔐 Cambió permisos por rol', permission_denied: '🚫 Sin permiso (tabla de permisos)'
 };
 function _secEsc(v) { return escapeHtml(v == null ? '' : String(v)); }
 function _secWhen(d) { if (!d) return '—'; const x = new Date(d); return x.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
@@ -15421,7 +15468,7 @@ async function _secFetch(url, opts) {
     return d;
 }
 async function loadSecuritySection() {
-    await Promise.all([loadSecurityShared(false), loadSecurityAudit(1)]);
+    await Promise.all([loadSecurityShared(false), loadSecurityAudit(1), loadRolePerms()]); // #232 + permisos por rol
 }
 async function loadSecurityShared(badgeOnly) {
     try {
@@ -15483,7 +15530,7 @@ async function loadSecurityAudit(page) {
         const d = await _secFetch('/api/admin/security/audit?' + qs.toString());
         const rows = (d.rows || []).map((r) => {
             const det = r.details ? Object.entries(r.details).filter(([k]) => !['userId'].includes(k)).slice(0, 6).map(([k, val]) => `${_secEsc(k)}: ${_secEsc(typeof val === 'object' ? JSON.stringify(val) : val)}`).join(' · ') : '';
-            const bad = ['login_failed', 'login_blocked', 'password_change_denied'].includes(r.action) || (r.status && r.status >= 400);
+            const bad = ['login_failed', 'login_blocked', 'password_change_denied', 'permission_denied'].includes(r.action) || (r.status && r.status >= 400);
             return `<tr style="${bad ? 'background:rgba(239,68,68,0.08);' : (r.action === 'password_change' ? 'background:rgba(212,175,55,0.10);' : '')}">
                 <td style="white-space:nowrap;">${_secWhen(r.at)}</td>
                 <td><a href="#" onclick="secFilterActor(${_secEsc(JSON.stringify(r.actorUsername || ''))});return false;" style="color:#fff;font-weight:700;">${_secEsc(r.actorUsername || '—')}</a><br><span style="color:#888;">${_secEsc(r.actorRole || '')}${r.actorTeam ? ' · ' + _secEsc(r.actorTeam) : ''}</span></td>
@@ -15517,3 +15564,106 @@ async function secToggleActive(id, username, active) {
 }
 window.loadSecuritySection = loadSecuritySection; window.loadSecurityAudit = loadSecurityAudit; window.secFilterIp = secFilterIp;
 window.secFilterActor = secFilterActor; window.secRevoke = secRevoke; window.secToggleActive = secToggleActive;
+
+
+// ============================================
+// #232 🔐 PERMISOS POR ROL (🛡️ Seguridad, solo el dueño de Seguridad)
+// ============================================
+let _rpData = null;      // { catalog, matrix, defaults, ... } del server
+let _rpDraft = null;     // copia que se edita con los tildes
+let _rpOpen = false;
+function toggleRolePerms() {
+    _rpOpen = !_rpOpen;
+    const box = document.getElementById('rolePermsBox');
+    const btn = document.getElementById('rolePermsToggleBtn');
+    if (box) box.style.display = _rpOpen ? '' : 'none';
+    if (btn) btn.textContent = _rpOpen ? '▲ Ocultar' : '▼ Ver / editar';
+    if (_rpOpen) _renderRolePerms();
+}
+async function loadRolePerms() {
+    try {
+        _rpData = await _secFetch('/api/admin/role-permissions');
+        _rpDraft = JSON.parse(JSON.stringify(_rpData.matrix));
+        const st = document.getElementById('rolePermsStatus');
+        if (st) st.innerHTML = _rpData.customized
+            ? `<span style="color:#fbbf24;">✏️ Personalizado</span>${_rpData.updatedBy ? ' · por ' + _secEsc(_rpData.updatedBy) + ' · ' + _secWhen(_rpData.updatedAt) : ''}`
+            : '<span style="color:#22c55e;">Lo de siempre (sin cambios)</span>';
+        if (_rpOpen) _renderRolePerms();
+    } catch (e) {
+        const st = document.getElementById('rolePermsStatus');
+        if (st) st.innerHTML = '<span style="color:#ef4444;">' + _secEsc(e.message) + '</span>';
+    }
+}
+function _rpPending() {
+    if (!_rpData || !_rpDraft) return 0;
+    let n = 0;
+    for (const kind of ['perms', 'sections']) for (const k of Object.keys(_rpDraft[kind])) {
+        const a = (_rpData.matrix[kind][k] || []).slice().sort().join(), b = (_rpDraft[kind][k] || []).slice().sort().join();
+        if (a !== b) n++;
+    }
+    return n;
+}
+function _renderRolePerms() {
+    const box = document.getElementById('rolePermsBox');
+    if (!box) return;
+    if (!_rpData) { box.innerHTML = '<div style="color:#888;">Cargando…</div>'; loadRolePerms(); return; }
+    const roles = _rpData.catalog.roles;
+    const head = `<tr><th style="text-align:left;">Permiso</th>${roles.map((r) => `<th style="text-align:center;min-width:86px;">${_secEsc(r.label)}</th>`).join('')}</tr>`;
+    const cell = (kind, key, role, possible) => {
+        const on = (_rpDraft[kind][key] || []).includes(role);
+        const def = ((_rpData.defaults[kind][key]) || []).includes(role);
+        const can = !possible || possible.includes(role);
+        if (!can) return `<td style="text-align:center;color:#555;" title="No disponible para este rol">—</td>`;
+        const changed = on !== def;
+        return `<td style="text-align:center;${changed ? 'background:rgba(251,191,36,0.14);' : ''}" title="${changed ? 'Distinto de lo de siempre (' + (def ? 'sí' : 'no') + ')' : 'Como siempre'}">
+            <input type="checkbox" style="width:16px;height:16px;cursor:pointer;" ${on ? 'checked' : ''} onchange="rolePermToggle('${kind}','${key}','${role}',this.checked)"></td>`;
+    };
+    let rows = '', group = null;
+    for (const p of _rpData.catalog.perms) {
+        if (p.group !== group) { group = p.group; rows += `<tr><td colspan="${roles.length + 1}" style="color:#d4af37;font-weight:800;padding-top:10px;">${_secEsc(group)}</td></tr>`; }
+        rows += `<tr><td>${_secEsc(p.label)}</td>${roles.map((r) => cell('perms', p.key, r.key, null)).join('')}</tr>`;
+    }
+    rows += `<tr><td colspan="${roles.length + 1}" style="color:#d4af37;font-weight:800;padding-top:10px;">Secciones del menú</td></tr>`;
+    for (const sct of _rpData.catalog.sections) rows += `<tr><td>${_secEsc(sct.label)}</td>${roles.map((r) => cell('sections', sct.key, r.key, sct.possible)).join('')}</tr>`;
+    const pend = _rpPending();
+    box.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="width:100%;font-size:12px;"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;">
+            <button class="btn btn-primary btn-sm" onclick="saveRolePerms()" ${pend ? '' : 'disabled'}>💾 Guardar${pend ? ' (' + pend + ' cambio' + (pend === 1 ? '' : 's') + ')' : ''}</button>
+            <button class="btn btn-secondary btn-sm" onclick="discardRolePerms()" ${pend ? '' : 'disabled'}>↩️ Descartar</button>
+            <span style="flex:1"></span>
+            <button class="btn btn-secondary btn-sm" onclick="resetRolePerms()" title="Vuelve TODA la tabla a cómo era antes">⟲ Volver a lo de siempre</button>
+        </div>
+        <div style="color:#777;font-size:11px;margin-top:6px;">Amarillo = distinto de lo de siempre. "—" = el servidor no le sirve esa sección a ese rol.</div>`;
+}
+function rolePermToggle(kind, key, role, on) {
+    if (!_rpDraft) return;
+    const list = new Set(_rpDraft[kind][key] || []);
+    if (on) list.add(role); else list.delete(role);
+    _rpDraft[kind][key] = _rpData.catalog.roles.map((r) => r.key).filter((r) => list.has(r));
+    _renderRolePerms();
+}
+function discardRolePerms() { if (_rpData) { _rpDraft = JSON.parse(JSON.stringify(_rpData.matrix)); _renderRolePerms(); } }
+async function saveRolePerms() {
+    if (!_rpDraft) return;
+    // Aviso extra si se le quita algo al admin general (por ej. cambiar claves): es válido pero conviene saberlo.
+    const n = _rpPending();
+    if (!n) return;
+    if (!confirm(`¿Guardar ${n} cambio${n === 1 ? '' : 's'} de permisos? Aplica al instante en el servidor y queda en el registro.`)) return;
+    try {
+        const d = await _secFetch('/api/admin/role-permissions', { method: 'POST', body: JSON.stringify({ perms: _rpDraft.perms, sections: _rpDraft.sections }) });
+        showToast(d.message || 'Guardado', 'success');
+        await loadRolePerms();
+        loadSecurityAudit(1);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+async function resetRolePerms() {
+    if (!confirm('¿Volver TODA la tabla de permisos a lo de siempre? (Se borran todos los cambios.)')) return;
+    try {
+        const d = await _secFetch('/api/admin/role-permissions', { method: 'POST', body: JSON.stringify({ reset: true }) });
+        showToast(d.message || 'Listo', 'success');
+        await loadRolePerms();
+        loadSecurityAudit(1);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.toggleRolePerms = toggleRolePerms; window.loadRolePerms = loadRolePerms; window.rolePermToggle = rolePermToggle;
+window.saveRolePerms = saveRolePerms; window.discardRolePerms = discardRolePerms; window.resetRolePerms = resetRolePerms;
