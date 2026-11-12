@@ -5,7 +5,7 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-11-11** — **QUÉ VE / QUÉ PUEDE HACER cada tipo de admin (#233, réplica BUFFALOGIROX #249/#250, reemplaza al #232)**: `_staffSectionGuard` + `STAFF_SECTION_API` bloquean en el server las secciones ocultas, `STAFF_ACTIONS`/`_canDo`/`_capMw`/`_pwdChangeDenied` (§3, §9). Antes, mismo día: **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
+> Última actualización: **2026-11-12** — **Rol CAJERO = cargas + retiros (#234, réplica PICAROJA #1126)**: unión exacta de depositor + withdrawer en todas las listas de roles; chats sin Comunidad (§3). Antes: **2026-11-11** — **QUÉ VE / QUÉ PUEDE HACER cada tipo de admin (#233, réplica BUFFALOGIROX #249/#250, reemplaza al #232)**: `_staffSectionGuard` + `STAFF_SECTION_API` bloquean en el server las secciones ocultas, `STAFF_ACTIONS`/`_canDo`/`_capMw`/`_pwdChangeDenied` (§3, §9). Antes, mismo día: **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
 > CARGASGIROXactivo; ver "Cuentas hgcash múltiples" en la auto-carga del banco)**. Antes: **2026-10-29** — **PÁGINA DEL CASINO desde COMANDOS (#228)**: `/sys_casino_url` re-apunta el
 > dominio del link de SSO y suma ese dominio al `frame-src` del CSP (§4.9, §9).
 > Antes: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
@@ -298,6 +298,9 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `sharedIps` y `sharedDevices`. Panel 🛡️ Seguridad + `/api/admin/security/*` (`_secOnly`) = **solo el dueño de Seguridad**:
   `_isPanelOwnerUser` = rol admin con `username` en `PANEL_OWNER` de SSM (varios por coma; sin valor nadie). Login y `/api/admin/me` mandan
   **`isPanelOwner`** — ⚠️ distinto de `isOwner` (= dueño de PUBLICIDAD, #221): no mezclarlos.
+- **Rol `cajero` (#234, réplica PICAROJA #1126):** cargas + retiros en una sola cuenta = la UNIÓN de depositor y withdrawer (pasa
+  `depositorMiddleware` y `withdrawerMiddleware`, está en `ADMIN_ROLES`). Chats: abiertos/cerrados/pagos, no comunidad. Columna propia en
+  las tablas de 🛡️ Seguridad. ⚠️ Lista de roles NUEVA que incluya depositor o withdrawer ⇒ sumar `'cajero'` (si no, el cajero queda afuera).
 - **Qué ve / qué puede hacer cada tipo de admin (#233, réplica BUFFALOGIROX #249/#250):** lo edita solo el dueño de Seguridad en
   🛡️ Seguridad (`GET/PUT /api/admin/security/permissions`). **Secciones:** `Config['staffSectionAccess']` { admin|depositor|withdrawer|
   comunidad: [ocultas] } (solo resta respecto de `_staffBaseSections`) → `_staffSectionGuard` global (antes de todas las rutas) le da 403

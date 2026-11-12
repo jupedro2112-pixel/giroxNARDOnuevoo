@@ -4,7 +4,26 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-11-11**
+> **Última actualización: 2026-11-12**
+
+## Sesión 2026-11-12
+
+### 234. 💼 Rol CAJERO = cargas + retiros en una sola cuenta — réplica de PICAROJA52 #1126 — admin-sw v66 · PWA SW v122
+- **Owner:** "replicá lo del rol que es depositor + withdrawer a la vez, sacalo de PICAROJA52". En PICAROJA: "que tengan los permisos de los dos roles".
+- Nuevo rol `cajero` (etiqueta "Cajero (cargas + retiros)") = la **UNIÓN exacta** de depositor + withdrawer, nunca lo del admin general.
+  Enum de `User.role` y `Message.senderRole`, `ADMIN_ROLES` (→ `isAdminRole`), virtual `isAgent`, y TODAS las listas de roles que tenían
+  depositor o withdrawer: `adminMiddleware`/`depositorMiddleware`/`withdrawerMiddleware` (server.js) + `depositorOnly`/`withdrawerOnly`
+  (src/middlewares/auth.js), socket (authenticate, sala `admins`, join/send), chats, `_bankCanView`, roles válidos en altas y cambio de rol,
+  `STAFF_ROLES`, promo-bonus, lotes de avisos (`NOTIF_BATCH_*_ROLES`), `notificationRoutes.requireAdmin` y la PWA (`socket.js`/`chat.js`).
+- Chats: Abiertos/Cerrados/**Pagos**, NO Comunidad (server: `GET /api/admin/conversations?status=comunidad` → 403 para el cajero; panel:
+  rama `cajero` en `setupRoleBasedUI`). La cola por rol (`cargas`/`pagos`) lo trata como al admin general (atiende las dos).
+- 🛡️ Seguridad (#233): columna "Cajero (cargas + retiros)" en las dos tablas. Defaults = los de depositor ∪ withdrawer: cargar, bono,
+  retirar/pagar, link de acceso, inicio sin clave, bloquear y crear clientes; NO cambia claves, no crea staff ni exporta. Base de secciones =
+  la del depositor (con Usuarios). Su clave la cambia quien tenga `pwd_staff`.
+- Panel: `getRoleLabel`, opción en Crear usuario, badge `.role-badge.cajero`. Cómo se crea: Usuarios → Crear usuario → Rol "Cajero" (solo
+  el admin general, `create_staff`), o cambiarle el rol a un agente existente.
+- ⚠️ Es justo lo que el #231 marcaba como riesgo ("carga y retira el mismo"): queda todo en `StaffAudit`, y desde 🛡️ Seguridad se le puede
+  quitar cualquier cosa. Lógica probada en frío.
 
 ## Sesión 2026-11-11
 

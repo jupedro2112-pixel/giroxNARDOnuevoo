@@ -126,7 +126,8 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   `acquisitionSource:'manual'`) = sin bonos de bienvenida. Ruleta diaria: premios en
   `Config['dailyRoulette']` (panel), % pendiente en `User.dailyRoulettePendingPct`.
 - **Roles:** `user`, `admin` (todo), `depositor` (solo cargas), `withdrawer` (solo
-  retiros), `publisher_admin` (solo crea usuarios de su publicista — lockdown via
+  retiros), `cajero` (cargas + retiros a la vez = unión de depositor y withdrawer, #234 réplica PICAROJA #1126: toda lista de roles
+  nueva con depositor/withdrawer lleva también `'cajero'`), `publisher_admin` (solo crea usuarios de su publicista — lockdown via
   `PUBLISHER_ADMIN_ALLOWED_PATHS`). **Dueño (2026-10-20, #221)** = admin general con
   `User.isOwner:true`: lo ÚNICO que ve solo él es PUBLICIDAD (campañas, publicistas,
   dashboard, influencers y el 📣 publicista al lado de cada cliente). Endpoint nuevo de

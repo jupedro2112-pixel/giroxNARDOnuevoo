@@ -129,7 +129,7 @@ VIP.socket = (function () {
                 VIP.chat.addMessageToChat(message);
                 VIP.notifications.playNotificationSound();
 
-                const adminRoles = ['admin', 'depositor', 'withdrawer'];
+                const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero'];
                 const isFromAdmin = adminRoles.includes(message.senderRole);
                 // Solo mostrar notificación nativa cuando la pestaña NO está
                 // visible. Si el user está mirando la app, el mensaje ya

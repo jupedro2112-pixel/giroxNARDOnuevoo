@@ -606,9 +606,9 @@ function showPasswordChangeModal() {
 // #233 (réplica BUFFALOGIROX #250) Qué puede hacer esta cuenta (lo decide el dueño de Seguridad en 🛡️ Seguridad; el server lo
 // vuelve a chequear siempre). Sin `perms` (server viejo) cae a lo de antes por rol.
 // ⚠️ El dueño acá es `isPanelOwner` (PANEL_OWNER); `isOwner` es el dueño de PUBLICIDAD (#221) y no da permisos de staff.
-const _PERM_FALLBACK = { pwd_client: ['admin'], pwd_staff: ['admin'], pwd_admin: ['admin'], access_link: ['admin', 'depositor'], login_no_pwd: ['admin', 'depositor'],
-    block: ['admin', 'depositor'], create_client: ['admin', 'depositor'], create_staff: ['admin'], export_csv: ['admin'], deposit: ['admin', 'depositor', 'comunidad'],
-    bonus: ['admin', 'depositor', 'comunidad'], withdraw: ['admin', 'withdrawer'] };
+const _PERM_FALLBACK = { pwd_client: ['admin'], pwd_staff: ['admin'], pwd_admin: ['admin'], access_link: ['admin', 'depositor', 'cajero'], login_no_pwd: ['admin', 'depositor', 'cajero'],
+    block: ['admin', 'depositor', 'cajero'], create_client: ['admin', 'depositor', 'cajero'], create_staff: ['admin'], export_csv: ['admin'], deposit: ['admin', 'depositor', 'cajero', 'comunidad'],
+    bonus: ['admin', 'depositor', 'cajero', 'comunidad'], withdraw: ['admin', 'withdrawer', 'cajero'] };
 function can(action) {
     if (!currentAdmin) return false;
     if (currentAdmin.isPanelOwner === true) return true;
@@ -621,7 +621,7 @@ function _canPwdFor(targetRole) {
     return can('pwd_staff');
 }
 function _canSeeUsers() {
-    return ['admin', 'depositor'].includes(currentAdmin?.role) || ['create_client', 'pwd_client', 'pwd_staff', 'pwd_admin', 'block', 'access_link', 'export_csv'].some(can);
+    return ['admin', 'depositor', 'cajero'].includes(currentAdmin?.role) || ['create_client', 'pwd_client', 'pwd_staff', 'pwd_admin', 'block', 'access_link', 'export_csv'].some(can);
 }
 window.can = can;
 
@@ -717,6 +717,13 @@ function setupRoleBasedUI() {
         if (tabComunidad) tabComunidad.style.display = 'none';
         if (tabOpen) tabOpen.style.display = 'flex';
         if (tabClosed) tabClosed.style.display = 'flex';
+        currentTab = 'open';
+    } else if (role === 'cajero') {
+        // #234 (réplica PICAROJA #1126) Cajero = cargas + retiros: abiertos/cerrados/pagos; NO comunidad
+        if (tabComunidad) tabComunidad.style.display = 'none';
+        if (tabOpen) tabOpen.style.display = 'flex';
+        if (tabClosed) tabClosed.style.display = 'flex';
+        if (tabPayments) tabPayments.style.display = 'flex';
         currentTab = 'open';
     } else if (role === 'comunidad') {
         // Comunidad: abiertos/cerrados/comunidad; NO ve PAGOS. Enfocado en Abiertos.
@@ -1306,7 +1313,7 @@ function updateActionButtonsByTab() {
 
     const role = currentAdmin?.role;
     // Quién puede derivar a Comunidad desde Abiertos (no el withdrawer).
-    const canDeriveCommunity = ['admin', 'depositor', 'comunidad'].includes(role);
+    const canDeriveCommunity = ['admin', 'depositor', 'cajero', 'comunidad'].includes(role);
 
     if (currentTab === 'payments') {
         // En Pagos: "Enviar a Abiertos" (no para withdrawer). Sin botón de comunidad.
@@ -1644,7 +1651,7 @@ function handleNewMessage(data) {
         }
     }
     
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     const isFromAdmin = adminRoles.includes(message.senderRole);
     const isSystemMessage = message.type === 'system' || senderId === 'admin' || senderId === 'system';
     
@@ -1746,7 +1753,7 @@ function loadStatsThrottled() {
  * Se llama cuando llega un mensaje nuevo de otro chat.
  */
 function updateConversationInList(message) {
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     const isFromAdmin = adminRoles.includes(message.senderRole);
     const chatUserId = isFromAdmin ? message.receiverId : message.senderId;
     
@@ -2359,7 +2366,7 @@ function addMessageToChat(message, isOutgoing = false) {
 function getMessageType(msg) {
     if (msg.type === 'system') return 'system';
     // CORREGIDO: Incluir depositor y withdrawer como roles de admin
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (adminRoles.includes(msg.senderRole)) return 'outgoing';
     return 'incoming';
 }
@@ -4427,7 +4434,7 @@ function renderUsers(users) {
     }
     
     tbody.innerHTML = users.map(user => {
-        const isAdminUser = ['admin', 'depositor', 'withdrawer', 'comunidad'].includes(user.role);
+        const isAdminUser = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(user.role);
         const canChangePassword = _canPwdFor(user.role); // #233
         const canBlock = can('block') && !isAdminUser; // #233
 
@@ -4959,7 +4966,7 @@ function applyBlockStateToChatHeader(user) {
     const reason = user.blockReason || 'Sin motivo registrado';
     const blockedBy = user.blockedBy || null;
     const blockedAt = user.blockedAt ? new Date(user.blockedAt) : null;
-    const isAdminUser = ['admin', 'depositor', 'withdrawer', 'comunidad'].includes(user.role);
+    const isAdminUser = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(user.role);
     // Tanto admin general como depositor pueden bloquear (son los que operan en el chat).
     const canBlock = can('block') && !isAdminUser; // #233
 
@@ -5757,6 +5764,7 @@ function getRoleLabel(role) {
         admin: 'Admin General',
         depositor: 'Admin Depositor',
         withdrawer: 'Admin Withdrawer',
+        cajero: 'Cajero (cargas + retiros)',
         comunidad: 'Admin Comunidad'
     };
     return labels[role] || role;
@@ -5815,7 +5823,7 @@ async function handleCreateUser() {
             document.getElementById('newUserRole').value = 'user';
             // Link de acceso de un solo uso del recién creado (solo clientes;
             // admin general y depositor — el backend lo re-valida igual).
-            if (data.user && data.user.role === 'user' && currentAdmin && ['admin', 'depositor'].includes(currentAdmin.role)) {
+            if (data.user && data.user.role === 'user' && currentAdmin && ['admin', 'depositor', 'cajero'].includes(currentAdmin.role)) {
                 generateAccessLink(data.user.id, data.user.username,
                     '✅ Usuario creado. Este es su link para entrar por primera vez:');
             }
@@ -15486,7 +15494,7 @@ async function loadSecuritySection() {
 }
 // #233 (réplica #249) Qué ve cada tipo de admin (solo el dueño de Seguridad). Tildado = la ve; destildado = se le oculta del menú
 // y el server le bloquea sus rutas.
-const SEC_PERM_LABELS = { admin: 'Admin general', depositor: 'Cargas (depositor)', withdrawer: 'Pagos (withdrawer)', comunidad: 'Comunidad' };
+const SEC_PERM_LABELS = { admin: 'Admin general', depositor: 'Cargas (depositor)', withdrawer: 'Pagos (withdrawer)', cajero: 'Cajero (cargas + retiros)', comunidad: 'Comunidad' };
 let _secPerms = null;
 function _secSectionLabel(sec) {
     const a = document.querySelector(`.nav-item[data-section="${sec}"]`);

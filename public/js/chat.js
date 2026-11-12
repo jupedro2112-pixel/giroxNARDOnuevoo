@@ -185,7 +185,7 @@ VIP.chat = (function () {
 
         if (messages.length > 0) {
             const lastMsg = messages[messages.length - 1];
-            const adminRoles = ['admin', 'depositor', 'withdrawer'];
+            const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero'];
             if (VIP.state.lastMessageId && VIP.state.lastMessageId !== lastMsg.id && adminRoles.includes(lastMsg.senderRole)) {
                 VIP.notifications.playNotificationSound();
             }

@@ -1098,6 +1098,11 @@ body {
     color: var(--warning);
 }
 
+.role-badge.cajero { /* #234 cargas + retiros */
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+}
+
 .status-badge {
     display: inline-block;
     padding: 4px 10px;

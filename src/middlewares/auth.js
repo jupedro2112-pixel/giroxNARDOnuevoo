@@ -224,7 +224,7 @@ const depositorOnly = (req, res, next) => {
     return next(new AppError('No autenticado', 401, ErrorCodes.AUTH_UNAUTHORIZED));
   }
 
-  const allowedRoles = ['admin', 'depositor'];
+  const allowedRoles = ['admin', 'depositor', 'cajero'];
   if (!allowedRoles.includes(req.user.role)) {
     return next(new AppError(
       'Solo agentes de carga pueden realizar esta acción',
@@ -244,7 +244,7 @@ const withdrawerOnly = (req, res, next) => {
     return next(new AppError('No autenticado', 401, ErrorCodes.AUTH_UNAUTHORIZED));
   }
 
-  const allowedRoles = ['admin', 'withdrawer'];
+  const allowedRoles = ['admin', 'withdrawer', 'cajero'];
   if (!allowedRoles.includes(req.user.role)) {
     return next(new AppError(
       'Solo agentes de retiro pueden realizar esta acción',

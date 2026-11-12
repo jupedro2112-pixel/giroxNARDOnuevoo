@@ -793,7 +793,7 @@ const USER_PUBLIC_FIELDS = 'id username email phone phoneVerified phoneVerificat
 // agentes de carga/retiro, y publisher_admin (cuenta dedicada a un publicista).
 // Estas cuentas se saltan toda la lógica de JUGAYGANA sync, default-password
 // detection, mustChangePassword forzado, Meta CAPI tracking, etc.
-const ADMIN_ROLES = ['admin', 'depositor', 'withdrawer', 'publisher_admin', 'comunidad'];
+const ADMIN_ROLES = ['admin', 'depositor', 'withdrawer', 'cajero', 'publisher_admin', 'comunidad']; // #234 (réplica PICAROJA #1126): 'cajero' = cargas + retiros a la vez (la UNIÓN de depositor y withdrawer, nunca lo del admin general)
 const isAdminRole = (role) => ADMIN_ROLES.includes(role);
 
 // ============================================
@@ -973,7 +973,7 @@ app.use(_staffAuditMiddleware); // #245
 // Cada entrada: [prefijo, modo] — 'all' = toda la ruta y sus subrutas · 'write' = solo POST/PUT/PATCH/DELETE (el GET lo
 // usan otras partes del panel al arrancar) · 'exact' = solo ese path exacto (ej. la LISTA de usuarios; /users/:id lo usa el chat).
 // ============================================================================================================
-const STAFF_PERM_KEYS = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+const STAFF_PERM_KEYS = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
 const STAFF_SECTION_API = {
   chats: [['/api/admin/conversations', 'all'], ['/api/admin/chats', 'all'], ['/api/admin/chat-status', 'all'], ['/api/admin/close-chat', 'all'], ['/api/admin/send-to-open', 'all'], ['/api/admin/send-to-payments', 'all'], ['/api/admin/send-to-community', 'all']],
   chatDelays: [['/api/admin/chat-delays', 'all']],
@@ -1059,15 +1059,15 @@ const STAFF_ACTIONS = {
   pwd_client:    { def: ['admin'], grant: true },
   pwd_staff:     { def: ['admin'], grant: true },
   pwd_admin:     { def: ['admin'], grant: true },
-  access_link:   { def: ['admin', 'depositor'], grant: true },
-  login_no_pwd:  { def: ['admin', 'depositor'], grant: true },
-  block:         { def: ['admin', 'depositor'], grant: true },
-  create_client: { def: ['admin', 'depositor'], grant: true },
+  access_link:   { def: ['admin', 'depositor', 'cajero'], grant: true },
+  login_no_pwd:  { def: ['admin', 'depositor', 'cajero'], grant: true },
+  block:         { def: ['admin', 'depositor', 'cajero'], grant: true },
+  create_client: { def: ['admin', 'depositor', 'cajero'], grant: true },
   create_staff:  { def: ['admin'], grant: true },
   export_csv:    { def: ['admin'], grant: true },
-  deposit:       { def: ['admin', 'depositor', 'comunidad'], grant: false },
-  bonus:         { def: ['admin', 'depositor', 'comunidad'], grant: false },
-  withdraw:      { def: ['admin', 'withdrawer'], grant: false }
+  deposit:       { def: ['admin', 'depositor', 'cajero', 'comunidad'], grant: false },
+  bonus:         { def: ['admin', 'depositor', 'cajero', 'comunidad'], grant: false },
+  withdraw:      { def: ['admin', 'withdrawer', 'cajero'], grant: false }
 };
 /** Tipos que el panel deja tildar para esa acción (los demás salen "—"). */
 function _actionEditableKeys(action) {
@@ -1330,7 +1330,7 @@ function requireAdminCookie(req, res, next) {
   }
   try {
     const decoded = jwt.verify(cookieVal, JWT_SECRET, { algorithms: ['HS256'] });
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (!adminRoles.includes(decoded.role)) {
       return res.status(403).send('Forbidden');
     }
@@ -3045,7 +3045,7 @@ function _hgcashWebhookSecretEntries() {
   return process.env.HGCASH_WEBHOOK_SECRET ? [{ key: null, secret: process.env.HGCASH_WEBHOOK_SECRET }] : [];
 }
 // #229 roles que ven y rotan la cuenta hgcash (mismo nombre que en los gemelos con sección 🏦 Banco).
-function _bankCanView(req) { return ['admin', 'depositor', 'withdrawer'].includes(req.user && req.user.role); }
+function _bankCanView(req) { return ['admin', 'depositor', 'withdrawer', 'cajero'].includes(req.user && req.user.role); }
 
 // ============================================
 // FAN-OUT del webhook hgcash → autoreembolsos
@@ -3554,22 +3554,22 @@ const authMiddleware = async (req, res, next) => {
 };
 
 const adminMiddleware = (req, res, next) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'depositor' && req.user.role !== 'withdrawer' && req.user.role !== 'comunidad') {
+  if (req.user.role !== 'admin' && req.user.role !== 'depositor' && req.user.role !== 'withdrawer' && req.user.role !== 'cajero' && req.user.role !== 'comunidad') {
     return res.status(403).json({ error: 'Acceso denegado. Solo administradores.' });
   }
   next();
 };
 
 const depositorMiddleware = (req, res, next) => {
-  // 'comunidad' funciona como un depositor (mismas funciones de carga) + ve la sección Comunidad.
-  if (req.user.role !== 'admin' && req.user.role !== 'depositor' && req.user.role !== 'comunidad') {
+  // 'comunidad' funciona como un depositor (mismas funciones de carga) + ve la sección Comunidad. 'cajero' (#234) = depositor + withdrawer.
+  if (req.user.role !== 'admin' && req.user.role !== 'depositor' && req.user.role !== 'cajero' && req.user.role !== 'comunidad') {
     return res.status(403).json({ error: 'Acceso denegado. Solo agentes de carga.' });
   }
   next();
 };
 
 const withdrawerMiddleware = (req, res, next) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'withdrawer') {
+  if (req.user.role !== 'admin' && req.user.role !== 'withdrawer' && req.user.role !== 'cajero') { // #234: el cajero también paga
     return res.status(403).json({ error: 'Acceso denegado. Solo agentes de retiro.' });
   }
   next();
@@ -4943,7 +4943,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     // JavaScript (XSS-safe) and is scoped to the admin path only.
     // publisher_admin también entra al panel /adminprivado2026 (vista limitada),
     // por eso recibe la misma cookie que los otros roles administrativos.
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'publisher_admin', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'publisher_admin', 'comunidad'];
     if (adminRoles.includes(userObj.role)) {
       // Set two httpOnly cookies: one for page access, one for API calls.
       // Neither can be read by client-side scripts (XSS-safe).
@@ -5125,7 +5125,7 @@ app.get('/api/admin/me', async (req, res) => {
     const decoded = jwt.verify(cookieToken, JWT_SECRET, { algorithms: ['HS256'] });
     // publisher_admin también accede al panel (vista limitada) y por eso entra
     // en la lista de roles permitidos para /api/admin/me.
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'publisher_admin', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'publisher_admin', 'comunidad'];
     if (!adminRoles.includes(decoded.role)) {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
@@ -5847,7 +5847,7 @@ app.post('/api/auth/login-otp-verify', authLimiter, async (req, res) => {
 
     // Set admin cookies if applicable (incluye publisher_admin que también
     // usa la UI del panel administrativo en /adminprivado2026, en vista limitada).
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'publisher_admin', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'publisher_admin', 'comunidad'];
     if (adminRoles.includes(userObj.role)) {
       const adminCookieToken = jwt.sign(
         { userId: userId, username: userObj.username, role: userObj.role, tokenVersion: userObj.tokenVersion ?? 0 },
@@ -6639,7 +6639,7 @@ app.post('/api/users', authMiddleware, adminMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'El número de teléfono es obligatorio (mínimo 8 dígitos)' });
     }
 
-    const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'comunidad'];
+    const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' });
     }
@@ -6971,7 +6971,7 @@ app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
       if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Solo el administrador principal puede cambiar roles' });
       }
-      const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'comunidad'];
+      const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
       if (!validRoles.includes(req.body.role)) {
         return res.status(400).json({ error: 'Rol inválido' });
       }
@@ -7125,7 +7125,7 @@ app.delete('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) =
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
     
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (adminRoles.includes(userToDelete.role) && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Solo los administradores pueden eliminar otros administradores' });
     }
@@ -7265,7 +7265,7 @@ app.get('/api/messages/:userId', authMiddleware, async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const before = req.query.before ? new Date(req.query.before) : null;
 
-    const allowedRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const allowedRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     const isAdminRole = allowedRoles.includes(req.user.role);
     if (!isAdminRole && req.user.userId !== userId) {
       return res.status(403).json({ error: 'Acceso denegado' });
@@ -7469,7 +7469,7 @@ app.post('/api/messages/send', authMiddleware, async (req, res) => {
       }
     }
     
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     const isAdminRole = adminRoles.includes(req.user.role);
     
     // Issue #3: Bloquear comandos enviados por usuarios comunes (solo admins pueden procesar comandos)
@@ -10158,7 +10158,7 @@ io.on('connection', (socket) => {
       socket.username = decoded.username;
       socket.role = decoded.role;
 
-      if (['admin', 'depositor', 'withdrawer', 'comunidad'].includes(decoded.role)) {
+      if (['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(decoded.role)) {
         connectedAdmins.set(decoded.userId, socket);
         socket.join('admins'); // Unir a sala de admins
         logger.info(`Admin connected: ${decoded.username} (${decoded.role}) socket=${socket.id}`);
@@ -10182,7 +10182,7 @@ io.on('connection', (socket) => {
   
   // Unirse a sala de admins (admin, depositor, withdrawer)
   socket.on('join_admin_room', () => {
-    if (['admin', 'depositor', 'withdrawer', 'comunidad'].includes(socket.role)) {
+    if (['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(socket.role)) {
       socket.join('admins');
       logger.debug(`Admin ${socket.username} (${socket.role}) joined admin room`);
     }
@@ -10201,7 +10201,7 @@ io.on('connection', (socket) => {
   
   // CORREGIDO: Unirse a sala de chat específica (para admins)
   socket.on('join_chat_room', (data) => {
-    if (['admin', 'depositor', 'withdrawer', 'comunidad'].includes(socket.role) && data && data.userId) {
+    if (['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(socket.role) && data && data.userId) {
       socket.join(`chat_${data.userId}`);
       logger.debug(`Admin ${socket.username} joined chat room: chat_${data.userId}`);
     }
@@ -10265,7 +10265,7 @@ io.on('connection', (socket) => {
       }
       
       // Determinar el receptor correcto
-      const isAdminRole = ['admin', 'depositor', 'withdrawer', 'comunidad'].includes(socket.role);
+      const isAdminRole = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(socket.role);
       const targetReceiverId = isAdminRole ? receiverId : 'admin';
       const targetReceiverRole = isAdminRole ? 'user' : 'admin';
       
@@ -10578,7 +10578,7 @@ io.on('connection', (socket) => {
     // también viven en connectedAdmins. Antes solo se limpiaba 'admin' → los
     // sockets muertos de los otros roles quedaban en el Map para siempre
     // (fuga de memoria + emits a sockets desconectados en broadcastStats).
-    if (['admin', 'depositor', 'withdrawer', 'comunidad'].includes(socket.role)) {
+    if (['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'].includes(socket.role)) {
       connectedAdmins.delete(socket.userId);
       broadcastStats();
     } else {
@@ -12672,7 +12672,7 @@ app.post('/api/admin/users/:userId/welcome-code-bonus/use', authMiddleware, admi
 // bono); monto = admin general y depositor (decisión del owner).
 app.get('/api/admin/community-code', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    if (!['admin', 'depositor'].includes(req.user.role)) {
+    if (!['admin', 'depositor', 'cajero'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Sin permiso para ver esta configuración.' });
     }
     const code = String((await getConfig('communityWelcomeCode', '')) || '');
@@ -12697,7 +12697,7 @@ app.get('/api/admin/community-code', authMiddleware, adminMiddleware, async (req
 
 app.post('/api/admin/community-code', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    if (!['admin', 'depositor'].includes(req.user.role)) {
+    if (!['admin', 'depositor', 'cajero'].includes(req.user.role)) {
       return res.status(403).json({ error: 'Sin permiso para modificar esta configuración.' });
     }
     const b = req.body || {};
@@ -16214,7 +16214,7 @@ app.post('/api/admin/change-own-password', authMiddleware, async (req, res) => {
   // cambiar SU propia contraseña con este endpoint. No se usa adminMiddleware
   // porque ése rechaza publisher_admin — y publisher_admin también necesita
   // cambiar su contraseña desde el panel.
-  const STAFF_ROLES = ['admin', 'depositor', 'withdrawer', 'publisher_admin'];
+  const STAFF_ROLES = ['admin', 'depositor', 'withdrawer', 'cajero', 'publisher_admin'];
   if (!STAFF_ROLES.includes(req.user.role)) {
     return res.status(403).json({ error: 'Acceso denegado.' });
   }
@@ -17707,6 +17707,10 @@ app.get('/api/admin/conversations', authMiddleware, adminMiddleware, async (req,
     if (userRole === 'comunidad' && status === 'payments') {
       return res.status(403).json({ error: 'Acceso denegado. Comunidad no puede ver pagos.' });
     }
+    // #234 Cajero (cargas + retiros): abiertos/cerrados/pagos; NO comunidad (ni el depositor ni el withdrawer la ven).
+    if (userRole === 'cajero' && status === 'comunidad') {
+      return res.status(403).json({ error: 'Acceso denegado.' });
+    }
 
     if (userRole === 'withdrawer' && status !== 'payments') {
       return res.status(403).json({ error: 'Acceso denegado. Los withdrawers solo pueden ver chats de pagos.' });
@@ -17827,7 +17831,7 @@ app.get('/api/users/:userId', authMiddleware, async (req, res) => {
     const { userId } = req.params;
     
     // Only admins or the user themselves can fetch a user profile
-    const adminRoles = ['admin', 'depositor', 'withdrawer', 'comunidad'];
+    const adminRoles = ['admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (!adminRoles.includes(req.user.role) && req.user.userId !== userId) {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
@@ -19128,7 +19132,7 @@ app.post('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) =
     }
     
     // Validar rol
-    const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'comunidad'];
+    const validRoles = ['user', 'admin', 'depositor', 'withdrawer', 'cajero', 'comunidad'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' });
     }
@@ -21219,8 +21223,8 @@ const NotifBatch = require('./src/models/NotifBatch');
 // (hoy ~1.6k clientes). El envío es en segundo plano y reanudable, así que el
 // tamaño no compromete nada.
 const NOTIF_BATCH_MAX_RECIPIENTS = 20000;
-const NOTIF_BATCH_SEND_ROLES = ['admin', 'depositor'];
-const NOTIF_BATCH_VIEW_ROLES = ['admin', 'depositor', 'withdrawer'];
+const NOTIF_BATCH_SEND_ROLES = ['admin', 'depositor', 'cajero'];
+const NOTIF_BATCH_VIEW_ROLES = ['admin', 'depositor', 'withdrawer', 'cajero'];
 
 // Misma clasificación que el badge del chat (APP INSTALADA / NOTIS EN
 // NAVEGADOR / NOTIS INACTIVAS): standalone en CUALQUIER token = app.
