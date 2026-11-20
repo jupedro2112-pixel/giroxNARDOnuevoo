@@ -4,7 +4,56 @@
 > commit por commit está en `git log --oneline`. Esto captura decisiones, umbrales de
 > negocio y pendientes que NO se ven leyendo el código.
 >
-> **Última actualización: 2026-11-12**
+> **Última actualización: 2026-11-20**
+
+## Sesión 2026-11-20
+
+### 235. 🏦 FINPRO segundo banco con API (hasta 3 cuentas) + 🏦 Bancos automáticos + 🔁 rotación automática + barra única + pagar con el otro banco — réplica de AUTOREEMBOLSOSjygactivo #202 / #207 / #208 / #209 / #210 / #212 / #213 / #214 / #216 — admin-sw v67
+- **Owner:** "replicá todo lo de BANCOS (hgcash + Finpro) tal cual quedó en AUTOREEMBOLSOSjygactivo". Este repo ya tenía las 3 cuentas hgcash
+  (#229) y la sección 🏛️ Bancos — Configuración (#230); de Finpro no tenía nada. Se portó el código de la fuente bloque por bloque (los tres
+  bloques grandes de `server.js` — núcleo Finpro, endpoints del panel + rotación, pago por Finpro — quedaron idénticos byte a byte).
+  ⚠️ Los comentarios `#202`, `#207`…`#216` en ese código son números del WORKLOG de la FUENTE.
+- **Finpro (#202):** `src/services/finproService.js` (copiado tal cual). Hasta 3 cuentas en `Config['finproAccounts']` (cifradas, panel > SSM
+  `FINPRO_*`), una EN USO y las otras de respaldo; webhook entrante `POST /api/finpro/webhook` (firmado, fail-closed en producción sin
+  secreto), verificación del comprobante contra Finpro (`_finproVerifyComprobante` + cron de re-verificación cada 2 min hasta 90 min), pago
+  de retiros (`_payPayoutViaFinpro`, un lote por pago, `fpProcessId`/`fpAccountKey`), callback `POST /api/finpro/callback`, consulta de estado
+  (`_finproSyncPayout`: poll, sincronizar, limpieza), saldos, diagnóstico y verificación manual. Un `BankMovement` con `provider:'finpro'`
+  entra al MISMO `hgcashAutoCarga` (plata por `girox.depositToUser`, misma `reference vip-hg-…`, mismos candados y bono automático).
+- **🏦 Bancos automáticos (#202):** tres llaves — por dónde entran las cargas (hgcash / Finpro / los dos / ninguno), por dónde salen los
+  retiros (`Config['bankProvider']`) y qué cuenta ve el cliente (`Config['bankShown']`: hgcash / Finpro / a mano). Solo el banco elegido
+  reescribe `Config['cbu']`. **Sin tocar nada después del deploy todo sigue igual** (hgcash en las tres, Finpro apagado).
+- **🔁 Rotación automática (#207/#210/#213/#216):** `Config['bankRotation']`, TODO apagado por defecto. Por caída (N controles seguidos) o
+  por tope del día/mes de lo que entró; destino elegible por cuenta ("Al rotar pasa a"); entre bancos solo con el tilde; "mover retiros"
+  solo por caída; vueltas cuando todas llegan al tope del día (el del mes no da vueltas); candado `Config['bankRotationLock']`; aviso por
+  Telegram si está configurado. Nota interna nueva en la carga: "transfirió a la cuenta X, que NO es la que está en uso".
+- **Barra única (#208):** `GET/POST /api/admin/bank-in-use` con todas las cuentas de los dos bancos + USAR ESTA. **Adaptación:** este repo no
+  tiene sección 🏦 Banco, así que la barra quedó arriba de 🏛️ Bancos — Configuración (solo admin general); depositor / withdrawer / cajero
+  pueden rotar por API (`_bankCanView`), el mismo criterio que ya tenía `POST /api/admin/hgcash/accounts/:key/activate`.
+- **Retiros (#213/#214):** `POST /api/admin/payouts/:id/pay` acepta `body.provider` para pagar ESE retiro por el otro banco. Botones del chat:
+  **Pagar / Pagar nuevamente** · **Pagar con otro banco** (el otro banco con API, si está listo) · **Ya lo pagué por fuera** (el botón que
+  antes decía "Pagar con otro banco": solo marca pagado a mano). Candados anti doble pago: `hgSendUnknown`, 409 `needsConfirm` /
+  `confirmOtherBank`, un estado de un banco no toca un pago del otro, DONE cruzado → alerta "POSIBLE PAGO DOBLE". Siguen los `_capMw('withdraw')`.
+- **#212:** una cuenta (hgcash o Finpro) no se guarda sin CBU/CVU de 22 dígitos + alias; al activar una cuenta el cliente ya no hereda
+  banco/titular/CBU/alias de la anterior. **#209:** sin carteles de "URL de desarrollo" de Finpro.
+- **Cambios de comportamiento para lo que YA estaba (hgcash):** (1) editar/crear una cuenta hgcash ahora exige CBU + alias; (2) al tocar USAR
+  ESTA, lo que falte en esa cuenta queda VACÍO para el cliente (antes heredaba lo anterior); (3) un aviso ERROR/CANCELLED de hgcash solo
+  marca fallado un pago que está `paying` (antes pisaba cualquier estado); (4) un envío a hgcash sin respuesta clara queda marcado
+  (`hgSendUnknown`) y frena pagarlo por Finpro sin confirmar; (5) el poll de pagos mira hasta 40 (antes 25) y sigue los de Finpro 24 h.
+- **Arreglo de paso (venía del #230):** el bloque de hgcash (config, cuentas, reenvío, movimientos) estaba DUPLICADO en el HTML — una copia en
+  COMANDOS y otra en Bancos — Configuración, con los mismos ids (36 repetidos). `getElementById` agarraba la de COMANDOS, así que la sección de
+  Bancos mostraba su copia sin llenar. La fuente tenía el mismo problema y lo sacó en su #202: acá se sacó la copia de COMANDOS.
+- **Lo que NO se portó (no existe acá):** bandeja del banco / bajadas / cierre diario, "comprobante a otro CBU" (#125 de la fuente),
+  `_systemFactsForAi`, `plat.*`/mudanza, y las barras por banco de 🏦 Banco (sus funciones quedan en `admin.js` sin efecto, como ya pasaba
+  con la de hgcash). Helpers que se agregaron porque el código de Finpro los usa: `_cbuSameAccount`, `_normAlias`, `_bankFromKey`, `_projectLabel`.
+- **Modelos:** `BankMovement` (+`provider`, `processedEvents`, `fromKey`, `resolutionNote`, `outKind`, `payoutId`), `Comprobante`
+  (+`finproVerifyStatus`, `finproVerify`), `PendingPayout` (+`fpProcessId`, `fpTransactionId`, `fpCoelsaId`, `fpAccepted`, `hgSendUnknown`,
+  `fpAccountKey`). Nada renombrado: `Config['hgcashAccounts']`, `hgcash` y `cbu` se leen igual que antes.
+- **Seguridad (#233):** las rutas de escritura nuevas (`/api/admin/finpro`, `/banks`, `/bank-provider`, `/bank-rotation`, `/bank-in-use`) están
+  en `STAFF_SECTION_API.banksConfig`.
+- **Validación:** `node --check` en todo lo tocado, `check-tdz` OK, `test-finpro-accounts` 43/43, `test-finpro-webhook` 17, `test-bank-rotation`
+  19, y los tres tests que ya había siguen verdes. **Sin probar contra Finpro ni hgcash reales** (acá no hay `node_modules`: el server no se
+  levantó). Para usar Finpro: cargar la cuenta en el panel (o `FINPRO_*` en SSM), configurar en Finpro las dos URLs que muestra la card
+  (webhook y callback) y arrancar en modo SOMBRA.
 
 ## Sesión 2026-11-12
 

@@ -5,7 +5,7 @@
 > verdad y este doc puede quedar viejo. Si encontrás algo desactualizado acá, corregilo
 > (regla permanente en CLAUDE.md: este doc se actualiza junto con WORKLOG.md).
 >
-> Última actualización: **2026-11-12** — **Rol CAJERO = cargas + retiros (#234, réplica PICAROJA #1126)**: unión exacta de depositor + withdrawer en todas las listas de roles; chats sin Comunidad (§3). Antes: **2026-11-11** — **QUÉ VE / QUÉ PUEDE HACER cada tipo de admin (#233, réplica BUFFALOGIROX #249/#250, reemplaza al #232)**: `_staffSectionGuard` + `STAFF_SECTION_API` bloquean en el server las secciones ocultas, `STAFF_ACTIONS`/`_canDo`/`_capMw`/`_pwdChangeDenied` (§3, §9). Antes, mismo día: **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
+> Última actualización: **2026-11-20** — **FINPRO segundo banco con API + Bancos automáticos + rotación automática de cuentas + barra única + pagar con el otro banco (#235, réplica #202–#216 de AUTOREEMBOLSOSjygactivo)**: ver **§11**. Antes: **2026-11-12** — **Rol CAJERO = cargas + retiros (#234, réplica PICAROJA #1126)**: unión exacta de depositor + withdrawer en todas las listas de roles; chats sin Comunidad (§3). Antes: **2026-11-11** — **QUÉ VE / QUÉ PUEDE HACER cada tipo de admin (#233, réplica BUFFALOGIROX #249/#250, reemplaza al #232)**: `_staffSectionGuard` + `STAFF_SECTION_API` bloquean en el server las secciones ocultas, `STAFF_ACTIONS`/`_canDo`/`_capMw`/`_pwdChangeDenied` (§3, §9). Antes, mismo día: **SEGURIDAD INTERNA del staff (#231, réplica BUFFALOGIROX #245–#248)**: `StaffAudit` con IP + huella del dispositivo, solo el admin general cambia claves, staff sin SMS, sección 🛡️ Seguridad solo para `PANEL_OWNER` (`isPanelOwner`) (§3, §4.8, §9). Antes: **2026-11-04** — **sección propia "🏛️ Bancos — Configuración" en el panel (#230, réplica #224 de CARGASGIROXactivo: todo lo de bancos salió de COMANDOS; mismos ids/endpoints)** y **hasta 3 CUENTAS hgcash con cuenta ACTIVA rotable (#229, réplica #223/#223b de
 > CARGASGIROXactivo; ver "Cuentas hgcash múltiples" en la auto-carga del banco)**. Antes: **2026-10-29** — **PÁGINA DEL CASINO desde COMANDOS (#228)**: `/sys_casino_url` re-apunta el
 > dominio del link de SSO y suma ese dominio al `frame-src` del CSP (§4.9, §9).
 > Antes: **2026-10-26** — réplica de PICA ROJA tandas 1-4: interruptores de funciones
@@ -130,10 +130,13 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
 - **ChatDelay** — snapshot permanente de demoras de atención que superaron el umbral
   (sobrevive al TTL de Message). Umbrales: cargas 2min / pagos 30min (configurables).
 
-### Plata / banco automático (hgcash)
-- **BankMovement** — cada movimiento que hgcash notifica por webhook. `matchStatus`:
+### Plata / banco automático (hgcash + Finpro)
+- **BankMovement** — cada movimiento que hgcash notifica por webhook (y, desde el #235, los
+  de Finpro: `provider:'finpro'`, `movementId 'fp:…'`, `processedEvents`; sin `provider` =
+  hgcash). `matchStatus`:
   pending→claiming→shadow_matched|auto_charged|manual_charged|needs_review|duplicate|
-  error|ignored. Dedupe por `movementId` único.
+  error|ignored. Dedupe por `movementId` único. `accountKey` = perfil de cuenta (`a1`… hgcash,
+  `f1`… Finpro). Campos nuevos #235: `fromKey`, `resolutionNote`, `outKind`, `payoutId`.
 - **Comprobante** — cada imagen que la IA (Claude vision) clasificó como comprobante.
   `dedupeKey` (N° operación normalizado, descartando CBU/CUIT) + `imageHash` (SHA-256)
   para detectar reutilización. `bankMatchStatus` para la auto-carga.
@@ -145,6 +148,10 @@ modelos); sus migraciones corren únicamente si algo llamara a ese connectDB.
   `deductAtPay:true` (flujo actual) = las fichas se descuentan AL CONFIRMAR, no al
   solicitar. `debitConfirmed` = verificación anti-retiro-fantasma (el saldo tiene que
   haber bajado de verdad). `status`: pending_review→paying→paid|failed|cancelled.
+  Banco que pagó: `paidVia` (`hgcash` | `finpro` | `other_bank` | `dismissed`) + la cuenta
+  (`hgAccountKey` / `fpAccountKey`). Finpro (#235): `fpProcessId`, `fpTransactionId`,
+  `fpCoelsaId`, `fpAccepted` (true/false/null = sin respuesta) y `hgSendUnknown` (§11).
+- **Comprobante** suma `finproVerifyStatus` / `finproVerify` (verificación contra Finpro, §11.3).
 
 ### Captación / marketing
 - **Campaign** — publicista/pauta. `code` inmutable (va en la URL). **`giroxApiKey`**
@@ -897,7 +904,8 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   cifrado igual que antes; cada instancia lo descifra en memoria a los 8 s y cada **15 s** (`_hgAccounts`, `_hgActiveKey`, `_hgIncomingMode`).
   `Config['hgcashCredentials']` (una sola cuenta) se migra solo a `a1` la primera vez; panel > SSM (`HGCASH_API_TOKEN` / `HGCASH_WEBHOOK_SECRET`
   valen solo sin cuentas en el panel). La **ACTIVA** paga (`hgcashPay.setTokenOverride`), responde el saldo y define lo que ve el cliente
-  (`_hgApplyActiveToConfigs` → `hgcash.accountName/cbu/accountId` y `Config['cbu']`). **TODAS reciben:** `_hgcashWebhookSecretEntries()` → el
+  (`_hgApplyActiveToConfigs` → `hgcash.accountName/cbu/accountId` y `Config['cbu']` — desde el #235 solo si `getBankShown()==='hgcash'`,
+  y sin heredar banco/titular/CBU/alias de la cuenta anterior; además una cuenta no se guarda sin CBU de 22 dígitos + alias). **TODAS reciben:** `_hgcashWebhookSecretEntries()` → el
   webhook acepta la firma de cualquiera y guarda por cuál entró en `BankMovement.accountKey`; `_comprobanteToOurBank` reconoce el CBU/titular
   de cualquiera que RECIBA. **Qué cuentas cargan solas:** `incomingMode 'all'|'active'` + `accounts[].incomingEnabled` → `_hgAccountReceives(a)`;
   `_hgMovementAutoOff(m)` da el motivo y el movimiento queda `pending` con `chargeError` (`hgcashMatchFromMovement` lo saltea,
@@ -970,6 +978,9 @@ VIPCARGAS con su JWT, y el cliente nunca más necesita conocer su clave del casi
   prueba `giroxApiKey` (el panel valida que empiece con `pk_`). La respuesta del listado
   expone `hasJugayganaCreds` mapeado desde `hasGiroxKey`. El "probar login" ya no
   loguea: consulta un jugador inexistente — 404 = key válida, 401 = key rechazada.
+- **🏛️ Bancos — Configuración (#230 / #235):** barra "👁️ El cliente transfiere a…" (todas las cuentas hgcash + Finpro), CBU del
+  cliente, **🏦 Bancos automáticos** (3 llaves), hgcash (config + cuentas + reenvío), **🔁 Rotación automática**, **🟣 Finpro** (modo,
+  cuentas, saldos, diagnóstico, verificación manual) y Movimientos del banco (filtro por banco). Solo admin general. Detalle en §11.
 - `public/admin-sw.js` (scope /adminprivado2026/; `CACHE_VERSION` se bumpea por release —
   ver el valor actual en el archivo, v52 al 2026-10-07): network-first no-store para el shell.
 - Servido por handlers propios con cache en memoria (`readFileCached`) + ADMIN_HOST
@@ -1253,3 +1264,105 @@ El backfill de `usernameLower` corre en CADA arranque (idempotente) y setea
   (GET/PUT/run), `/api/admin/weekly-review` (+/run), `/api/admin/cronograma-autopilot`, `/api/notifications/prefs`.
 - **Diferencias con el gemelo:** sin aviso diario de reembolso (no hay rango diario acá), sin `DailyClose` (regalado /
   depositado sale de Transaction), sin cohortes de INICIO.
+
+## 11. Bancos con API: hgcash + Finpro, "Bancos automáticos", rotación y barra única (#235)
+
+Réplica de los **#202, #207, #208, #209, #210, #212, #213, #214 y #216 de AUTOREEMBOLSOSjygactivo** (tal cual quedó allá). Finpro es el
+SEGUNDO banco con API y convive con hgcash: comparten `BankMovement`, candados (`HgcashCharge`) y `hgcashAutoCarga`.
+⚠️ En el código, los comentarios `#202`, `#207`…`#216` de bancos/Finpro son números del WORKLOG **de la fuente**, no de este repo (acá es todo el #235).
+**Diferencias con la fuente:** la plata va por `giroxService` directo (acá no existe `plat`); no hay sección 🏦 Banco, bandeja, bajadas ni
+cierre diario (lo que no carga solo queda `pending` en "Movimientos del banco"); no existe el chequeo de "comprobante a otro CBU" (#125 de
+la fuente) ni `_systemFactsForAi`; el rol `cajero` entra en `_bankCanView` y el pago pasa por `_capMw('withdraw')`.
+
+### 11.1 Las tres llaves generales (panel 🏛️ Bancos — Configuración → 🏦 Bancos automáticos)
+| Llave | Config | Lee | Valores |
+|---|---|---|---|
+| Por dónde ENTRAN las cargas | `hgcash.enabled` + `Config['finpro'] = {enabled, mode}` | `getHgcashConfig()` / `getFinproConfig()` | hgcash / finpro / both / none |
+| Por dónde SALEN los retiros | `Config['bankProvider']` | `getBankProvider()` | `'hgcash'` (default) \| `'finpro'` |
+| Qué cuenta VE el cliente | `Config['bankShown']` | `getBankShown()` | `'hgcash'` (default) \| `'finpro'` \| `'manual'` |
+
+`bankShown` decide QUIÉN puede reescribir `Config['cbu']`: `_hgApplyActiveToConfigs` solo lo toca si es `'hgcash'`, `_fpApplyShownToCbu` solo si
+es `'finpro'`; con `'manual'` nadie (queda lo de la card de CBU). Al reescribirlo **no se hereda nada de la cuenta anterior** (un alias viejo
+mandaría la plata a la otra cuenta). `_bankLabel(provider)` da el nombre para textos; `_bankCfgForMovement(m)` devuelve la config
+(enabled/mode/umbrales) del banco de ESE movimiento. Sin tocar nada tras el deploy todo sigue como antes (hgcash / hgcash / hgcash, Finpro apagado).
+
+### 11.2 Cuentas Finpro (`Config['finproAccounts']`)
+`{ accounts: [{ key:'f1'…, label, apiKeyEnc, apiSecretEnc, webhookSecretEnc, …Last4, bankId, account, fromCvu, extraCvus, baseUrl, alias, bank,
+titular, cuit, incomingEnabled }], activeKey, incomingMode:'all'|'active', switchedBy/At }`. Cifrado con `_credEncrypt` (clave derivada de
+JWT_SECRET, igual que las de hgcash). Cada instancia lo descifra a los 9 s y cada 15 s (`_loadFinproCredentials` → `_fpAccounts`,
+`_fpActiveKey`, `_fpIncomingMode`) y pone la cuenta EN USO como estado global de `src/services/finproService.js`. Sin cuentas en el panel valen
+las env/SSM (`FINPRO_API_KEY/SECRET/ACCOUNT/FROM_CVU/WEBHOOK_SECRET/API_URL`) como pseudo-cuenta `key:null` (`_fpEnvAccount`, se guarda `'env'`).
+- **EN USO** = paga retiros (si `bankProvider='finpro'`) y es lo que ve el cliente (si `bankShown='finpro'`). Las demás = **respaldo**.
+- **Quién recibe:** `_fpAccountReceives(a)`; `_fpMovementAutoOff(m)` da el motivo si la cuenta del movimiento no carga sola (lo usa
+  `_hgMovementAutoOff`, que cubre los DOS bancos — es el único punto de control de "no se carga solo").
+- **Contexto por cuenta:** toda operación de `finproService` acepta `ctx`; `_fpCtx(a)` lo arma y **`_fpCtxFor(key)`** lo resuelve para un pago
+  existente (devuelve `{ok:false}` si esa cuenta ya no está: nunca cae en otra cuenta).
+- **#212:** una cuenta (hgcash o Finpro) no se guarda sin CBU/CVU de 22 dígitos + alias.
+
+### 11.3 Cargas entrantes por Finpro
+1. **Webhook secundario** `POST /api/finpro/webhook` (público, firmado HMAC-SHA256 de `timestamp.body` con `X-Webhook-Signature` /
+   `X-Webhook-Timestamp`; fail-closed en producción sin secreto). La cuenta sale del CVU destino (`_fpAccountForCvu`), si no del secreto que
+   firmó, si no la en uso. → `_finproIngestIncoming` crea el `BankMovement` (`movementId 'fp:<notification_id>'`, `provider:'finpro'`,
+   `accountKey`; dedupe por id y por coelsa) → `hgcashMatchFromMovement`. Entrante a un CVU no cargado, o saliente → `_finproIngestLedger`
+   (`matchStatus 'ignored'`; un saliente con el coelsa de un retiro nuestro queda `outKind 'payout'`).
+2. **Verificación del comprobante** (respaldo si el webhook no llegó): `hgcashMatchFromComprobante` → `_finproVerifyComprobante` →
+   `_finproVerifyAcross` (`transfers/verify/incoming` por coelsa, o monto+fecha con ventana de 180 min, a todas las cuentas que reciben).
+   Confirmada → ingesta + carga. No encontrada → `Comprobante.finproVerifyStatus='pending'` y `_finproReverifyTick` reintenta cada 2 min hasta
+   90 min. Ambigua / sin monto confirmado / titular distinto → revisión con nota interna 🟣, NO se carga.
+3. La carga es la de siempre (`hgcashAutoCarga`: claims atómicos, `HgcashCharge` por coelsa, mínimo, guard de duplicados, bono automático con
+   `resolveAutoBonus`, `girox.depositToUser` con `reference vip-hg-<coelsa|movementId>`), con el modo (sombra/auto) del banco del movimiento.
+   Nota interna nueva (#207): "⚠️ transfirió a la cuenta X, que NO es la que está en uso" (la carga entra igual).
+
+### 11.4 Retiros
+`POST /api/admin/payouts/:id/pay` → banco = `body.provider` (#213, pagar ESTE retiro por el otro banco) o `getBankProvider()`. Si es Finpro →
+`_payPayoutViaFinpro`: cuenta en uso fresca, resuelve alias (`accounts/information`), reclamo atómico → `paying`, `_deductChipsAtConfirm`
+(el mismo de hgcash), guarda `fpProcessId` (uuid), `fpTransactionId`, `fpAccountKey` y manda UN lote (`transfers/cvu`, `withCvuLock` por CVU de
+origen). `0201` = aceptado. Sin respuesta → queda `paying` con `fpAccepted:null` y `_finproSyncPayout` (poll hasta 24 h, botón sincronizar,
+callback) pregunta `processes/status` → `processes/{id}/result` con la cuenta que pagó y aplica vía `handlePayoutStatusWebhook(p, 'finpro')`.
+**Webhook principal** `POST /api/finpro/callback`: decide desde el payload solo si la firma es válida Y habla del `fpProcessId` vigente; si no,
+es una pista y se consulta. `GET /api/admin/payouts` trae `bankProvider`, `bankAccount`, `otherBank`, `otherReady`, `otherAccount`.
+Botones del retiro en el chat (#214): **Pagar / Pagar nuevamente** (banco elegido) · **Pagar con otro banco** (el otro banco con API, si está
+listo) · **Ya lo pagué por fuera** (`pay-other-bank`: solo MARCA pagado a mano; antes se llamaba "Pagar con otro banco").
+
+### 11.5 Rotación automática de cuentas (`Config['bankRotation']`, todo APAGADO por defecto)
+`{ enabled, onFailure, failChecks (2/3/5), onLimit, crossBank, movePayouts, loop, limits:{'hgcash:a1':{day,month,next}…}, log }`.
+`_bankRotationTick` (cada 2 min por instancia) mira la cuenta EN USO del banco que ve el cliente (`getBankShown()`; "manual" = no rota):
+(1) **tope** — lo que ENTRÓ por esa cuenta hoy / este mes (`_rotUsage`: `BankMovement` Inbound, hora Argentina; cuenta también los
+movimientos sin `accountKey`, #210); (2) **caída** — N controles seguidos sin respuesta (`_rotProbe`: hgcash `/accounts` con su token, Finpro
+saldo). Destino: el elegido en "Al rotar pasa a" (`limits[id].next`, #213) si está disponible; si no la siguiente cuenta que recibe, tiene
+CBU/CVU para mostrar, responde y no llegó a su tope — primero el mismo banco, el otro solo con `crossBank` (cambia `bankShown`; con
+`movePayouts` y solo por CAÍDA también `bankProvider`). **Vueltas (#216):** si TODAS llegaron al tope del DÍA arranca otra vuelta
+(`Config['bankRotationLap'] = {dayKey, n}`; en la vuelta N el tope vale N×). El tope del MES no da vueltas. Usa los mismos caminos que el botón
+(`_hgActivateAccount` / `_fpActivateAccount`). Candado atómico `Config['bankRotationLock']` (5 min). Avisa por Telegram (si está configurado)
+y guarda los últimos 30 cambios. Endpoints `GET/POST /api/admin/bank-rotation` (`?probe=1` prueba las cuentas; solo admin general).
+
+### 11.6 Barra única de cuentas (#208) y endpoints
+`GET/POST /api/admin/bank-in-use` (`_bankCanView`: admin, depositor, withdrawer, cajero): lista TODAS las cuentas de los dos bancos; elegir una
+= cuenta EN USO de su banco + `bankShown` a ese banco (los retiros no se tocan). **Acá no hay sección 🏦 Banco**: la barra (`#bankInUseBar`)
+vive arriba de 🏛️ Bancos — Configuración (que solo ve el admin general); para los demás roles el cambio queda por API, igual que ya pasaba con
+`POST /api/admin/hgcash/accounts/:key/activate`.
+Resto (después de `authMiddleware`; credenciales y llaves = solo admin general): `GET/POST /api/admin/banks` · `GET/POST /api/admin/bank-provider`
+· `GET/POST /api/admin/finpro/config` · `GET/POST /api/admin/finpro/accounts` · `DELETE …/:key` · `POST …/:key/activate` · `POST …/:key/incoming`
+· `POST …/accounts/incoming-mode` (ver/rotar/pausar/modo: `_bankCanView`) · `GET /api/admin/finpro/balance` · `GET /api/admin/finpro/diag` ·
+`POST /api/admin/finpro/verify` · `GET /api/admin/hgcash/movements?provider=hgcash|finpro` (los movimientos traen `hgAccount {key,label,active,bank}`).
+Todas las rutas de escritura están en `STAFF_SECTION_API.banksConfig` (#233).
+
+### 11.7 Trampas
+- **Nunca se reenvía un lote de Finpro sin respuesta**: se consulta con `_finproSyncPayout`. No reusar un `process_id` salvo que el lote anterior
+  haya sido ACEPTADO por la misma cuenta. Un lote `hgStatus 'enviando'` (`_finproInFlight`, tope 15 min) no se consulta.
+- **Rechazo seguro** = sin error de red, http < 500 y (4xx salvo 408/429, o código de la tabla de errores). Todo lo demás es "no se sabe".
+- Después del envío, todo `updateOne` del pago va con `{ id, fpProcessId, status: 'paying' }` (no pisar lo que otro resolvió).
+- **Cambio de banco con un intento previo:** `PendingPayout.hgSendUnknown` (envío a hgcash sin respuesta) frena el pago por Finpro hasta que el
+  agente confirme (`confirmOtherBank`; el server responde 409 `needsConfirm`). hgcash consulta a Finpro antes de pagar un retiro con
+  `fpProcessId` no rechazado. `handlePayoutStatusWebhook`: ERROR solo actúa sobre `paying`; un estado de un banco no toca un pago que salió por
+  el otro, y un DONE cruzado dispara la alerta "POSIBLE PAGO DOBLE".
+- Un pago existente se consulta con `_hgTokenFor(p.hgAccountKey)` / `_fpCtxFor(p.fpAccountKey)`, nunca con la cuenta en uso. Un flujo nuevo que
+  pague guarda `hgAccountKey` / `fpAccountKey`. No se editan credenciales/CVU ni se borra una cuenta con pagos `paying` suyos.
+- La verificación carga el monto que CONFIRMA Finpro, nunca el de la imagen. Finpro **no informa reversiones**.
+- La URL base por defecto (`mw-dev.finpro.com.ar`) dice "dev" pero es la que la fuente usa en PRODUCCIÓN (#209): el panel no lo avisa.
+- `BankMovement.provider` falta en los documentos viejos (= hgcash): filtrar con `{ $in: ['hgcash', null] }`.
+- El HTML del panel NO debe repetir ids: el bloque de hgcash estaba DUPLICADO entre COMANDOS y Bancos — Configuración (quedó así desde el #230;
+  `getElementById` agarraba la copia de COMANDOS). El #235 sacó la copia de COMANDOS.
+- Tests: `node scripts/test-finpro-accounts.js`, `node scripts/test-finpro-webhook.js`, `node scripts/test-bank-rotation.js`. Recortan bloques
+  reales de `server.js` por marcadores de texto (`const FINPRO_DEFAULTS`, `async function _banksPayload`, `const _finproLastProcessByCvu`, …):
+  si se renombra uno, actualizar el test.

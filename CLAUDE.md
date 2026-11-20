@@ -54,6 +54,7 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   define ExternalUser y UserActivity; el resto es proxy a /src/models).
 - `src/services/giroxService.js` — **cliente ÚNICO de la Partner API** (altas, saldo,
   cargas, retiros, bonos, cambio de clave y login único/SSO).
+- `src/services/finproService.js` — cliente de Finpro, el SEGUNDO banco con API (#235; hgcash es el primero). Detalle en `docs/ARCHITECTURE.md` §11.
 - `src/services/giroxUserLinkService.js` — resuelve y cachea `User.giroxUserId`.
 - `src/services/giroxPublisherKeys.js` — alta de jugadores con la API key del publicista.
 - `src/utils/periodRanges.js` — rangos de fecha (ayer / semana / mes) en hora argentina.
@@ -165,6 +166,22 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   (`hgAccountKey`): toda consulta nueva a hgcash sobre un pago existente tiene que pasar `_hgTokenFor(x.hgAccountKey)`, y todo
   flujo nuevo que pague tiene que guardar `hgAccountKey: _hgActiveKey`. No volver a leer `process.env.HGCASH_API_TOKEN` directo:
   usar `hgcashPay.getToken()` / `_hgcashWebhookSecretEntries()`.
+- **Dos bancos con API: hgcash y Finpro (#235, réplica #202–#216 de AUTOREEMBOLSOSjygactivo; hasta 3 cuentas Finpro):** tres llaves en
+  **🏛️ Bancos — Configuración → 🏦 Bancos automáticos**: por dónde ENTRAN las cargas (`hgcash.enabled` / `Config['finpro'].enabled`), por dónde
+  SALEN los retiros (`getBankProvider()`) y qué cuenta VE el cliente (`getBankShown()`: solo ese banco reescribe `Config['cbu']`, y nunca
+  hereda datos de la cuenta anterior). Las cuentas Finpro (`Config['finproAccounts']`, cifradas, panel > SSM) funcionan como las de hgcash:
+  una EN USO, las otras de respaldo. Reglas: un pago existente se consulta con **`_fpCtxFor(p.fpAccountKey)`**, nunca con la cuenta en uso;
+  todo flujo nuevo que pague por Finpro guarda `fpAccountKey`; `_hgMovementAutoOff(m)` ya cubre los dos bancos (seguir usándolo); un
+  `BankMovement` sin `provider` es de hgcash; **nunca se reenvía un lote de Finpro sin respuesta** (se consulta con `_finproSyncPayout`); un
+  texto nuevo sobre una carga usa `_bankLabel(m.provider)`; una cuenta de banco no se guarda sin CBU/CVU + alias. La plata de la carga sigue
+  yendo por `girox.depositToUser` dentro de `hgcashAutoCarga` (un movimiento de Finpro entra al MISMO pipeline). Las credenciales NO van en
+  el repo. ⚠️ Los comentarios `#202`/`#207`…`#216` en el código de bancos son números del WORKLOG de la fuente. Tests:
+  `node scripts/test-finpro-accounts.js` y `node scripts/test-finpro-webhook.js`.
+- **Rotación automática de cuentas (#235, réplica #207/#210/#213/#216):** `_bankRotationTick` puede cambiar SOLA la cuenta en uso (y, entre
+  bancos, `bankShown` / `bankProvider`) por caída o tope día/mes; todo apagado por defecto (`Config['bankRotation']`), candado
+  `Config['bankRotationLock']` (5 min), vueltas por día en `Config['bankRotationLap']` (el tope del mes no da vueltas). No asumir que la cuenta
+  en uso es la misma entre dos requests. La barra única (`/api/admin/bank-in-use`) y las rutas de ver/rotar usan `_bankCanView` (incluye
+  `cajero`); toda ruta nueva de bancos se suma a `STAFF_SECTION_API.banksConfig`. Test: `node scripts/test-bank-rotation.js`.
 - **Transaction** (cargas/retiros) es permanente (sin TTL). **Message** tiene TTL de 3
   días. La analítica de clientes se basa en Transaction.
 - **Montos en PESOS.** ⚠️ Ojo si mirás código o docs viejos: JUGAYGANA trabajaba en
