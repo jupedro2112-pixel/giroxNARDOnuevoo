@@ -26,6 +26,9 @@ const comprobanteSchema = new mongoose.Schema({
 
   // Datos extraídos del comprobante (los que la IA pudo leer)
   operationNumber: { type: String, default: null, trim: true },
+  // #219 Código COELSA impreso en el comprobante (22 letras+números). Identifica la transferencia en
+  // el banco: es el dato más fuerte para matchear con el movimiento y para preguntarle a Finpro.
+  coelsaCode: { type: String, default: null, trim: true, index: true },
   amount: { type: Number, default: null },
   originHolder: { type: String, default: null, trim: true }, // titular / origen
   originCbu: { type: String, default: null, trim: true },    // CBU/CVU/alias origen

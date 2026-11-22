@@ -83,7 +83,7 @@ const bankMovementSchema = new mongoose.Schema({
   // #235 (réplica #202) Finpro: movimientos que NO se matchean (salientes / entrantes a un CVU que no es nuestro) quedan
   // 'ignored' con el motivo; un saliente se clasifica como pago a cliente cuando su coelsa es el de un retiro nuestro.
   resolutionNote: { type: String, default: null },
-  outKind: { type: String, default: null },        // salientes: payout | unknown
+  outKind: { type: String, default: null },        // salientes: payout | unknown (| sweep = bajada de un proyecto hermano con la misma cuenta hgcash)
   payoutId: { type: String, default: null },
 
   createdAt: { type: Date, default: Date.now, index: true }

@@ -177,6 +177,19 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   yendo por `girox.depositToUser` dentro de `hgcashAutoCarga` (un movimiento de Finpro entra al MISMO pipeline). Las credenciales NO van en
   el repo. ⚠️ Los comentarios `#202`/`#207`…`#216` en el código de bancos son números del WORKLOG de la fuente. Tests:
   `node scripts/test-finpro-accounts.js` y `node scripts/test-finpro-webhook.js`.
+- **Pagos de retiros: candado anti pago doble (#237, réplica #219 de AUTOREEMBOLSOSjygactivo; incidente de $2,4M del 20/11 en aquel repo):**
+  la idempotencia del banco solo vale dentro de UNA cuenta. Todo camino que mande un retiro llama a `_payoutResendGuard(...)` antes de
+  reclamarlo, `_payoutNoteSend(...)` justo antes del POST al banco y `_payoutNoteResult(...)` con la respuesta. En hgcash el token va
+  EXPLÍCITO (`createCashOut({ token })`, cuenta fijada al empezar el pedido), nunca el global de "la cuenta en uso". No aflojar la espera
+  de 2 minutos ni dar por "rechazado" un envío sin respuesta clara. Test: `node scripts/test-payout-guard.js`.
+- **Retiro "VERIFICANDO" (#237, réplica #221):** un envío a hgcash sin respuesta clara deja el retiro `failed` + `hgSendUnknown` +
+  `verifyUntil` (3 min): el pago pudo haber salido. Toda ruta que pague, marque pagado, rechace o descarte un `PendingPayout` llama a
+  `_payoutVerifyBlock(payout)` primero. El cartel del chat (`?status=chat`) muestra también EN PROCESO y FALLADO: no volver a esconderlos.
+- **Salientes del banco SIEMPRE vinculados (#237, réplica #220):** una salida que el banco informa sin vínculo a un retiro
+  (`outKind:'unknown'`; en hgcash = sin `externalID`) dispara `_alertUnknownOutbound` (Telegram + "POSIBLE PAGO DOBLE" en el chat). Todo
+  flujo nuevo que saque plata del banco tiene que mandar su `externalID` / dejar `payoutId`, o va a alertar en falso (si algún día se
+  agregan bajadas: clasificarlas como en la fuente, `sweep-…`). Un pago confirmado por Finpro manda `maybeSendFinproReceipt` (comprobante en
+  texto con COELSA, `/sys_payout_receipt_finpro`). Detalle: ARCHITECTURE §11.8–§11.11.
 - **Rotación automática de cuentas (#235, réplica #207/#210/#213/#216):** `_bankRotationTick` puede cambiar SOLA la cuenta en uso (y, entre
   bancos, `bankShown` / `bankProvider`) por caída o tope día/mes; todo apagado por defecto (`Config['bankRotation']`), candado
   `Config['bankRotationLock']` (5 min), vueltas por día en `Config['bankRotationLap']` (el tope del mes no da vueltas). No asumir que la cuenta

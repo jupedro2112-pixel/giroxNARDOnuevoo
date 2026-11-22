@@ -1398,6 +1398,10 @@ function initSocket() {
         });
     });
 
+    // #221 el estado de un retiro cambió en el servidor (el banco confirmó / rechazó): refrescar el cartel.
+    socket.on('payout_update', (data) => {
+        try { if (data && typeof selectedUserId !== 'undefined' && selectedUserId && data.userId === selectedUserId) loadPayoutBanner(selectedUserId); } catch (_) {}
+    });
     socket.on('chat_closed', (data) => {
         if (data.userId === selectedUserId) {
             showToast('Chat movido a Cerrados. Puedes seguir respondiendo.', 'info');
@@ -3006,10 +3010,11 @@ async function loadPayoutBanner(userId) {
     const el = document.getElementById('chatPayoutBanner');
     if (!el) return;
     try {
-        // SOLO el retiro actual a verificar (pending_review). Los pagos en proceso/fallidos
-        // NO se muestran acá (se confirman solos por el poller del back) para no resucitar
-        // pagos viejos ni arriesgar un re-pago.
-        const r = await authFetch('/api/admin/payouts?userId=' + encodeURIComponent(userId) + '&status=pending_review');
+        // El retiro a verificar (pending_review) + #221 el que tuvo un envío en las últimas 24 h y sigue
+        // EN PROCESO o FALLADO (antes desaparecía del chat y el operador no sabía si había salido).
+        // Los pagos viejos (sin envío anotado) no se muestran, para no resucitarlos.
+        clearTimeout(window._payoutBannerTimer);
+        const r = await authFetch('/api/admin/payouts?userId=' + encodeURIComponent(userId) + '&status=chat');
         if (!r.ok) { el.style.display = 'none'; return; }
         const j = await r.json();
         const p = (j.payouts || [])[0];
@@ -3021,6 +3026,39 @@ async function loadPayoutBanner(userId) {
         const dest = escapeHtml(p.alias || p.cbu || '-');
         const titular = escapeHtml(p.titular || '-');
         const monto = '$' + Number(p.amount).toLocaleString('es-AR');
+        const _refresh = (ms) => { window._payoutBannerTimer = setTimeout(() => { if (typeof selectedUserId !== 'undefined' && selectedUserId === userId) loadPayoutBanner(userId); }, ms); };
+        const _via = escapeHtml(p.sendLabel || (p.paidVia === 'finpro' ? 'Finpro' : 'hgcash'));
+        const _info = (icon, title, sub, bg) => {
+            el.style.background = bg;
+            el.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#fff;font-size:12.5px;">' +
+                '<span style="font-size:20px;">' + icon + '</span>' +
+                '<div style="flex:1;min-width:160px;"><strong>' + title + '</strong>' +
+                '<div style="font-size:11px;opacity:0.92;">Titular: ' + titular + ' · CBU/alias: ' + dest + '</div>' +
+                '<div style="margin-top:4px;font-size:11.5px;font-weight:800;color:#ffe08a;background:rgba(0,0,0,0.32);padding:5px 8px;border-radius:6px;">' + sub + '</div></div></div>';
+        };
+        // #221 Envío sin respuesta del banco: el pago PUDO HABER SALIDO. Sin botones mientras se verifica.
+        if (p.status === 'failed' && p.verifyLeftSec > 0) {
+            const mm = Math.floor(p.verifyLeftSec / 60), ss = String(p.verifyLeftSec % 60).padStart(2, '0');
+            _info('🛑', 'VERIFICANDO RETIRO DE ' + monto + ' — PUEDE HABER SALIDO', 'El envío por ' + _via + ' quedó SIN respuesta del banco. NO lo pagues por otro lado ni lo marques pagado. Si el banco avisa que salió, se cierra solo y el cliente recibe el comprobante. Si no informa nada, se habilita en ' + mm + ':' + ss + '.', 'linear-gradient(90deg,#b45309,#7c2d12)');
+            _refresh(Math.min(15000, p.verifyLeftSec * 1000 + 1500));
+            return;
+        }
+        // El banco lo tiene y lo está procesando: se confirma solo.
+        if (p.status === 'paying') {
+            _info('⏳', 'PAGO EN PROCESO: ' + monto, 'Enviado por ' + _via + (p.paidBy ? ' (' + escapeHtml(p.paidBy) + ')' : '') + '. NO lo pagues por otro lado: se confirma solo y el cliente recibe el comprobante.', 'linear-gradient(90deg,#1d4ed8,#1e3a8a)');
+            el.firstChild.insertAdjacentHTML('beforeend', '<button onclick="syncPayout(\'' + escapeHtml(p.id) + '\')" title="Le pregunta al banco el estado real de este pago" style="background:rgba(0,0,0,0.35);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:7px;padding:7px 11px;font-size:11.5px;cursor:pointer;">🔄 Consultar estado</button>');
+            _refresh(15000);
+            return;
+        }
+        const isFailed = p.status === 'failed';
+        if (isFailed) el.style.background = 'linear-gradient(90deg,#a02020,#7a1010)';
+        const failWarn = isFailed
+            ? '<div style="margin-top:5px;font-size:11px;font-weight:800;color:#ffe08a;background:rgba(0,0,0,0.32);padding:5px 8px;border-radius:6px;">' +
+              (p.lastSendResult === 'rejected'
+                ? '❌ El banco RECHAZÓ el envío por ' + _via + ' (no salió)' + (p.error ? ': ' + escapeHtml(String(p.error).slice(0, 140)) : '') + '. Podés reintentar.'
+                : '⚠️ El envío por ' + _via + ' no tuvo respuesta clara y el banco no informó ninguna salida. Antes de pagarlo por OTRA cuenta u otro banco, miralo en ' + _via + '.') +
+              (p.debitConfirmed === true ? ' Las fichas YA están descontadas: no devuelvas.' : '') + '</div>'
+            : '';
         // Anti retiro fantasma: si el descuento en JUGAYGANA no se confirmó al solicitar,
         // avisamos al agente y resaltamos el banner. Si rechaza, NO se devuelven fichas solas.
         const debitUnconfirmed = (p.debitConfirmed === false);
@@ -3034,8 +3072,9 @@ async function loadPayoutBanner(userId) {
         const otherBtn = j.otherReady
             ? '<button onclick="payPayout(\'' + escapeHtml(p.id) + '\', false, \'' + j.otherBank + '\')" title="Paga este retiro por ' + otherName + (j.otherAccount ? ' · cuenta ' + escapeHtml(j.otherAccount) : '') + ' (los demás siguen por ' + bankName + ')" style="background:#0b6b6b;color:#fff;border:none;border-radius:7px;padding:7px 11px;font-weight:700;font-size:11.5px;cursor:pointer;">🏦 Pagar con otro banco</button>'
             : '';
+        window._payoutBankInfo = { main: bankName + (j.bankAccount ? ' · ' + j.bankAccount : ''), other: otherName + (j.otherAccount ? ' · ' + j.otherAccount : '') }; // #219 para el cartel de confirmación
         const payBtn = j.payEnabled
-            ? '<button onclick="payPayout(\'' + escapeHtml(p.id) + '\')" title="Sale por ' + bankName + (j.bankAccount ? ' · cuenta ' + escapeHtml(j.bankAccount) : '') + '" style="background:#0f8a2f;color:#fff;border:none;border-radius:7px;padding:7px 13px;font-weight:800;font-size:12px;cursor:pointer;">' + (p.status === 'failed' ? '🔁 Pagar nuevamente ' : '💸 Pagar ') + monto + '</button>' // #214 sin nombre de banco en el botón (está en el título al pasar el mouse)
+            ? '<button onclick="payPayout(\'' + escapeHtml(p.id) + '\')" title=""Sale por ' + bankName + (j.bankAccount ? ' · cuenta ' + escapeHtml(j.bankAccount) : '') + '" style="background:#0f8a2f;color:#fff;border:none;border-radius:7px;padding:7px 13px;font-weight:800;font-size:12px;cursor:pointer;">' + (p.status === 'failed' ? '🔁 Pagar nuevamente ' : '💸 Pagar ') + monto + '</button>' // #214 sin nombre de banco en el botón (está en el título al pasar el mouse)
             : '<span style="color:#ffd;font-size:11px;">Pago automático por ' + bankName + ' no configurado (' + (j.bankProvider === 'finpro' ? 'faltan credenciales o nuestro CVU en la cuenta en uso' : 'falta token') + '). Pagá manual.</span>';
         // "Descartar": SOLO admin general. Limpia un pago viejo ya resuelto SIN devolver fichas ni avisar al cliente.
         const dismissBtn = (currentAdmin?.role === 'admin')
@@ -3043,9 +3082,9 @@ async function loadPayoutBanner(userId) {
             : '';
         el.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#fff;font-size:12.5px;">' +
             '<span style="font-size:18px;">💸</span>' +
-            '<div style="flex:1;min-width:160px;"><strong>RETIRO PENDIENTE: ' + monto + '</strong>' +
+            '<div style="flex:1;min-width:160px;"><strong>' + (isFailed ? 'PAGO FALLADO: ' : 'RETIRO PENDIENTE: ') + monto + '</strong>' +
             '<div style="font-size:11px;opacity:0.92;">Titular: ' + titular + ' · CBU/alias: ' + dest + '</div>' +
-            '<div style="font-size:10.5px;opacity:0.8;">Verificá los datos antes de pagar.</div>' + debitWarn + '</div>' +
+            '<div style="font-size:10.5px;opacity:0.8;">Verificá los datos antes de pagar.</div>' + (isFailed ? failWarn : debitWarn) + '</div>' +
             payBtn + otherBtn +
             '<button onclick="payOtherBank(\'' + escapeHtml(p.id) + '\')" style="background:#1f6feb;color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;font-weight:700;cursor:pointer;">✅ Ya lo pagué por fuera</button>' +
             '<button onclick="cancelPayout(\'' + escapeHtml(p.id) + '\')" style="background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:7px;padding:7px 11px;font-size:11.5px;cursor:pointer;">↩️ Rechazar pago</button>' +
@@ -3058,7 +3097,10 @@ async function loadPayoutBanner(userId) {
 
 async function payPayout(id, confirmOtherBank, provider) {
     // #213 `provider` = pagar ESTE retiro por ese banco (aunque los retiros estén configurados por el otro).
-    if (!confirmOtherBank && !confirm('¿Confirmás el PAGO automático de este retiro' + (provider ? ' con el OTRO banco (' + (provider === 'finpro' ? 'Finpro' : 'hgcash') + ')' : '') + '? Se va a transferir al CBU del cliente. Verificá que los datos sean correctos.')) return;
+    // #219 el cartel dice POR DÓNDE sale (el botón ya no nombra el banco, #214).
+    const _bi = window._payoutBankInfo || {};
+    const _por = provider ? (_bi.other || (provider === 'finpro' ? 'Finpro' : 'hgcash')) : (_bi.main || '');
+    if (!confirmOtherBank && !confirm('¿Confirmás el PAGO automático de este retiro' + (_por ? '\n\nSALE POR: ' + _por + (provider ? ' (el OTRO banco)' : '') : '') + '\n\nSe va a transferir al CBU del cliente. Verificá que los datos sean correctos.\nUna vez que confirmes NO lo pagues por otro lado: esperá el aviso del sistema.')) return;
     const el = document.getElementById('chatPayoutBanner');
     try {
         const r = await authFetch('/api/admin/payouts/' + encodeURIComponent(id) + '/pay', { method: 'POST', body: JSON.stringify(Object.assign(confirmOtherBank ? { confirmOtherBank: true } : {}, provider ? { provider } : {})) });
@@ -3070,13 +3112,18 @@ async function payPayout(id, confirmOtherBank, provider) {
         }
         if (r.ok && j.success) {
             showToast((j.status === 'paid' ? 'Pago realizado ✅' : 'Pago iniciado ⏳') + (j.lookupName ? ' · a ' + j.lookupName : '') + (j.message ? ' · ' + j.message : ''), 'success');
-            if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+            if (typeof selectedUserId !== 'undefined' && selectedUserId) loadPayoutBanner(selectedUserId); // #221 queda "EN PROCESO" a la vista hasta que el banco confirma
         } else if (r.ok && j.insufficient) {
             // El cliente se jugó las fichas: no se descontó ni se pagó. Se avisó y se cerró el chat.
             showToast(j.message || 'Saldo insuficiente: no se pagó. Se avisó al cliente.', 'error');
             if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+        } else if (r.status === 409 && (j.wait || j.alreadySent)) {
+            // #219 anti pago doble: hay que esperar, o el retiro ya salió del banco. Cartel fijo (un toast se pierde).
+            alert(j.error || 'No se puede pagar todavía.');
+            if (typeof selectedUserId !== 'undefined' && selectedUserId) loadPayoutBanner(selectedUserId);
         } else {
-            showToast(j.error || 'Error al pagar', 'error');
+            alert(j.error || 'Error al pagar'); // #221 cartel fijo: un error de pago no se puede perder en un toast
+            if (typeof selectedUserId !== 'undefined' && selectedUserId) loadPayoutBanner(selectedUserId);
         }
     } catch (e) { showToast('Error de conexión', 'error'); }
 }
@@ -8093,11 +8140,13 @@ function _bankRotRender(j) {
     if (body) {
         body.innerHTML = (j.slots || []).length ? j.slots.map((s) => {
             let st = s.inUse ? '<b style="color:#66ff99;">EN USO</b>' : 'respaldo';
+            if (s.limit.skip) st += ' · <span style="color:#ffb74d;">FUERA de la rotación' + (s.inUse ? ' (está en uso a mano: el automático no la cambia)' : '') + '</span>';
             if (s.blocked) st += ' · <span style="color:#ffb74d;">no rota acá: ' + escapeHtml(s.blocked) + '</span>';
             if (s.over) st += ' · <span style="color:#ff8080;">' + escapeHtml(s.over) + '</span>';
             if (s.probe) st += s.probe.ok ? (s.probe.unknown ? ' · <span style="color:#aaa;">sin número de cuenta: no se puede controlar</span>' : ' · <span style="color:#66ff99;">responde ✔</span>') : ' · <span style="color:#ff8080;">NO responde: ' + escapeHtml(s.probe.error || '') + '</span>';
             else if (s.fails) st += ' · <span style="color:#ff8080;">' + s.fails + ' control(es) sin respuesta</span>';
-            return '<tr style="border-top:1px solid rgba(255,255,255,0.07);"><td style="padding:6px 5px;"><b>' + escapeHtml(s.label) + '</b> <span style="color:' + (s.provider === 'finpro' ? '#b388ff' : '#d4af37') + ';font-size:11px;">' + escapeHtml(s.bank) + '</span></td>'
+            return '<tr style="border-top:1px solid rgba(255,255,255,0.07);"><td style="padding:6px 5px;"><b>' + escapeHtml(s.label) + '</b> <span style="color:' + (s.provider === 'finpro' ? '#b388ff' : '#d4af37') + ';font-size:11px;">' + escapeHtml(s.bank) + '</span>'
+                + '<br><label title="Destildá para sacar esta cuenta de la rotación automática: no se elige nunca como destino y, si la ponés en uso a mano, el automático no la cambia. Sigue recibiendo cargas." style="font-size:11px;color:#ccc;cursor:pointer;white-space:nowrap;"><input type="checkbox" data-rot-in="' + escapeHtml(s.id) + '"' + (s.limit.skip ? '' : ' checked') + '> entra en la rotación</label></td>'
                 + '<td>' + st + '</td><td>' + money(s.usage.day) + '</td>'
                 + '<td><input type="number" min="0" step="1000" data-rot-day="' + escapeHtml(s.id) + '" value="' + (s.limit.day || 0) + '" style="' + inp + '"></td>'
                 + '<td>' + money(s.usage.month) + '</td>'
@@ -8129,6 +8178,7 @@ async function saveBankRotation() {
         document.querySelectorAll('[data-rot-day]').forEach((el) => { const id = el.getAttribute('data-rot-day'); limits[id] = limits[id] || {}; limits[id].day = Number(el.value) || 0; });
         document.querySelectorAll('[data-rot-month]').forEach((el) => { const id = el.getAttribute('data-rot-month'); limits[id] = limits[id] || {}; limits[id].month = Number(el.value) || 0; });
         document.querySelectorAll('[data-rot-next]').forEach((el) => { const id = el.getAttribute('data-rot-next'); limits[id] = limits[id] || {}; limits[id].next = el.value || ''; });
+        document.querySelectorAll('[data-rot-in]').forEach((el) => { const id = el.getAttribute('data-rot-in'); limits[id] = limits[id] || {}; limits[id].skip = !el.checked; }); // #219
         const body = { enabled: ck('bankRotEnabled'), onFailure: ck('bankRotOnFailure'), onLimit: ck('bankRotOnLimit'), crossBank: ck('bankRotCrossBank'), movePayouts: ck('bankRotMovePayouts'), loop: ck('bankRotLoop'),
             failChecks: Number((document.getElementById('bankRotFailChecks') || {}).value) || 3, limits };
         const r = await authFetch('/api/admin/bank-rotation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
