@@ -20333,7 +20333,7 @@ async function resolveHgcashAccountId({ force = false, acct = null } = {}) {
 // Un token de hgcash puede ver VARIAS cuentas. Antes, sin CBU que matcheara, se debitaba "la primera"
 // → un perfil recién puesto EN USO pagaba desde otra cuenta. Ahora: fijada a mano > CBU > titular > id.
 const _hgLastApiPick = new Map(); // key del perfil → { at, id, name, how, many, balance } (lo último que resolvió la API)
-function _normName(v) { return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function _hgNameKey(v) { return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 function _hgApiName(a) { return a ? (a.name || a.holderName || a.alias || null) : null; }
 function _hgApiBalance(a) { if (!a) return null; const n = Number(a.netBalance != null ? a.netBalance : a.balance); return Number.isFinite(n) ? n : null; }
 function _hgPickApiAccount(prof, list, wantCur) {
@@ -20344,8 +20344,8 @@ function _hgPickApiAccount(prof, list, wantCur) {
   const pCbu = prof ? _digits(prof.cbu) : '';
   if (pCbu.length === 22) { const f = list.find(a => [a.cbu, a.cvu, a.CBU, a.CVU, a.accountNumber].some(v => _digits(v) === pCbu)); if (f) return { pick: f, how: 'cbu' }; }
   if (prof) {
-    const mine = [prof.titular, prof.accountName, prof.label].map(_normName).filter(n => n.length >= 5);
-    const hits = list.filter(a => [a.name, a.holderName, a.alias].map(_normName).filter(n => n.length >= 5).some(n => mine.some(m => m === n || m.includes(n) || n.includes(m))));
+    const mine = [prof.titular, prof.accountName, prof.label].map(_hgNameKey).filter(n => n.length >= 5);
+    const hits = list.filter(a => [a.name, a.holderName, a.alias].map(_hgNameKey).filter(n => n.length >= 5).some(n => mine.some(m => m === n || m.includes(n) || n.includes(m))));
     if (hits.length === 1) return { pick: hits[0], how: 'name' };
   }
   if (prof && prof.accountId) { const f = list.find(a => String(a.id) === String(prof.accountId)); if (f) return { pick: f, how: 'id' }; }
@@ -20692,8 +20692,8 @@ function _hgDebitNote(key) {
   const i = _hgLastApiPick.get(key || 'env');
   if (!i || !i.name) return '';
   const a = _hgAccountByKey(key);
-  const mine = a ? [a.titular, a.accountName, a.label].map(_normName).filter(Boolean) : [];
-  const n = _normName(i.name);
+  const mine = a ? [a.titular, a.accountName, a.label].map(_hgNameKey).filter(Boolean) : [];
+  const n = _hgNameKey(i.name);
   const same = mine.some(m => m === n || (m.length >= 5 && n.length >= 5 && (m.includes(n) || n.includes(m))));
   if (i.how === 'guess' && i.many > 1) return ` — ⚠️ DEBITÓ DE "${i.name}": el token de este perfil ve ${i.many} cuentas de hgcash y no se pudo saber cuál es la suya. Fijala en Bancos — Configuración → "De qué cuenta salen los retiros"`;
   return same ? '' : ` — debitó de "${i.name}"`;
