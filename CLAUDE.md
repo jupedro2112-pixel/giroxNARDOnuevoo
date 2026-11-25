@@ -190,6 +190,11 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   reclamarlo, `_payoutNoteSend(...)` justo antes del POST al banco y `_payoutNoteResult(...)` con la respuesta. En hgcash el token va
   EXPLÍCITO (`createCashOut({ token })`, cuenta fijada al empezar el pedido), nunca el global de "la cuenta en uso". No aflojar la espera
   de 2 minutos ni dar por "rechazado" un envío sin respuesta clara. Test: `node scripts/test-payout-guard.js`.
+- **De qué cuenta sale un retiro (#239, réplica #223 de AUTOREEMBOLSOSjygactivo):** lo decide `_payoutPickSource` (elegida para ese
+  retiro > `Config['payoutSource']`: en uso / fija / la de más saldo) y queda en `req._paySrc`; los dos caminos de pago usan ESA cuenta,
+  no "la que está en uso", y nunca se salta sola a otra cuenta tras un fallo. Un token de hgcash puede ver varias cuentas: la de un perfil
+  la resuelve `_hgPickApiAccount` (fijada a mano `payAccountId` > CBU > titular); nunca volver a tomar "la primera de la lista".
+  Detalle en `docs/ARCHITECTURE.md` §11.12. Test: `node scripts/test-payout-source.js`.
 - **Retiro "VERIFICANDO" (#237, réplica #221):** un envío a hgcash sin respuesta clara deja el retiro `failed` + `hgSendUnknown` +
   `verifyUntil` (3 min): el pago pudo haber salido. Toda ruta que pague, marque pagado, rechace o descarte un `PendingPayout` llama a
   `_payoutVerifyBlock(payout)` primero. El cartel del chat (`?status=chat`) muestra también EN PROCESO y FALLADO: no volver a esconderlos.

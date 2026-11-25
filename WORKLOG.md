@@ -8,6 +8,50 @@
 
 ## Sesión 2026-11-25
 
+### 239. 💸 ¿De qué CUENTA salen los retiros? — en uso / fija / la de más saldo, saldos a la vista y "🏦 Elegir cuenta" en cada retiro — réplica #223 de AUTOREEMBOLSOSjygactivo — admin-sw v71
+- **Origen:** réplica del #223 de AUTOREEMBOLSOSjygactivo (commit `683908f`). Los comentarios del código llevan la numeración de ACÁ
+  (`#239`). El problema se reportó y la solución se probó en producción en AQUEL proyecto, no en este.
+- **El problema:** se ponía una cuenta de hgcash EN USO para que pague y el retiro salía de OTRA cuenta. **Causa (leída en el código, no
+  confirmada con logs de acá):** un token de hgcash puede ver VARIAS cuentas (`GET /accounts`). Al cargar un perfil se guardaba como suya
+  "la primera en pesos" (`_hgValidateCreds` → `apiAccountId`) y, al pagar, `resolveHgcashAccountId` buscaba por CBU y, si no coincidía,
+  caía en ese id guardado → varios perfiles con el mismo usuario de hgcash terminaban debitando de la misma cuenta. La nota interna decía
+  el nombre del PERFIL, no la cuenta real.
+- **Qué cuenta de hgcash debita un perfil:** `_hgPickApiAccount(perfil, lista, moneda)`, en orden: la **fijada a mano** (`payAccountId`,
+  campo nuevo del perfil) → única → la de su **CBU** → la de su **titular** (nombre normalizado, UNA sola coincidencia) → el id guardado →
+  recién ahí adivina (`how:'guess'`). Una cuenta adivinada con varias a la vista ya NO se guarda como propia del perfil. Al cargar/editar un
+  perfil con token nuevo que ve varias cuentas tampoco se toma "la primera" (y se limpia `payAccountId`); lo mismo en la ruta legacy
+  `/api/admin/hgcash/credentials` (`_hgOnlyApiId`, **agregado de acá**: la fuente no la tocó).
+- **`Config['payoutSource'] = { mode, fixed }`** (`getPayoutSource`): `active` (default, lo de siempre: la cuenta EN USO del banco de
+  retiros) · `fixed` (siempre esa cuenta, `hgcash:a2` / `finpro:f1`) · `richest` (la que más saldo tenga en el momento, entre las cuentas
+  de los DOS bancos que pueden pagar).
+- **De dónde sale cada pago:** `_payoutPickSource(body, monto)`: `body.source` (elegida a mano para ESE retiro) > `body.provider` (#213,
+  panel viejo cacheado) > el modo. `/api/admin/payouts/:id/pay` deja el resultado en `req._paySrc`; el camino de hgcash y
+  `_payPayoutViaFinpro` pagan con ESA cuenta (perfil + token/credenciales). El candado anti pago doble (#237) recibe la cuenta real,
+  y `hgAccountKey` / `fpAccountKey`, la idempotencia (`externalID`, `process_id`) y el recibo no cambiaron: ya trabajaban por cuenta.
+  **Agregado de acá:** si la cuenta elegida ya no está cargada cuando el pago llega al envío, responde 400 (en la fuente caía a la cuenta
+  en uso; acá nunca se cambia sola de cuenta).
+- **Saldos:** `_paySlotInfo` (hgcash `netBalance`/`balance` de `GET /accounts`; Finpro `accounts/balance`), caché 20 s (8 s al pagar).
+- **Panel** (🏛️ Bancos — Configuración → 🏦 Bancos automáticos): bloque **"💸 ¿De qué CUENTA salen los retiros?"** con los tres modos, la
+  lista de cuentas con su saldo y la cuenta REAL que debita cada perfil; si el token ve varias, un selector para fijarla. En el cartel del
+  retiro, **"🏦 Elegir cuenta"** abre la lista con saldos (reemplaza "Pagar con el otro banco" cuando hay más de una cuenta lista). La
+  nota interna agrega `— debitó de "X"` cuando la cuenta real no se llama como el perfil (`_hgDebitNote`).
+- **Endpoints:** `GET /api/admin/payout-sources` (quien paga retiros: admin / withdrawer / cajero), `POST /api/admin/payout-sources` y
+  `POST /api/admin/hgcash/accounts/:key/pay-account` (solo admin general). El POST de `payout-sources` se sumó a
+  `STAFF_SECTION_API.banksConfig` (el de `pay-account` ya entra por el prefijo `/api/admin/hgcash`).
+- **Lo que NO cambia:** con el modo por defecto (`active`) todo sale como antes, salvo que la cuenta de hgcash se identifica por titular
+  antes que por el id guardado. "La de más saldo": si ninguna cuenta alcanza, el pago se frena ANTES de descontar fichas; si no se puede
+  leer ningún saldo, usa la cuenta en uso (no frena los pagos). Tras un fallo NUNCA se salta sola a otra cuenta: el operador elige.
+- **Otros lugares que pagan:** acá el ÚNICO camino que manda un retiro a un banco es `/api/admin/payouts/:id/pay` (hgcash) +
+  `_payPayoutViaFinpro`. `pay-other-bank` solo MARCA pagado (no envía nada) y el poller solo consulta. No hay bajadas ni pago masivo.
+  `resolveHgcashAccountId` tiene 2 llamadores, los dos dentro de `/pay` (la fuente tiene además bajadas y saldo).
+- **Validado:** `node --check` (server.js, admin.js, admin-sw.js), `check-tdz` OK, `scripts/test-payout-source.js` (32: los 29 de la fuente
+  + 3 de cableado de lo agregado acá) y los 8 tests que ya había (todos pasaban antes y siguen pasando).
+- **NO probado:** nada contra hgcash ni Finpro reales, ni con el server levantado (no hay node_modules), ni el panel en un navegador. No
+  se conoce la forma exacta de `GET /accounts` cuando el token ve varias cuentas (se asume que trae `name`): lo primero a mirar tras el
+  deploy es el bloque nuevo del panel, que muestra qué cuenta real debita cada perfil. ⚠️ Un perfil que YA tenía guardado un id
+  equivocado y cuyo CBU/titular no coincide con ninguna cuenta de la lista sigue usando ese id (`how:'id'`, sin aviso): el panel lo deja
+  a la vista ("debita de «X»") y se corrige fijando la cuenta a mano.
+
 ### 238. 🎁 Regalos que 1girox anotaba como CARGA → se UNIFICAN con el bono anterior + descripción detallada de toda acreditación — réplica de CARGASGIROXactivo #236 / #237 / #238 / #239 — admin-sw v70
 - **Origen:** réplica de las entradas #236–#239 de CARGASGIROXactivo (commits `c9ae7cc`, `32725e4`, `9622f94`, `3a3e582`, `d3ec375`). Los
   comentarios del código llevan la numeración de ACÁ (`#238`). El problema se confirmó con logs de producción de AQUEL proyecto, no de este.
