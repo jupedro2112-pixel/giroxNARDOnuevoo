@@ -379,7 +379,7 @@ async function executePayoutsForPeriod(periodKey, options = {}) {
         referrer.username,
         totalAmount,
         payoutReference,
-        { description, ignoreGlobalRollover: true } // comisión: no es bono (#220)
+        { description: `COMISIÓN de referidos — ganancias por referidos de ${periodLabel}${isDeltaPayout ? ` (pago #${payoutIndex})` : ''}`, ignoreGlobalRollover: true } // comisión: no es bono (#220) · #238 texto detallado SOLO hacia 1girox
       );
 
       if (!creditResult.success) {

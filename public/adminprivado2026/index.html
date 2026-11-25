@@ -681,6 +681,13 @@ document.addEventListener('change', function (ev) {
                                 <div id="brOptions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
                                 <small id="brHint" style="color:#aaa;font-size:11px;display:block;margin-top:6px;"></small>
                             </div>
+                            <!-- #238 réplica #236–#239 de CARGASGIROXactivo -->
+                            <div style="margin:0 0 12px;">
+                                <label style="display:block;margin:0 0 6px;">Si el jugador YA tiene un bono activo con rollover pendiente y le toca otro regalo</label>
+                                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;margin:4px 0;"><input type="radio" name="brFallback" value="merge" style="width:auto;margin-top:3px;"> <span><b>UNIFICAR</b> (recomendado) — se le da UN bono nuevo por <b>lo que le queda del bono anterior + el regalo</b>, con el rollover nuevo y la barra desde cero. Todo queda con rollover y en 1girox figura como <b>Bono</b> (más una "Cancelación de bono" por el anterior). Si la plataforma no devuelve el saldo esperado, se apaga sola y avisa.</span></label>
+                                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;margin:4px 0;"><input type="radio" name="brFallback" value="bonus0" style="width:auto;margin-top:3px;"> <span>Darlo como <b>BONO sin rollover</b> — figura como Bono, pero ese regalo queda retirable sin apostar</span></label>
+                                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;margin:4px 0;"><input type="radio" name="brFallback" value="deposit" style="width:auto;margin-top:3px;"> <span>Darlo como <b>depósito con rollover</b> — mantiene el rollover, pero en 1girox figura como <b>Carga</b> (hay que restarlo en el cierre: tarjeta "Regalos que 1girox muestra como Carga" en Transacciones)</span></label>
+                            </div>
                             <button type="button" class="btn-primary btn-small" id="brSaveBtn" onclick="saveBonusRollover()">
                                 <span class="icon icon-save"></span> Guardar rollover global
                             </button>

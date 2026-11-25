@@ -109,8 +109,7 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   no pisa el bono en curso), con precheck contra GET /config y fallback automático a
   depósito libre (misma reference) si el bono rebota por negocio. Kill switch:
   `GIROX_GIFT_AS_BONUS=0`. El **fueguito** con rollover >0 va por `/bonus` con ese
-  multiplier (si el jugador ya tiene bono activo cae a depósito con multiplier — no
-  pisarle el bono). La **devolución de retiro rechazado** sigue como depósito (no es
+  multiplier (si el jugador ya tiene bono activo se UNIFICA — ver el punto #238 de abajo). La **devolución de retiro rechazado** sigue como depósito (no es
   regalo). La ruleta ahora escribe Transaction type 'roulette'. Detalle: ARCHITECTURE §4.5.
 - **Rollover GLOBAL de bonos (2026-10-19, #220):** `Config['bonusRolloverGlobal']`
   `{enabled, x}` (card "🎯 Rollover GLOBAL" en COMANDOS, default APAGADO). Encendido,
@@ -119,6 +118,15 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   ignoran. Plata que NO es bono (comisiones de referidos, devolución de retiro) lleva
   `ignoreGlobalRollover:true`. Para mostrar/guardar el valor: `applyGlobalRollover(x)`
   o `r.rolloverApplied`. Detalle: ARCHITECTURE §4.5 y §9.
+- **Regalo a un jugador con bono activo = se UNIFICA (#238, réplica #236–#239 de CARGASGIROXactivo):** todo regalo con rollover va por
+  `girox.creditGift` / `creditUserBalance` (nunca armar a mano un `/bonus` + caída a `depositToUser`: el depósito figura como "Carga" en
+  1girox y descuadra el cierre). Con bono activo (> $50, nada a reclamar) sale UN bono por `bonus_locked + regalo` con la MISMA reference;
+  el resultado trae `mergedOld` / `mergedTotal` / `giftAmount` y **lo que se guarda y se le dice a la contabilidad es SIEMPRE el monto del
+  regalo, nunca `mergedTotal`**. Modo en `Config['bonusRolloverGlobal'].fallback` (`'merge'` default | `'deposit'` | `'bonus0'`, radios en
+  la card del Rollover GLOBAL); una anomalía de saldo lo vuelve sola a `'deposit'` (`[gift-merge]` + Telegram). Toda Transaction de regalo
+  nueva suma `..._giftMeta(r)` (o `_giftMetaFields`) para que salga en las tarjetas "Regalos que 1girox muestra como Carga" / "Bonos
+  anteriores unificados". Toda acreditación manda a 1girox una `description` que empieza con el TIPO en mayúsculas (REEMBOLSO / REGALO —
+  … / BONO … / COMISIÓN … / DEVOLUCIÓN …) sin tocar la descripción local. Test: `node scripts/test-gift-fallback.js`.
 - **Bonos AUTOMÁTICOS en la carga con TOPE (2026-09-18):** todo bono en % pendiente
   (app, código de bienvenida, ruleta diaria, lote) lo aplica `resolveAutoBonus` en la
   carga manual y en hgcash — X% hasta `Config['bonusCap'].capArs` ($20.000) y `restPct`

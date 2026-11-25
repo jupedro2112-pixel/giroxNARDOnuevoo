@@ -5590,6 +5590,18 @@ function renderTransactionStats(summary) {
                 <span class="stat-number">${formatMoney(summary.vipLevelups || 0)}</span>
                 <span class="stat-label">Bonos de nivel VIP</span>
             </div>` : ''}
+            ${summary.giftsAsDeposit > 0 ? `
+            <div class="stat-card" style="border-color:#ef4444" title="Regalos (reembolsos, rakeback, ruleta, fueguito…) que en 1girox quedaron anotados como CARGA porque salieron por depósito. Para el cierre: restá este monto del total de cargas que muestra 1girox. Ya están contados en Total regalos.">
+                <span style="font-size:1.2rem">⚠️</span>
+                <span class="stat-number" style="color:#ef4444">${formatMoney(summary.giftsAsDeposit || 0)}</span>
+                <span class="stat-label">Regalos que 1girox muestra como Carga (${summary.giftsAsDepositCount || 0})</span>
+            </div>` : ''}
+            ${summary.mergedBonus > 0 ? `
+            <div class="stat-card" style="border-color:#38bdf8" title="Regalos que se UNIFICARON con un bono que el jugador ya tenía: en 1girox el Bono figura por (bono anterior + regalo) y aparece una Cancelación de bono por el anterior. Para el cierre: los Bonos de 1girox van a dar este monto DE MÁS respecto de los regalos de acá, compensado por las Cancelaciones de bono.">
+                <span style="font-size:1.2rem">🔗</span>
+                <span class="stat-number" style="color:#38bdf8">${formatMoney(summary.mergedBonus || 0)}</span>
+                <span class="stat-label">Bonos anteriores unificados (${summary.mergedBonusCount || 0})</span>
+            </div>` : ''}
             <div class="stat-card gifts" title="Todo lo que NO es carga ni retiro: bonificaciones + reembolsos + fueguito + referidos + rakeback + nivel VIP + ruleta. En 1girox va como BONO.">
                 <span style="font-size:1.2rem">🎁</span>
                 <span class="stat-number">${formatMoney(summary.gifts || 0)}</span>
@@ -6949,6 +6961,8 @@ async function loadBonusRolloverCfg() {
         const btn = document.getElementById('brSaveBtn');
         if (btn) btn.style.display = _brCanEdit ? '' : 'none';
         _brRender(cfg);
+        // #238 qué hacer si el jugador ya tiene un bono activo: unificar (default) / bono sin rollover / depósito con rollover
+        document.querySelectorAll('input[name="brFallback"]').forEach(function(el) { el.checked = el.value === (cfg.fallback === 'deposit' || cfg.fallback === 'bonus0' ? cfg.fallback : 'merge'); el.disabled = !_brCanEdit; });
     } catch (e) { form.style.display = 'none'; }
 }
 async function saveBonusRollover() {
@@ -6960,7 +6974,7 @@ async function saveBonusRollover() {
     try {
         const r = await authFetch('/api/admin/bonus-rollover', {
             method: 'POST',
-            body: JSON.stringify({ enabled, x: _brSelected })
+            body: JSON.stringify({ enabled, x: _brSelected, fallback: ((document.querySelector('input[name="brFallback"]:checked') || {}).value) || 'merge' })
         });
         const j = await r.json();
         if (!r.ok) { showToast(j.error || 'No se pudo guardar', 'error'); return; }

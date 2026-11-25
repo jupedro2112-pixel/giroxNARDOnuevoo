@@ -513,12 +513,49 @@ reintento manda la misma reference y la plataforma responde `duplicate:true`.
   reference — no le pisa el bono); rechazo de negocio → depósito; transitorio
   → se devuelve al caller. Lo usa el reembolso acumulativo. (El fueguito sigue
   con `_creditFireReward`, misma lógica.)
+  ⚠️ **Lo de "con bono activo cae a DEPÓSITO" de los dos párrafos de arriba quedó
+  viejo desde el #238 — ver el punto siguiente.**
+- **REGALO A UN JUGADOR CON BONO ACTIVO → se UNIFICA (#238, 2026-11-25, réplica
+  #236–#239 de CARGASGIROXactivo).** El depósito con rollover figura como "Carga"
+  en 1girox y descuadraba el cierre. Ahora `creditGift` (rollover > 0), tras el
+  precheck de GET /config y la lectura FRESCA del jugador:
+  - sin bono activo (o resto ≤ $50) → `/bonus` normal por el monto del regalo;
+  - **bono activo (`bonus_locked` > $50) y nada "a reclamar" → UN bono nuevo por
+    `bonus_locked + regalo`** con el rollover vigente y la MISMA reference (1girox
+    debita el resto del viejo: "Cancelación de bono"). El resultado trae
+    `mergedOld`, `mergedTotal`, `giftAmount`; **la contabilidad local usa siempre
+    el monto del regalo**, nunca `mergedTotal`;
+  - no se puede unificar (`claimable_total > 0`, total > `fixed_max`, monto fuera
+    de rango, bono suelto apagado, config o jugador ilegibles, rechazo de negocio)
+    → DEPÓSITO con rollover, con la descripción `BONO (contar como BONO, NO como
+    carga): … — sale como depósito por una limitación de la API de 1girox`
+    (`_giftAsDepositDesc`; también en el depósito libre del regalo directo);
+  - error transitorio → se devuelve tal cual (nunca se cambia de vía).
+  **Modo** en `Config['bonusRolloverGlobal'].fallback` = `'merge'` (default) |
+  `'deposit'` (lo de antes) | `'bonus0'` (bono sin rollover), radios en la card
+  "🎯 Rollover GLOBAL de bonos"; server.js lo inyecta con
+  `girox.setGiftFallbackResolver` y vale aunque el rollover global esté apagado.
+  **Control:** si el saldo de la respuesta subió más que regalo + máx($100, 50%
+  del bono viejo) ⇒ `girox.setGiftMergeAnomalyHook` → la Config vuelve sola a
+  `'deposit'` (`mergeOffAt/mergeOffWhy`), log `[gift-merge]` y Telegram.
+  **`_creditFireReward` delega en `creditGift`** (ya no hay copia de la lógica en
+  server.js; el piso del guard del fueguito pasó de $0 a $50).
+  **Marca local:** `_giftMeta(r)` / `_giftMetaFields(r)` (server.js) →
+  `Transaction.metadata.creditedAs:'deposit'` + `giftFallback`, o
+  `creditedAs:'bonus'` + `mergedBonus`. `GET /api/admin/transactions` suma
+  `summary.giftsAsDeposit(+Count)` y `summary.mergedBonus(+Count)` (tarjetas
+  "Regalos que 1girox muestra como Carga" y "Bonos anteriores unificados").
+  **Descripción hacia 1girox:** toda acreditación manda un texto que empieza con
+  el TIPO en mayúsculas (REEMBOLSO / REEMBOLSO EN VIVO / REGALO — … / BONO … /
+  COMISIÓN de referidos / DEVOLUCIÓN …); la descripción de la Transaction local y
+  lo que lee el cliente no cambian. Test: `node scripts/test-gift-fallback.js`.
+  NO probado contra 1girox real (ver WORKLOG #238: qué mirar en el primer caso).
   Con `opts.multiplier` explícito (Bonificación del panel, welcome code cash,
   lotes): `/bonus` ESTRICTO sin fallback (un rechazo se ve como error). ⚠️ Ojo
   con "bono sobre bono": un bono con rollover a quien ya tiene uno activo PISA
   el anterior y le debita lo que le quedaba.
 - **ROLLOVER GLOBAL de bonos (#220, 2026-10-19, réplica #278 de PAUTANUEVAsantino):**
-  `Config['bonusRolloverGlobal'] = {enabled, x}` (default **APAGADO**, x3; opciones
+  `Config['bonusRolloverGlobal'] = {enabled, x, fallback}` (default **APAGADO**, x3; `fallback` = #238, ver arriba; opciones
   0/2/3/5/10; `GET/POST /api/admin/bonus-rollover`; card "🎯 Rollover GLOBAL de bonos"
   en COMANDOS). `getGlobalBonusRollover()` (server.js) valida `x` contra
   `bonus.multipliers` de la plataforma: no permitido ⇒ el siguiente permitido hacia
