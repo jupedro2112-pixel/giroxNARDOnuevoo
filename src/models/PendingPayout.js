@@ -50,6 +50,7 @@ const pendingPayoutSchema = new mongoose.Schema({
   lastSendAt: { type: Date, default: null },
   lastSendBank: { type: String, default: null },                 // 'hgcash' | 'finpro'
   lastSendAccount: { type: String, default: null },              // key del perfil (a1…/f1…/'env')
+  lastSendAccountId: { type: String, default: null },            // #223c id de la cuenta REAL del banco que debitó ese envío (un perfil de hgcash puede ver varias)
   lastSendResult: { type: String, default: null },               // 'sending' | 'accepted' | 'rejected' | 'unknown'
   sendLog: { type: [mongoose.Schema.Types.Mixed], default: [] }, // [{ at, bank, account, label, by, result, detail }] (últimos 20)
   verifyUntil: { type: Date, default: null },                    // #221 hasta cuándo está "VERIFICANDO" (envío a hgcash sin respuesta clara): bloquea pagar / marcar pagado / rechazar

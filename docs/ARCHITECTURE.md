@@ -1467,6 +1467,15 @@ cuenta real y el pago guarda `hgAccountKey` / `fpAccountKey` como siempre.
 En hgcash, la cuenta REAL que debita un perfil la decide `_hgPickApiAccount` (fijada a mano `payAccountId` > única > CBU > titular >
 id guardado > adivinar): un token puede ver varias cuentas. Una cuenta adivinada no se guarda en el perfil. `_hgLastApiPick` recuerda
 lo último resuelto (para la nota interna, `_hgDebitNote`).
+**Candado por cuenta REAL (#239c, réplica #223c):** el envío guarda `PendingPayout.lastSendAccountId` (id de la cuenta del banco) con
+`_payoutNoteSend(id, bank, account, by, realAccountId)` y `_payoutResendGuard(…, confirmed, realAccountId)` trata como "otra ruta" al
+mismo perfil con otra cuenta real (espera de 2 min + confirmación); Finpro no pasa cuenta real. `resolveHgcashAccountId({ acct })` (un
+pago) no usa el respaldo "último movimiento": sin cuenta cierta devuelve null y el pago no sale. `_payoutPickSource(body, monto, prev)`:
+en `richest`, un reintento con envío anterior no rechazado vuelve por la misma cuenta (`why:'retry-same'`); un perfil hgcash sin secreto
+de webhook no se elige solo si otro perfil tiene secreto (`_paySlotNoWebhook`, `noWebhook` en el payload). Titulares: `_hgNameKey`
+(compacto, igualdad) y `_hgNameContains` (palabras enteras, nunca la etiqueta); `_normName` es OTRA cosa (identidad bancaria /
+anti-multicuenta). Alta/edición de perfil con token nuevo: `_hgIdForNewToken(prof, v)` (única, o por CBU/titular; si no, null). La
+respuesta de `/pay` trae `paidFrom`.
 Endpoints: `GET /api/admin/payout-sources` (admin / withdrawer / cajero) · `POST /api/admin/payout-sources` y
 `POST /api/admin/hgcash/accounts/:key/pay-account` (solo admin general; en `STAFF_SECTION_API.banksConfig`). El listado
 `GET /api/admin/payouts` suma `payFrom`, `paySources`, `payFromReady`. Panel: bloque `payoutSrcBox` en la card de Bancos automáticos

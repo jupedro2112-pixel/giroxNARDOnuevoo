@@ -52,6 +52,43 @@
   equivocado y cuyo CBU/titular no coincide con ninguna cuenta de la lista sigue usando ese id (`how:'id'`, sin aviso): el panel lo deja
   a la vista ("debita de «X»") y se corrige fijando la cuenta a mano.
 
+**#239c — correcciones de la AUDITORÍA independiente del #223 de la fuente (2026-11-25, réplica #223c de AUTOREEMBOLSOSjygactivo,
+commits `0f22895` + `c01b064` de allá) — admin-sw v72:**
+- *Titulares (`_hgPickApiAccount`):* fijada > única > CBU > titular IGUAL (forma compacta, "S.A." = "SA"; vale titular, `accountName` y
+  etiqueta) > titular CONTENIDO solo por PALABRAS ENTERAS (`_hgNameWords` / `_hgNameContains`; solo titular y `accountName`, nunca la
+  etiqueta) > id guardado > adivinar. Antes "JUANA" matcheaba "JUAN ALVAREZ" y un titular exacto perdía si otra cuenta lo contenía.
+  `_hgDebitNote` usa el mismo criterio.
+- *Alta/edición de perfil:* `_hgValidateCreds` conserva `cbu`/`cvu`/`accountNumber`/`holderName`/`alias` de cada cuenta, así un token
+  que ve varias se identifica por CBU al cargarlo (`_hgIdForNewToken(prof, v)`). La ruta legacy `/api/admin/hgcash/credentials` pasó de
+  `_hgOnlyApiId(v)` (null si ve varias) a `_hgIdForNewToken(a, v)` para el perfil; el `accountId` global de `Config['hgcash']` sigue con
+  `_hgOnlyApiId(v)` (null si ve varias), que ya era equivalente a la fuente.
+- *Pago doble (lo más importante):* (1) `resolveHgcashAccountId({ acct })` — un pago con perfil fijado ya NO usa "la cuenta del último
+  movimiento" como respaldo si hgcash no responde (podía ser otra cuenta; el `externalID` no deduplica entre cuentas) → sin cuenta
+  cierta, no sale; (2) el envío anota la cuenta REAL (`PendingPayout.lastSendAccountId`, campo nuevo; también en `sendLog[].accountId`)
+  y `_payoutResendGuard(..., realAccountId)` solo considera "misma ruta" si también coincide esa cuenta → mismo perfil con otra cuenta
+  real = espera de 2 min + confirmación; el reintento por 403 actualiza `lastSendAccountId`; Finpro no pasa cuenta real (queda null: su
+  perfil ya ES una cuenta); (3) en modo "la de más saldo", un REINTENTO con envío anterior no rechazado con claridad vuelve por la MISMA
+  cuenta (`_payoutPickSource(body, monto, prev)` → `why:'retry-same'`); cambiar de cuenta en un reintento solo lo hace una persona con
+  "🏦 Elegir cuenta" (y ahí el candado pide esperar y confirmar); (4) `_paySlotNoWebhook`: un perfil de hgcash sin secreto propio no
+  entra en la elección automática SOLO si otro perfil sí tiene secreto (si ninguno tiene, los avisos entran por el de SSM y todas
+  participan); el panel lo marca (`noWebhook`).
+- *Otros:* alcanza con que la cuenta ELEGIDA tenga token (antes exigía `hgcashPay.isEnabled()`, o sea el de la cuenta en uso); la
+  respuesta del pago trae `paidFrom` (hgcash y Finpro) y el aviso muestra "SALIÓ POR …" (escapado); el selector de cuenta a fijar
+  muestra moneda y estado.
+- *Lo de acá que se respetó:* el 400 si la cuenta elegida ya no está cargada, `_capMw('withdraw')` en `/pay`, `STAFF_SECTION_API` y los
+  3 casos propios del test siguen igual. Llamadores revisados: `_payoutResendGuard` (2: hgcash con cuenta real, Finpro sin),
+  `_payoutNoteSend` (2, ídem), `_payoutPickSource` (1: `/pay`), `resolveHgcashAccountId` (2, los dos dentro de `/pay`, los dos con `acct`).
+- **Queda SIN hacer:** no hay alarma de "posible pago doble" entre dos cuentas del MISMO banco (solo entre bancos / salidas sin
+  vínculo); un retiro fallado ANTES de este deploy no tiene `lastSendAccountId` (el candado se comporta como antes para ese: mirarlo en
+  el banco antes de reintentar); los perfiles con id guardado de antes que no matcheen por CBU/titular siguen con ese id → revisarlos
+  UNA vez en el panel ("debita de «X»") y fijar la cuenta a mano si hace falta.
+- **Validado:** `node --check` de lo tocado, `check-tdz` OK, chequeo de funciones duplicadas VACÍO en `server.js` y `admin.js` (antes y
+  después), los 9 `scripts/test-*.js` antes y después: `test-payout-source.js` 33 → 52 (incluye "ninguna función declarada dos veces
+  en server.js"), `test-payout-guard.js` 12 → 14, el resto igual.
+- **NO probado:** nada contra hgcash ni Finpro reales, ni con el server levantado, ni el panel en un navegador. No se verificó que
+  `GET /accounts` de hgcash devuelva el CBU/CVU de cada cuenta (si no lo trae, la identificación al alta cae al titular, como antes).
+  El reintento por 403 y el caso "mismo perfil, otra cuenta real" solo están cubiertos por tests en frío.
+
 ### 238. 🎁 Regalos que 1girox anotaba como CARGA → se UNIFICAN con el bono anterior + descripción detallada de toda acreditación — réplica de CARGASGIROXactivo #236 / #237 / #238 / #239 — admin-sw v70
 - **Origen:** réplica de las entradas #236–#239 de CARGASGIROXactivo (commits `c9ae7cc`, `32725e4`, `9622f94`, `3a3e582`, `d3ec375`). Los
   comentarios del código llevan la numeración de ACÁ (`#238`). El problema se confirmó con logs de producción de AQUEL proyecto, no de este.

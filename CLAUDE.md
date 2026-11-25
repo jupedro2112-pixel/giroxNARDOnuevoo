@@ -194,6 +194,8 @@ Deploy: AWS Elastic Beanstalk. Dominio público: vipcargas.com. Git user: jupedr
   retiro > `Config['payoutSource']`: en uso / fija / la de más saldo) y queda en `req._paySrc`; los dos caminos de pago usan ESA cuenta,
   no "la que está en uso", y nunca se salta sola a otra cuenta tras un fallo. Un token de hgcash puede ver varias cuentas: la de un perfil
   la resuelve `_hgPickApiAccount` (fijada a mano `payAccountId` > CBU > titular); nunca volver a tomar "la primera de la lista".
+  Todo envío pasa la cuenta REAL del banco a `_payoutNoteSend` / `_payoutResendGuard` (`lastSendAccountId`, #239c); un pago nunca
+  resuelve la cuenta por "el último movimiento". Antes de cerrar un cambio en `server.js`: chequeo de funciones duplicadas (abajo).
   Detalle en `docs/ARCHITECTURE.md` §11.12. Test: `node scripts/test-payout-source.js`.
 - **Retiro "VERIFICANDO" (#237, réplica #221):** un envío a hgcash sin respuesta clara deja el retiro `failed` + `hgSendUnknown` +
   `verifyUntil` (3 min): el pago pudo haber salido. Toda ruta que pague, marque pagado, rechace o descarte un `PendingPayout` llama a

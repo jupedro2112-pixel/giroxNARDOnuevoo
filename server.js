@@ -19097,7 +19097,7 @@ async function _hgValidateCreds(b) {
   if (token) {
     const t = await hgcashPay.getAccounts(token);
     if (!t.ok) return { error: 'hgcash rechazó ese token: ' + String(t.error || '').slice(0, 160) };
-    accounts = (t.data || []).map((a) => ({ id: a.id, currency: a.currency, status: a.status, name: a.name || a.holderName || a.alias || null }));
+    accounts = (t.data || []).filter(Boolean).map((a) => ({ id: a.id, currency: a.currency, status: a.status, name: a.name || a.holderName || a.alias || null, holderName: a.holderName || null, alias: a.alias || null, cbu: a.cbu || a.CBU || null, cvu: a.cvu || a.CVU || null, accountNumber: a.accountNumber || null })); // #239c con CBU: sirve para identificar la cuenta
     const isOper = a => /operativa|operative|active/i.test(String(a.status || ''));
     const pick = accounts.find(a => String(a.currency || '').toUpperCase() === 'ARS' && isOper(a)) || accounts.find(a => String(a.currency || '').toUpperCase() === 'ARS') || accounts.find(isOper) || accounts[0];
     if (pick) { apiAccountId = pick.id ? String(pick.id) : null; apiName = pick.name || null; }
@@ -19115,8 +19115,9 @@ app.post('/api/admin/hgcash/credentials', authMiddleware, adminMiddleware, async
     await _hgSaveAccountsConfig((n) => {
       let a = n.accounts.find(x => x.key === n.activeKey);
       if (!a) { a = _hgNormStored({ key: 'a1', label: 'Cuenta 1' }); n.accounts.push(a); n.activeKey = 'a1'; }
-      // #239 token nuevo que ve VARIAS cuentas: no se guarda "la primera" como propia (se resuelve por CBU / titular al pagar, o se fija a mano)
-      if (v.token) { a.tokenEnc = _credEncrypt(v.token); a.tokenLast4 = v.token.slice(-4); a.payAccountId = null; a.accountId = _hgOnlyApiId(v); if (!a.accountName && v.apiName && (v.accounts || []).length <= 1) a.accountName = v.apiName; }
+      // #239 token nuevo que ve VARIAS cuentas: no se guarda "la primera" como propia. #239c: se identifica por el CBU / titular
+      // del perfil (`_hgIdForNewToken`); si no se puede, queda sin cuenta y se resuelve al pagar o se fija a mano.
+      if (v.token) { a.tokenEnc = _credEncrypt(v.token); a.tokenLast4 = v.token.slice(-4); a.payAccountId = null; a.accountId = _hgIdForNewToken(a, v); if (!a.accountName && v.apiName && (v.accounts || []).length <= 1) a.accountName = v.apiName; }
       if (v.secret) { a.secretEnc = _credEncrypt(v.secret); a.secretLast4 = v.secret.slice(-4); }
       a.updatedBy = req.user.username; a.updatedAt = new Date();
     }, req.user.username);
@@ -19188,8 +19189,7 @@ app.post('/api/admin/hgcash/accounts', authMiddleware, adminMiddleware, async (r
         const _many = (v.accounts || []).length > 1;
         a.payAccountId = null;
         if (_many) {
-          const _pk = _hgPickApiAccount({ titular, accountName: a.accountName, label, cbu }, v.accounts, 'ARS');
-          a.accountId = (_pk.how !== 'guess' && _pk.pick && _pk.pick.id) ? String(_pk.pick.id) : null;
+          a.accountId = _hgIdForNewToken({ titular, accountName: a.accountName, label, cbu }, v); // #239c por CBU / titular (la lista ahora trae el CBU de cada cuenta)
           if (!a.accountId) warnings.push('El token de esta cuenta ve ' + v.accounts.length + ' cuentas de hgcash y no se pudo saber cuál es por el titular/CBU. Elegila en "¿De qué CUENTA salen los retiros?".');
         } else a.accountId = v.apiAccountId || a.accountId || null;
       }
@@ -20323,7 +20323,9 @@ async function resolveHgcashAccountId({ force = false, acct = null } = {}) {
     const _actAcc = _prof;
     if (!force && _actAcc && _actAcc.accountId) return _actAcc.accountId;
     if (!force && _isActiveProf && cfg.accountId) return cfg.accountId;
-    // 3) Fallback: último movimiento conocido.
+    // 3) Fallback: último movimiento conocido. #239c NUNCA para un pago con perfil fijado (`acct`): ese id puede ser de
+    //    OTRA cuenta y el `externalID` no deduplica entre cuentas → sin cuenta cierta, el pago no sale.
+    if (acct) return null;
     const mov = await BankMovement.findOne({ accountId: { $ne: null } }).sort({ createdAt: -1 }).select('accountId').lean();
     return mov ? mov.accountId : null;
   } catch (_) { return null; }
@@ -20333,7 +20335,18 @@ async function resolveHgcashAccountId({ force = false, acct = null } = {}) {
 // Un token de hgcash puede ver VARIAS cuentas. Antes, sin CBU que matcheara, se debitaba "la primera"
 // → un perfil recién puesto EN USO pagaba desde otra cuenta. Ahora: fijada a mano > CBU > titular > id.
 const _hgLastApiPick = new Map(); // key del perfil → { at, id, name, how, many, balance } (lo último que resolvió la API)
-function _hgNameKey(v) { return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+// Titular en dos formas: compacto (sin espacios ni signos: "S.A." == "SA") y por palabras.
+function _hgNameKey(v) { return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function _hgNameWords(v) { return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim(); }
+// #239c ¿`a` contiene a `b` (o al revés) por PALABRAS ENTERAS? ("JUANA" no está en "JUAN ALVAREZ")
+function _hgNameContains(a, b) { const x = ' ' + _hgNameWords(a) + ' ', y = ' ' + _hgNameWords(b) + ' '; return x.trim().length >= 5 && y.trim().length >= 5 && (x.includes(y) || y.includes(x)); }
+// #239c Cuenta de un perfil al cargarle un token NUEVO: la única que ve, o la que se identifica por CBU / titular; si no, null.
+function _hgIdForNewToken(prof, v) {
+  const list = (v && v.accounts) || [];
+  if (list.length <= 1) return (v && v.apiAccountId) || null;
+  const pk = _hgPickApiAccount(Object.assign({}, prof, { payAccountId: null, accountId: null }), list, 'ARS');
+  return pk.pick && pk.how !== 'guess' && pk.pick.id ? String(pk.pick.id) : null;
+}
 function _hgApiName(a) { return a ? (a.name || a.holderName || a.alias || null) : null; }
 function _hgApiBalance(a) { if (!a) return null; const n = Number(a.netBalance != null ? a.netBalance : a.balance); return Number.isFinite(n) ? n : null; }
 function _hgPickApiAccount(prof, list, wantCur) {
@@ -20343,9 +20356,15 @@ function _hgPickApiAccount(prof, list, wantCur) {
   if (list.length === 1) return { pick: list[0], how: 'only' };
   const pCbu = prof ? _digits(prof.cbu) : '';
   if (pCbu.length === 22) { const f = list.find(a => [a.cbu, a.cvu, a.CBU, a.CVU, a.accountNumber].some(v => _digits(v) === pCbu)); if (f) return { pick: f, how: 'cbu' }; }
-  if (prof) {
+  const apiNames = (a) => [a.name, a.holderName, a.alias].filter(Boolean);
+  if (prof) { // #239c titular IGUAL (una sola cuenta): manda. La etiqueta del perfil solo vale para igualdad exacta.
     const mine = [prof.titular, prof.accountName, prof.label].map(_hgNameKey).filter(n => n.length >= 5);
-    const hits = list.filter(a => [a.name, a.holderName, a.alias].map(_hgNameKey).filter(n => n.length >= 5).some(n => mine.some(m => m === n || m.includes(n) || n.includes(m))));
+    const hits = list.filter(a => apiNames(a).map(_hgNameKey).some(n => n.length >= 5 && mine.includes(n)));
+    if (hits.length === 1) return { pick: hits[0], how: 'name' };
+  }
+  if (prof) { // #239c titular CONTENIDO por palabras enteras (una sola cuenta); nunca por la etiqueta
+    const mineW = [prof.titular, prof.accountName].filter(Boolean);
+    const hits = list.filter(a => apiNames(a).some(n => mineW.some(m => _hgNameContains(m, n))));
     if (hits.length === 1) return { pick: hits[0], how: 'name' };
   }
   if (prof && prof.accountId) { const f = list.find(a => String(a.id) === String(prof.accountId)); if (f) return { pick: f, how: 'id' }; }
@@ -20369,6 +20388,9 @@ function _paySlots() {
   for (const a of _fpList()) if (_fpReadyPayouts(a)) out.push({ id: 'finpro:' + (a.key || 'env'), provider: 'finpro', key: a.key || 'env', label: _fpAccountLabel(a), acc: a });
   return out;
 }
+// #239c Un perfil sin secreto propio solo queda "ciego" si OTRO perfil tiene secreto (ahí el de AWS/SSM deja de valer).
+// Si ningún perfil tiene secreto, los avisos entran con el de SSM y todas avisan sus salidas.
+function _paySlotNoWebhook(s) { return !!(s && s.provider === 'hgcash' && s.acc && !s.acc.secret && _hgAccounts.some(a => a.secret)); }
 const _paySlotInfoCache = new Map(); // id → { at, info }
 // Saldo y cuenta REAL de una cuenta que paga. Nunca tira. { ok, balance, realName, how, many, apiAccounts, error }
 async function _paySlotInfo(slot, maxAgeMs = 20000) {
@@ -20398,7 +20420,7 @@ async function _paySlotInfo(slot, maxAgeMs = 20000) {
   return info;
 }
 // De dónde sale ESTE pago. { provider, key (null = la cuenta en uso de ese banco), label, why } | { error }
-async function _payoutPickSource(body, amount) {
+async function _payoutPickSource(body, amount, prev) {
   const slots = _paySlots();
   const lab = (s) => _bankLabel(s.provider) + ' · ' + s.label;
   const want = String((body && body.source) || '').trim();
@@ -20418,9 +20440,16 @@ async function _payoutPickSource(body, amount) {
     return active('fixed-missing');
   }
   if (ps.mode === 'richest' && slots.length) {
+    // #239c REINTENTO: si este retiro ya tuvo un envío que no quedó RECHAZADO con claridad, vuelve por la MISMA cuenta
+    // (ahí el banco deduplica). Cambiar de cuenta en un reintento solo lo hace una persona, con "🏦 Elegir cuenta".
+    if (prev && prev.lastSendBank && prev.lastSendResult !== 'rejected') {
+      const s0 = slots.find(x => x.provider === prev.lastSendBank && String(x.key || 'env') === String(prev.lastSendAccount || 'env'));
+      if (s0) return { provider: s0.provider, key: s0.key, label: lab(s0), why: 'retry-same' };
+    }
     const infos = await Promise.all(slots.map(s => _paySlotInfo(s, 8000)));
-    const withBal = slots.map((s, i) => ({ s, bal: infos[i] && infos[i].ok ? infos[i].balance : null })).filter(x => typeof x.bal === 'number').sort((a, b) => b.bal - a.bal);
-    if (!withBal.length) { logger.warn('[payout-source] "la de más saldo": no se pudo leer el saldo de ninguna cuenta: se usa la cuenta en uso'); return active('richest-unknown'); }
+    // #239c una cuenta de hgcash SIN secreto de webhook no avisa sus salidas (el candado queda ciego): no entra en la elección automática.
+    const withBal = slots.map((s, i) => ({ s, bal: infos[i] && infos[i].ok ? infos[i].balance : null })).filter(x => typeof x.bal === 'number' && !_paySlotNoWebhook(x.s)).sort((a, b) => b.bal - a.bal);
+    if (!withBal.length) { logger.warn('[payout-source] "la de más saldo": ninguna cuenta con saldo legible que avise sus salidas: se usa la cuenta en uso'); return active('richest-unknown'); }
     const top = withBal[0];
     if (Number(amount) > 0 && top.bal < Number(amount)) return { error: `Ninguna cuenta tiene saldo para este retiro: la que más tiene es ${lab(top.s)} con $${top.bal.toLocaleString('es-AR')}. Cargá saldo, o elegí la cuenta a mano con "🏦 Elegir cuenta".` };
     return { provider: top.s.provider, key: top.s.key, label: lab(top.s), why: 'richest', balance: top.bal };
@@ -20435,10 +20464,10 @@ async function _payoutSourcesPayload(fresh) {
   const fpAct = _fpActiveAccount() || _fpEnvAccount();
   const activeId = prov === 'finpro' ? (fpAct ? 'finpro:' + (fpAct.key || 'env') : null) : (_hgActiveKey ? 'hgcash:' + _hgActiveKey : (slots.some(s => s.id === 'hgcash:env') ? 'hgcash:env' : null));
   const list = slots.map((s, i) => Object.assign({ id: s.id, provider: s.provider, key: s.key, label: s.label, inUse: s.id === activeId,
-    pinned: !!(s.acc && s.acc.payAccountId) }, infos[i] || { ok: false }));
+    pinned: !!(s.acc && s.acc.payAccountId), noWebhook: _paySlotNoWebhook(s) }, infos[i] || { ok: false }));
   let nowId = activeId, nowWhy = 'la cuenta EN USO de ' + _bankLabel(prov);
   if (ps.mode === 'fixed') { if (list.some(x => x.id === ps.fixed)) { nowId = ps.fixed; nowWhy = 'cuenta fija'; } else nowWhy = 'la cuenta fija ya no está: se usa la cuenta EN USO de ' + _bankLabel(prov); }
-  else if (ps.mode === 'richest') { const t = list.filter(x => x.ok && typeof x.balance === 'number').sort((a, b) => b.balance - a.balance)[0]; if (t) { nowId = t.id; nowWhy = 'la que más saldo tiene ahora'; } else nowWhy = 'no se pudo leer ningún saldo: se usa la cuenta EN USO de ' + _bankLabel(prov); }
+  else if (ps.mode === 'richest') { const t = list.filter(x => x.ok && typeof x.balance === 'number' && !x.noWebhook).sort((a, b) => b.balance - a.balance)[0]; if (t) { nowId = t.id; nowWhy = 'la que más saldo tiene ahora'; } else nowWhy = 'no se pudo leer ningún saldo: se usa la cuenta EN USO de ' + _bankLabel(prov); }
   return { mode: ps.mode, fixed: ps.fixed, bankProvider: prov, activeId, nowId, nowWhy, slots: list };
 }
 app.get('/api/admin/payout-sources', authMiddleware, withdrawerMiddleware, async (req, res) => {
@@ -20692,9 +20721,8 @@ function _hgDebitNote(key) {
   const i = _hgLastApiPick.get(key || 'env');
   if (!i || !i.name) return '';
   const a = _hgAccountByKey(key);
-  const mine = a ? [a.titular, a.accountName, a.label].map(_hgNameKey).filter(Boolean) : [];
   const n = _hgNameKey(i.name);
-  const same = mine.some(m => m === n || (m.length >= 5 && n.length >= 5 && (m.includes(n) || n.includes(m))));
+  const same = !!a && ([a.titular, a.accountName, a.label].map(_hgNameKey).some(m => m && m === n) || [a.titular, a.accountName].some(m => m && _hgNameContains(m, i.name))); // #239c mismo criterio que `_hgPickApiAccount`
   if (i.how === 'guess' && i.many > 1) return ` — ⚠️ DEBITÓ DE "${i.name}": el token de este perfil ve ${i.many} cuentas de hgcash y no se pudo saber cuál es la suya. Fijala en Bancos — Configuración → "De qué cuenta salen los retiros"`;
   return same ? '' : ` — debitó de "${i.name}"`;
 }
@@ -20704,10 +20732,10 @@ function _payoutAcctLabel(bank, key) {
   return _bankLabel(bank) + (l ? ' · ' + l : '');
 }
 // Se llama JUSTO ANTES de mandar el pedido al banco.
-async function _payoutNoteSend(id, bank, account, by) {
-  const entry = { at: new Date(), bank, account: account || null, label: _payoutAcctLabel(bank, account), by: by || null, result: 'sending' };
+async function _payoutNoteSend(id, bank, account, by, realAccountId) {
+  const entry = { at: new Date(), bank, account: account || null, accountId: realAccountId ? String(realAccountId) : null, label: _payoutAcctLabel(bank, account), by: by || null, result: 'sending' };
   try {
-    await PendingPayout.updateOne({ id }, { $set: { lastSendAt: entry.at, lastSendBank: bank, lastSendAccount: account || null, lastSendResult: 'sending' }, $push: { sendLog: { $each: [entry], $slice: -20 } } });
+    await PendingPayout.updateOne({ id }, { $set: { lastSendAt: entry.at, lastSendBank: bank, lastSendAccount: account || null, lastSendAccountId: realAccountId ? String(realAccountId) : null, lastSendResult: 'sending' }, $push: { sendLog: { $each: [entry], $slice: -20 } } });
   } catch (e) { logger.warn(`[payout] no se pudo anotar el envío de ${id}: ${e.message}`); }
 }
 // result: 'accepted' | 'rejected' (el banco dijo que NO, con respuesta clara) | 'unknown' (no se sabe si entró).
@@ -20718,7 +20746,7 @@ async function _payoutNoteResult(id, result, detail) {
 }
 function _payoutHMS(d) { return new Date(d).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' }); }
 // null = se puede mandar. Si no, { http, body } para responderle al panel tal cual.
-async function _payoutResendGuard(payout, bank, account, destCbu, confirmed) {
+async function _payoutResendGuard(payout, bank, account, destCbu, confirmed, realAccountId) {
   const amt = Number(payout.amount);
   const money = '$' + amt.toLocaleString('es-AR');
   const notOut = (m) => /error|fail|cancel|reject|rechaz|revers|devuel/i.test(String(m.status || ''));
@@ -20751,7 +20779,10 @@ async function _payoutResendGuard(payout, bank, account, destCbu, confirmed) {
     }
   }
   // 3) Reintento por otra cuenta / otro banco.
-  const sameRoute = payout.lastSendBank === bank && String(payout.lastSendAccount || '') === String(account || '');
+  // #239c "misma ruta" = mismo banco, mismo perfil Y misma cuenta REAL del banco (un perfil de hgcash puede cambiar de
+  // cuenta real entre dos intentos; el `externalID` solo deduplica dentro de UNA cuenta).
+  const sameReal = !(payout.lastSendAccountId && realAccountId && String(payout.lastSendAccountId) !== String(realAccountId));
+  const sameRoute = payout.lastSendBank === bank && String(payout.lastSendAccount || '') === String(account || '') && sameReal;
   if (!payout.lastSendBank || sameRoute) return null;
   const prevLabel = _payoutAcctLabel(payout.lastSendBank, payout.lastSendAccount);
   const age = Date.now() - prevAt;
@@ -20907,7 +20938,7 @@ async function _payPayoutViaFinpro(req, res) {
       _emitAdminOnlyChatNote(claimed.userId, claimed.username, `💸 Retiro de $${Number(claimed.amount).toLocaleString('es-AR')} ENVIADO por ${_payoutAcctLabel('finpro', acctKey)} (${req.user.username}). No lo pagues por otro lado: se confirma solo.`).catch(() => {});
       setTimeout(function () { _pollPayingPayouts(); }, 7000);
       logger.info(`[finpro-pay] lote ACEPTADO payout=${id} user=${payout.username} $${payout.amount} process=${processId} tx=${transactionId} cuenta="${_fpAccountLabel(acct)}" → ${resolvedCbu.slice(-6)} (${lookupName || payout.titular || '?'}) por ${req.user.username}`);
-      return res.json({ success: true, status: 'paying', fpProcessId: processId, lookupName });
+      return res.json({ success: true, status: 'paying', fpProcessId: processId, lookupName, paidFrom: _payoutAcctLabel('finpro', acctKey) });
     }
     // Sin respuesta útil (red/timeout, o un 5xx sin código del banco): NO se sabe si entró →
     // no se manda otro (pagaría dos veces). El poll pregunta por este process_id.
@@ -21012,12 +21043,12 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _ca
     // (`body.provider`). Los candados anti doble pago entre bancos de más abajo aplican igual.
     // #239: … o la CUENTA puntual (`body.source`), o la que diga "De qué cuenta salen" (fija / la de más saldo).
     await _loadHgcashCredentials(); await _loadFinproCredentials();
-    const _pAmt = await PendingPayout.findOne({ id }).select('amount').lean();
-    const _src = await _payoutPickSource(req.body, _pAmt ? _pAmt.amount : null);
+    const _pAmt = await PendingPayout.findOne({ id }).select('amount lastSendBank lastSendAccount lastSendResult').lean();
+    const _src = await _payoutPickSource(req.body, _pAmt ? _pAmt.amount : null, _pAmt); // #239c un reintento en modo automático vuelve por la misma cuenta
     if (_src.error) return res.status(400).json({ error: _src.error });
     req._paySrc = _src;
     if (_src.provider === 'finpro') return _payPayoutViaFinpro(req, res);
-    if (!hgcashPay.isEnabled()) {
+    if (!hgcashPay.isEnabled() && !(_src.key && _hgTokenFor(_src.key))) { // #239c alcanza con que la cuenta ELEGIDA tenga token
       return res.status(400).json({ error: 'Pago automático no configurado (falta HGCASH_API_TOKEN). Pagá manual.' });
     }
     const payout = await PendingPayout.findOne({ id });
@@ -21065,7 +21096,7 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _ca
       return res.status(400).json({ error: 'No se pudo resolver el CBU/CVU destino (revisá el alias/CBU del cliente).' });
     }
     // #219 anti pago doble entre cuentas/bancos (salida ya registrada, espera y confirmación).
-    const _g = await _payoutResendGuard(payout, 'hgcash', _hgKeyPay || 'env', resolvedCbu, !!(req.body && req.body.confirmOtherBank === true));
+    const _g = await _payoutResendGuard(payout, 'hgcash', _hgKeyPay || 'env', resolvedCbu, !!(req.body && req.body.confirmOtherBank === true), accountId);
     if (_g) return res.status(_g.http).json(_g.body);
 
     // Reclamo atómico: solo procede el que pase pending_review/failed → paying.
@@ -21113,7 +21144,7 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _ca
       webhookUrl,
       token: _hgTokPay // #219 siempre el token de la cuenta fijada arriba
     });
-    await _payoutNoteSend(id, 'hgcash', _hgKeyPay || 'env', req.user.username); // #219
+    await _payoutNoteSend(id, 'hgcash', _hgKeyPay || 'env', req.user.username, accountId); // #219 / #239c con la cuenta REAL
     let result = await buildCashOut(accountId);
 
     // Auto-recuperación: si hgcash rechaza por NO tener acceso a esa cuenta (403),
@@ -21125,6 +21156,7 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _ca
       if (fresh && String(fresh) !== String(accountId)) {
         logger.warn(`[hgcash-pay] 403 con accountId=${accountId}; reintentando con accountId=${fresh}`);
         accountId = fresh;
+        await PendingPayout.updateOne({ id }, { $set: { lastSendAccountId: String(accountId) } }).catch(() => {}); // #239c la cuenta REAL de este segundo envío
         result = await buildCashOut(accountId);
       }
     }
@@ -21189,7 +21221,7 @@ app.post('/api/admin/payouts/:id/pay', authMiddleware, withdrawerMiddleware, _ca
     else { setTimeout(function () { _pollPayingPayouts(); }, 7000); }
 
     logger.info(`[hgcash-pay] cash-out iniciado payout=${id} user=${payout.username} $${payout.amount} hgId=${hgId} status=${hgStatus} por ${req.user.username}`);
-    res.json({ success: true, status: isDone ? 'paid' : 'paying', hgTransactionId: hgId, hgStatus });
+    res.json({ success: true, status: isDone ? 'paid' : 'paying', hgTransactionId: hgId, hgStatus, paidFrom: _payoutAcctLabel('hgcash', _hgKeyPay) + _hgDebitNote(_hgKeyPay) });
   } catch (error) {
     console.error('Error pagando payout:', error);
     res.status(500).json({ error: 'Error del servidor' });
